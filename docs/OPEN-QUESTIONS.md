@@ -20,19 +20,9 @@
 |---|---|---|
 | OQ-P1 Platforms | Windows and macOS are first-class from phase 1 (MSI and PKG/DMG installers, Windows and macOS CI runners). Linux builds from the same code and is supported in phase 4. Skill-script isolation on Windows is weaker and badged. | ARCHITECTURE.md P2, sections 3, 12 |
 | OQ-P2 Endpoints and first user | First-version endpoints: the Anthropic API, internal API gateways (Anthropic Messages or OpenAI-compatible), and open-weight models on internal GPU servers; Bedrock, Vertex, and Foundry are later auth back ends on the same adapter. The app is always a desktop app calling a server. First user is you, but enterprise-ready from phase 0 (offline bundling, proxy and CA, audit log); managed configuration and organization libraries in phase 3. | ARCHITECTURE.md P6, P12, section 11 |
+| OQ-P3 Deck source of truth | Two project modes. Structured (default): typed deck document on template layouts, deterministic renderer, native `process`, `timeline`, `matrix`, and `hierarchy` primitives, plus per-slide script-generated slides as an escape hatch. Code generation (switchable per project): the deck is a sandboxed `python-pptx` build script using the shared deck SDK, checked on its output. Structured → code is a lossless eject; code → structured is a revert to the pre-eject snapshot or a best-effort import. Code execution is therefore required (sandbox details in OQ-P7). | ARCHITECTURE.md P3, P11, sections 5, 5.1, 7.3 |
 
 ## 3. Open
-
-### OQ-P3. Source of truth for a deck
-
-**Options.**
-- (a) **Code generation.** The agent writes Python (`python-pptx`) or JavaScript (PptxGenJS) that builds the `.pptx`, run in a sandbox. This is how Anthropic's own pptx skill and most AI deck tools work. Maximal expressiveness; weak template compliance; diffs are code diffs; every change re-runs code; requires arbitrary code execution.
-- (b) **Typed deck document.** The agent edits a JSON deck document through tools; a deterministic renderer produces the `.pptx` on the template. Template compliance and checks by construction; slide-level diffs; editing in the app is straightforward; expressiveness limited to the schema plus images and free elements.
-- (c) **Direct OOXML editing.** The agent edits the XML of a `.pptx` through tools. Round-trip with PowerPoint is natural; the model must handle OOXML, which is verbose and error-prone; checking is hard.
-
-**Recommendation.** (b), with a planned escape hatch: native diagram primitives in the schema, and images produced by skill scripts. It is the analogue of Analyst's choice to make every output checkable, and it is what makes "the template is the contract" enforceable.
-
-**Decide.** Is the expressiveness limit acceptable for your decks? Which slide types do you build most often that a placeholder-plus-chart-plus-table schema would not cover (process diagrams, timelines, 2×2 matrices, maps, org charts)?
 
 ### OQ-P4. How much editing in the app
 
@@ -62,7 +52,7 @@
 
 **Options.** (a) Instruction-only skills (`SKILL.md` and resources, no scripts). (b) Full Agent Skills including scripts, run locally in a sandbox, approved per policy. (c) Full skills plus a general sandboxed Python tool, as in Analyst.
 
-**Recommendation.** (b). Provider-hosted skills do not exist on gateways or open-weight servers (and not on Bedrock or Vertex later), so the app has to run them; scripts are what make skills useful for charts and diagrams. A general code tool (c) is not needed for decks and is the hardest thing to justify to an enterprise security review. On Windows, scripts run with a restricted token and a job object and are badged as weaker isolation; a managed config can disable scripts entirely.
+**Recommendation.** (b). OQ-P3 already requires a local sandbox for code generation mode and generated slides, so skill scripts reuse it. Provider-hosted skills do not exist on gateways or open-weight servers (and not on Bedrock or Vertex later), so the app has to run them; scripts are what make skills useful for charts and diagrams. A general code tool (c) is not needed for decks and is the hardest thing to justify to an enterprise security review. On Windows, scripts run with a restricted token and a job object and are badged as weaker isolation; a managed config can disable scripts entirely.
 
 **Decide.** Do you already have skills (yours or your organization's) you want to run? Do they include scripts?
 
@@ -116,5 +106,5 @@
 - Template coverage: run the template inspector over several real corporate templates you use; count layouts whose placeholders map cleanly.
 - Overflow measurement accuracy: compare the checker's verdicts with PowerPoint and LibreOffice renders on a corpus of slides.
 - LibreOffice versus PowerPoint render differences on the same templates.
-- How often the agent needs something outside the deck schema on real briefs (sizes OQ-P3's escape hatch).
+- How often the agent needs generated slides on real briefs, and how often code mode output stays on-template when the build script uses the SDK.
 - Gateway and open-weight server behavior on the same tasks (tool calling, document citations, caching, unknown-field handling) through the shared provider layer.

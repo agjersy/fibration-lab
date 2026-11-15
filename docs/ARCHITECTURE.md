@@ -8,7 +8,7 @@
 |---|---|---|---|
 | P1 | Desktop shell | Tauri 2, Rust core, React renderer in the OS webview, as in Analyst (D1) | Proposed (shared) |
 | P2 | Platforms | Windows and macOS first-class from phase 1 (that is where PowerPoint users are); Linux built from the same code and supported in phase 4 | Decided (OQ-P1) |
-| P3 | Source of truth for a deck | A typed deck document (JSON, one file per slide) bound to the template's layouts, rendered deterministically to `.pptx`. The agent edits the document through typed tools; it does not write `.pptx`-generating code | Open, OQ-P3 |
+| P3 | Source of truth for a deck | Two project modes. Structured (default): a typed deck document (JSON, one file per slide) bound to the template's layouts, with native process, timeline, matrix, and hierarchy primitives and optional script-generated slides, rendered deterministically to `.pptx`. Code generation (switchable): the deck is a sandboxed `python-pptx` build script using a shared deck SDK. Structured → code is a lossless eject; code → structured is a revert or a best-effort import | Decided (OQ-P3) |
 | P4 | `.pptx` writer | `python-pptx` in an app-owned, bundled Python runtime (the "deck kernel"), driven over JSON-RPC like Analyst's kernel | Proposed |
 | P5 | Preview and PDF/PNG export | Two paths: a live HTML/SVG preview drawn from the deck document in the renderer, and a fidelity render of the actual `.pptx` through LibreOffice headless (bundled or system) or PowerPoint itself when installed | Open, OQ-P6 |
 | P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
@@ -16,7 +16,7 @@
 | P8 | References | Local extraction and SQLite FTS5 index; search/read tools for the agent; per-element citations in the deck document. Native PDF document blocks with citations used when the provider supports them and the set is small | Proposed |
 | P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Proposed (shared) |
 | P10 | Checkpoints | Content-addressed snapshot store inside the project (no dependency on a system `git`) | Proposed, OQ-P10 |
-| P11 | Arbitrary code execution | None in the core loop. Skill scripts only, sandboxed where the OS allows, approved per policy | Open, OQ-P7 |
+| P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run Python in a local sandbox with no network, approved per policy. No general shell or REPL tool | Decided by OQ-P3; sandbox details OQ-P7 |
 | P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, system proxy and trust store, local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Proposed (shared) |
 | P14 | Code sharing with Analyst | Common crates (`protocol` patterns, providers, policy, transcript, skills, MCP) extracted into a shared workspace | Open, OQ-P11 |
@@ -93,7 +93,8 @@ Same as Analyst (section 3 there) unless listed:
 | Python runtime | `python-build-standalone` + pinned wheels, bundled in the installer; no download at first run | Analyst fetches with `uv` at runtime; enterprise offline installs cannot. |
 | Fidelity renderer | LibreOffice headless (`soffice --convert-to pdf`) bundled as an optional component or found on the system; PowerPoint automation (COM on Windows, AppleScript on macOS) when PowerPoint is installed | New. See OQ-P6. |
 | TLS and proxy | `rustls` with the OS trust store (`rustls-platform-verifier`), system proxy settings and PAC, optional client certificates | Analyst assumes a personal network. |
-| Terminal, CodeMirror editor, SSH | Not included | The user is not assumed to be a programmer. A CodeMirror JSON view of a slide stays available as a developer option. |
+| CodeMirror editor | Included for code generation mode, generated slides, and skills, with per-hunk review as in Analyst | Hidden in structured mode except as a developer JSON view. |
+| Terminal, SSH | Not included | The user is not assumed to be a programmer. |
 
 Licensing rule from Analyst kept: permissive dependencies only (no GPL or AGPL). Consequences here: PyMuPDF (AGPL) is excluded, `pypdfium2` (Apache/BSD) is used for PDF; LibreOffice (MPL-2.0) is acceptable only as an unmodified separate program, and is optional.
 
@@ -154,7 +155,44 @@ Rules:
 
 Agent-facing tools operate on this document (section 7.3). The model never sees OOXML.
 
-**Escape hatch.** Some content cannot be expressed in the schema (a bespoke diagram). The first version offers images (from references, Analyst, or skill scripts) and free elements. Native diagram primitives (process, timeline, matrix, org chart) built from editable shapes are the planned extension; SmartArt is not, since its XML is not practical to generate reliably.
+**Native diagram primitives (decided).** Four families are part of the schema, rendered as grouped, editable PowerPoint shapes and connectors styled from the theme (never SmartArt, whose XML cannot be generated reliably), each with a layout algorithm in the kernel so the agent supplies content, not coordinates:
+
+| Primitive | Variants | Content model |
+|---|---|---|
+| `process` | chevrons, numbered steps, flowchart with connectors and decisions | ordered nodes, optional edges and branch labels |
+| `timeline` | milestones on an axis, roadmap swimlanes, Gantt bars | dated items, optional lanes and spans |
+| `matrix` | 2x2 with plotted items, comparison grid with icons and Harvey balls, KPI tiles | axes or rows and columns, cells, scores |
+| `hierarchy` | org chart, tree, driver tree | nodes with parent ids, optional values |
+
+**Generated slides (decided).** When neither the schema nor the primitives can express a slide, a single slide can be of kind `generated`: its content is a short Python script, run in the sandbox against the deck SDK (section 5.1), that draws onto that slide's layout. The rest of the deck stays structured. Generated slides are badged in the slide rail, their script is reviewed like code, and the checker runs on their rendered output.
+
+### 5.1 Deck modes: structured and code generation (decided, OQ-P3)
+
+A project is in one of two modes, chosen at creation and switchable later.
+
+| | Structured (default) | Code generation |
+|---|---|---|
+| Source of truth | Deck document: `deck/deck.json` + `deck/slides/<id>.json` | Build script: `deck/build.py` (plus modules it imports) + `assets/` |
+| Who writes the `.pptx` | The deterministic renderer | The script, run in the sandbox by the kernel with the bundled Python, `python-pptx`, and the deck SDK |
+| Expressiveness | Schema + primitives + generated slides | Anything `python-pptx` (and raw OOXML through it) can produce |
+| Template compliance | By construction, then checked | Checked on the output only |
+| Agent tools | `slide.propose_*` on the document | `code.propose_edit` on the script, `deck.build` |
+| Review | Slide diff: before/after thumbnails + text diff | Code diff (CodeMirror, per hunk, as in Analyst) + before/after thumbnails of every slide whose output changed |
+| Preview | Live HTML preview + fidelity render | Fidelity render only, after each build |
+| In-app editing | Text, layout, order, locks, chart data (OQ-P4) | Edit the script; slide-level locks become "frozen" slides the build must reproduce byte-for-byte in text (checked) |
+| Citations | Stored on runs and series in the document | Attached in code through the SDK (`cite(shape_or_run, "ref:...")`), written into the `.pptx` as tags and read back by the checker and source lens |
+| Requires code execution | Only for generated slides and skill scripts | Always |
+
+**Deck SDK (`present_sdk`).** A small Python library shipped with the kernel and importable by build scripts and generated slides. It gives code the same footing as the renderer: `deck = open_template()`, `add_slide(layout="Title and Content")`, placeholder access by role, theme colors and fonts by name, the diagram primitives and chart builders the renderer uses, `cite(...)`, and `alt(...)`. Scripts are expected (by the system prompt and a lint rule) to use the SDK rather than hard-coded fonts, colors, and positions, which keeps code-generated decks on-template in practice even though compliance is no longer guaranteed by construction.
+
+**Switching.**
+
+- **Structured → code ("eject").** The renderer has a code back end that emits an equivalent `build.py` written against the SDK: one function per slide, readable, with citations preserved. Running it reproduces the same `.pptx` (verified at switch time by comparing output). Generated slides are inlined. Lossless.
+- **Code → structured.** Not generally possible: arbitrary code has no structured equivalent. The app offers (1) reverting to the structured snapshot taken before the eject, discarding code-mode changes, or (2) importing the current output `.pptx` as a new structured deck on a best-effort basis (the same importer as OQ-P5), with unmapped shapes kept as locked foreign elements. Both are explicit, previewed actions.
+- Every switch is a snapshot boundary and is recorded in the transcript; the agent is told the mode in its context.
+
+**Policy.** Code generation mode needs the sandbox (OQ-P7) and can be disabled by configuration (`policy.code_mode = "allow" | "deny"`), as an enterprise managed setting would. Builds have a time limit and no network.
+
 
 ## 6. Templates
 
@@ -194,14 +232,17 @@ Agent-facing tools operate on this document (section 7.3). The model never sees 
 | `slide.render` (returns a PNG of a slide for vision-capable models) | read |
 | `check.run` (deck checker, all or some slides) | read |
 | `outline.propose` | edit |
-| `slide.propose_create`, `slide.propose_update`, `slide.propose_delete`, `slide.propose_move` | edit |
+| `slide.propose_create`, `slide.propose_update`, `slide.propose_delete`, `slide.propose_move` (structured mode) | edit |
+| `code.read`, `code.propose_edit` (code mode, and the script of a generated slide) | edit |
+| `deck.build` (run the build script or a generated slide in the sandbox, then render) | run |
+| `deck.switch_mode` (always asks) | edit |
 | `asset.import` (image from a reference or an Analyst figure into `assets/`) | edit |
 | `skill.load`, `skill.read_resource` | read |
 | `skill.run_script` | run (OQ-P7) |
 | `export.run` | export |
 | `mcp.<server>.<tool>` | per server |
 
-No shell tool, no file write outside the deck store, no network tool in the first version.
+No shell tool, no general code REPL, no file write outside the deck store, no network tool in the first version. Code runs only as a deck build, a generated slide, or a skill script.
 
 ### 7.4 Verification built into the loop
 
@@ -375,8 +416,9 @@ Managed configuration (read-only, admin-owned):
     skills/
     history/            snapshots (content-addressed)
   deck/
-    deck.json           order, sections, metadata
-    slides/<id>.json
+    deck.json           mode, order, sections, metadata
+    slides/<id>.json    structured mode (generated slides carry a script)
+    build.py            code mode (plus any modules it imports)
   template/             template file + template.toml sidecar
   references/           copied references (optional) + links.toml
   assets/
@@ -407,7 +449,8 @@ apps/desktop/
 crates/protocol/      IPC and kernel types; TypeScript bindings via ts-rs
 crates/core/          projects, agent loop, policy, providers, skills, references, deck store, audit
 crates/cli/           headless harness (`present`) for phase 0 and evals
-python/kernel/        present_kernel: template inspector, renderer, extractors, checker, fidelity renderer
+python/kernel/        present_kernel: template inspector, renderer (pptx and code back ends), extractors, checker, fidelity renderer, sandboxed build runner
+python/sdk/           present_sdk: deck SDK used by the renderer, build scripts, and generated slides
 schemas/              deck document JSON Schema, template description schema
 evals/                deck tasks, graders, templates, scorecard runner
 docs/
