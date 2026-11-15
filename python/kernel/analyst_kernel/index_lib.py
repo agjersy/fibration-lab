@@ -42,9 +42,9 @@ def collect_call_sites(root: Path, files: list[Path]) -> dict[str, list[dict[str
     return sites
 
 
-def library_functions(root: Path, package: str) -> list[FuncDef]:
+def library_functions(root: Path, package: str, out_dir: str | None = None) -> list[FuncDef]:
     out: list[FuncDef] = []
-    for path in library_files(root, package):
+    for path in library_files(root, package, out_dir):
         tree = parse_file(path)
         if tree is None:
             continue
@@ -52,9 +52,11 @@ def library_functions(root: Path, package: str) -> list[FuncDef]:
     return out
 
 
-def index_lib(root: Path, package: str, script_globs: list[str]) -> list[dict[str, Any]]:
-    funcs = [f for f in library_functions(root, package) if f.is_public and not _private_module(f)]
-    files = library_files(root, package) + script_files(root, script_globs)
+def index_lib(
+    root: Path, package: str, script_globs: list[str], out_dir: str | None = None
+) -> list[dict[str, Any]]:
+    funcs = [f for f in library_functions(root, package, out_dir) if f.is_public and not _private_module(f)]
+    files = library_files(root, package, out_dir) + script_files(root, script_globs, out_dir)
     sites = collect_call_sites(root, files)
     result: list[dict[str, Any]] = []
     for f in funcs:

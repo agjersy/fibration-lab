@@ -14,11 +14,13 @@ from .astutil import (
     classify_path,
     dotted,
     import_aliases,
+    in_skipped_dir,
     is_main_guard,
     iter_functions,
     library_files,
     module_name,
     parse_file,
+    python_files_under,
     script_files,
 )
 from .config import ProjectConfig
@@ -63,6 +65,13 @@ _PARSER_METHODS = {
     "parse_args",
     "parse_known_args",
 }
+_LOG_METHODS = {"debug", "info", "warning", "warn", "error", "exception", "critical", "fatal", "log"}
+_LABEL_CALLS = {
+    "set_title", "set_xlabel", "set_ylabel", "set_zlabel", "set_label", "title", "suptitle",
+    "xlabel", "ylabel", "zlabel", "supxlabel", "supylabel", "legend", "text", "annotate", "figtext",
+    "set_xticklabels", "set_yticklabels",
+}
+_FILE_EXT_RE = re.compile(r"[^/.][^/]*\.[A-Za-z0-9]{1,8}$")
 _SAVE_CALLEES = {"savefig", "to_csv", "to_parquet"}
 _NP_SAVE = {"save", "savez", "savez_compressed"}
 
@@ -103,25 +112,46 @@ class Checker:
         return path.resolve().relative_to(self.root).as_posix()
 
     # ---- entry points -------------------------------------------------------------
+    def _all_files(self) -> list[tuple[Path, str]]:
+        out_dir = self.config.out_dir
+        scripts = script_files(self.root, self.config.scripts, out_dir)
+        libs = library_files(self.root, self.config.library, out_dir)
+        return [(p, "script") for p in scripts] + [(p, "library") for p in libs]
+
     def check_all(self) -> list[dict[str, Any]]:
-        scripts = script_files(self.root, self.config.scripts)
-        libs = library_files(self.root, self.config.library)
-        return self.check_files([(p, "script") for p in scripts] + [(p, "library") for p in libs])
+        files = self._all_files()
+        return self.check_files(files, files, listed=None)
 
     def check_paths(self, paths: list[str]) -> list[dict[str, Any]]:
         files: list[tuple[Path, str]] = []
         for p in paths:
             full = resolve_in_root(self.root, p)
             if full.is_dir():
-                for f in sorted(full.rglob("*.py")):
+                # never descends into .venv, .git or the output directory
+                if in_skipped_dir(self.root, full, self.config.out_dir):
+                    continue
+                for f in python_files_under(self.root, full, self.config.out_dir):
                     files.append((f, classify_path(self.root, f, self.config)))
             elif full.is_file() and full.suffix == ".py":
                 files.append((full, classify_path(self.root, full, self.config)))
-        return self.check_files(files)
+        # Cross-file rules compare the listed files against every script and the whole
+        # library, not only against each other.
+        universe = files + self._all_files()
+        return self.check_files(files, universe, listed={self.rel(f) for f, _ in files})
 
-    def check_files(self, files: list[tuple[Path, str]]) -> list[dict[str, Any]]:
+    def check_files(
+        self,
+        files: list[tuple[Path, str]],
+        universe: list[tuple[Path, str]] | None = None,
+        listed: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         self.diags = []
+        seen: set[Path] = set()
         for path, kind in files:
+            real = path.resolve()
+            if real in seen:
+                continue
+            seen.add(real)
             tree = parse_file(path)
             if tree is None:
                 continue
@@ -129,7 +159,7 @@ class Checker:
                 self.check_script(path, tree)
             else:
                 self.check_library_module(path, tree)
-        self.check_similarity(files)
+        self.check_similarity(universe if universe is not None else files, listed)
         self.diags.sort(key=lambda d: (d["path"], d["line"], d["col"], d["rule"]))
         return self.diags
 
@@ -175,24 +205,23 @@ class Checker:
                 name = callee_name(child)
                 if name in _PARSER_METHODS or is_argparser_call(child):
                     continue  # add_argument(default=...) and friends: literals belong there
-                if not (isinstance(child.func, ast.Name) and name in _BUILTINS):
+                if not _exempt_call(child, name):
                     self._check_call_literals(rel, child, name or "<call>")
             self._walk_calls(rel, child)
 
     def _check_call_literals(self, rel: str, call: ast.Call, name: str) -> None:
-        values: list[tuple[ast.expr, str | None, bool]] = [(a, None, i == 0) for i, a in enumerate(call.args)]
-        values += [(k.value, k.arg, False) for k in call.keywords]
-        for node, kwname, first in values:
-            problem = _literal_problem(node, first_positional=first)
+        # Positional arguments only: a keyword names what the literal is (alpha=0.4, dpi=150),
+        # which is a presentation choice, not an unnamed input.
+        for i, node in enumerate(call.args):
+            problem = _literal_problem(node, first_positional=i == 0)
             if problem is None:
                 continue
-            where = f"keyword {kwname}" if kwname else "argument"
             self.add(
                 "cli.option-for-every-input",
                 rel,
                 node.lineno,
                 node.col_offset + 1,
-                f"{problem} passed as {where} to {name}()",
+                f"{problem} passed as argument to {name}()",
                 hint="make it a command-line option with a default (add_argument(..., default=...)) and pass args.<dest>",
             )
 
@@ -204,15 +233,22 @@ class Checker:
                 if h is not None:
                     for sub in ast.walk(h):
                         skip.add(id(sub))
-        docstring_ids = {id(n.value) for n in _docstring_nodes(tree)}
+        skip |= {id(n.value) for n in _docstring_nodes(tree)}
+        candidates: list[ast.Constant] = []
         for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and id(node) not in skip
-                and id(node) not in docstring_ids
-                and _ABS_RE.match(node.value)
-            ):
+            if isinstance(node, ast.JoinedStr):
+                # f"{out_dir}/spectrum.png": fragments after a substitution are not absolute
+                # paths. Only an f-string that itself starts with one is.
+                parts = [sub for sub in ast.walk(node) if isinstance(sub, ast.Constant)]
+                first = node.values[0] if node.values else None
+                if id(node) not in skip and isinstance(first, ast.Constant) and not any(id(c) in skip for c in parts):
+                    candidates.append(first)
+                skip |= {id(c) for c in parts}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and id(node) not in skip:
+                candidates.append(node)
+        for node in candidates:
+            if isinstance(node.value, str) and _ABS_RE.match(node.value):
                 self.add("cli.no-absolute-paths", rel, node.lineno, node.col_offset + 1,
                          f"absolute path literal {node.value!r}",
                          hint="use a repo-relative default or a configured data directory")
@@ -314,24 +350,65 @@ class Checker:
         self._check_out_layout(rel, tree, self.config.out_dir)
 
     # ---- cross-file rules ---------------------------------------------------------------
-    def check_similarity(self, files: list[tuple[Path, str]]) -> None:
+    def check_similarity(self, files: list[tuple[Path, str]], listed: set[str] | None = None) -> None:
         records = collect_functions(self.root, self.config, files)
-        dups, near = find_pairs(records, self.config.near_duplicate_threshold, self.config.min_tokens_for_similarity)
+
+        def anchored(a, b):
+            # With ``paths``, report on the listed file and point at the other one.
+            if listed is not None and a.path not in listed and b.path in listed:
+                return b, a
+            return a, b
+
+        dups, near = find_pairs(
+            records,
+            self.config.near_duplicate_threshold,
+            self.config.min_tokens_for_similarity,
+            listed=listed,
+            allowed=set(self.config.script_allowed_functions),
+        )
         for a, b in dups:
+            a, b = anchored(a, b)
             self.add("lib.duplicate", a.path, a.line, 1,
                      f"{a.qualname}() duplicates {b.qualname}() in {b.path}:{b.line}",
                      hint=f"keep one implementation in {self.config.library}/ and import it in both places",
                      related=[{"path": b.path, "line": b.line}])
         for a, b, score in near:
+            a, b = anchored(a, b)
             self.add("lib.near-duplicate", a.path, a.line, 1,
                      f"{a.qualname}() is {score:.0%} similar to {b.qualname}() in {b.path}:{b.line}",
                      hint="promote the shared logic to the library and reuse it",
                      related=[{"path": b.path, "line": b.line}])
         for a, b in find_twins(records):
+            if listed is not None and a.path not in listed and b.path not in listed:
+                continue
             self.add("lib.unused-twin", a.path, a.line, 1,
                      f"script defines {a.name}() but the library already has {b.qualname}() in {b.path}:{b.line}",
                      hint=f"delete the local copy and import {b.qualname} from the library",
                      related=[{"path": b.path, "line": b.line}])
+
+
+def _exempt_call(call: ast.Call, name: str | None) -> bool:
+    """Calls whose literal arguments are not inputs: builtins, logging, labels and titles."""
+    func = call.func
+    if isinstance(func, ast.Name) and name in _BUILTINS and name != "open":
+        return True  # print(), len(), range() ...; open() takes a path and is checked
+    if name in _LABEL_CALLS:
+        return True
+    if isinstance(func, ast.Attribute) and name in _LOG_METHODS:
+        base = (dotted(func.value) or "").rsplit(".", 1)[-1].lower()
+        if "log" in base or base == "warnings":
+            return True
+    return False
+
+
+def _path_like(value: str, first_positional: bool) -> bool:
+    """A string that names a file: no whitespace, and either a directory segment followed by
+    a file name with an extension, or a data extension in the first positional argument."""
+    if not value or any(ch.isspace() for ch in value) or "://" in value:
+        return False
+    if "/" in value and _FILE_EXT_RE.search(value.rsplit("/", 1)[-1]):
+        return True
+    return first_positional and value.lower().endswith(DATA_EXTS)
 
 
 def _docstring_nodes(tree: ast.Module) -> list[ast.Expr]:
@@ -347,10 +424,10 @@ def _docstring_nodes(tree: ast.Module) -> list[ast.Expr]:
 def _literal_problem(node: ast.expr, *, first_positional: bool = True) -> str | None:
     """Describe a hard-coded input literal, or return None if the literal is acceptable.
 
-    A string counts as a path when it contains a slash, or when it ends with a data
-    extension and is the first positional argument (the ``open("data.csv")`` shape).
-    A bare file name in a later position, such as ``os.path.join(out_dir, "summary.json")``,
-    is an output name inside a directory that came from elsewhere and is not flagged here.
+    A string counts as a path when :func:`_path_like` says so: prose such as an axis label
+    with a slash ("flux / counts") or a log message is not a path. A bare file name in a
+    later position, such as ``os.path.join(out_dir, "summary.json")``, is an output name
+    inside a directory that came from elsewhere and is not flagged here.
     """
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub) and isinstance(node.operand, ast.Constant):
         inner = node.operand.value
@@ -365,7 +442,7 @@ def _literal_problem(node: ast.expr, *, first_positional: bool = True) -> str | 
         return None
     if isinstance(v, (int, float)):
         return None if v in ALLOWED_NUMBERS else f"numeric literal {v!r}"
-    if isinstance(v, str) and ("/" in v or (first_positional and v.lower().endswith(DATA_EXTS))):
+    if isinstance(v, str) and _path_like(v, first_positional):
         return f"path literal {v!r}"
     return None
 

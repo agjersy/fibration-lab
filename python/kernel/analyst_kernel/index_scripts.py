@@ -104,9 +104,23 @@ def option_from_call(call: ast.Call) -> dict[str, Any]:
         choices = None
     required_node = kw(call, "required")
     required = bool(literal_or_none(required_node)) if required_node is not None else False
-    if flags and not flags[0].startswith("-"):
-        required = True  # positional arguments are always required
+    positional = bool(flags) and not flags[0].startswith("-")
+    nargs_node = kw(call, "nargs")
+    nargs = literal_or_none(nargs_node)
+    if isinstance(nargs, bool) or not isinstance(nargs, (str, int)):
+        # argparse.REMAINDER and friends are attribute references, not literals
+        named = {"REMAINDER": "...", "ZERO_OR_MORE": "*", "ONE_OR_MORE": "+", "OPTIONAL": "?", "PARSER": "A..."}
+        nargs = named.get((dotted(nargs_node) or "").rsplit(".", 1)[-1]) if nargs_node is not None else None
+    if positional:
+        # positional arguments are required unless nargs makes them optional
+        required = nargs not in ("?", "*", "...")
+    const = literal_or_none(kw(call, "const"))
+    if isinstance(const, (set, frozenset, tuple)):
+        const = list(const)
     return {
+        "nargs": nargs,
+        "const": const,
+        "positional": positional,
         "flags": flags,
         "dest": infer_dest(flags, _string(kw(call, "dest"))),
         "type": _type_name(kw(call, "type")),
@@ -153,7 +167,10 @@ def index_script(path: Path, root: Path) -> dict[str, Any]:
 
 
 def public_option(opt: dict[str, Any]) -> dict[str, Any]:
-    keys = ("flags", "dest", "type", "default", "help", "required", "choices", "action")
+    keys = (
+        "flags", "dest", "type", "default", "help", "required", "choices", "action",
+        "nargs", "const", "positional",
+    )
     return {k: opt[k] for k in keys}
 
 
@@ -168,5 +185,5 @@ def public_script(info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def index_scripts(root: Path, globs: list[str]) -> list[dict[str, Any]]:
-    return [index_script(p, root) for p in script_files(root, globs)]
+def index_scripts(root: Path, globs: list[str], out_dir: str | None = None) -> list[dict[str, Any]]:
+    return [index_script(p, root) for p in script_files(root, globs, out_dir)]

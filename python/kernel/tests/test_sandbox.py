@@ -175,12 +175,15 @@ def test_wrap_kinds(tmp_path: Path):
     s = spec(tmp_path)
     cmd = ["/py", "s.py"]
     lim = wrap("limits", s, cmd)
-    assert lim.argv == cmd and lim.rlimit_as == 8 * 1024**3 and lim.rlimit_nofile == 4096
+    # B10: no address-space limit unless [limits] asks for one
+    assert lim.argv == cmd and lim.rlimit_as is None and lim.rlimit_nofile == 4096
     assert callable(lim.preexec())
+    s.rlimit_as = 2 * 1024**3
+    assert wrap("limits", s, cmd).rlimit_as == 2 * 1024**3
     none = wrap("none", s, cmd)
     assert none.argv == cmd and none.preexec() is None
     bw = wrap("bwrap", s, cmd)
-    assert bw.kind == "bwrap" and bw.argv[0] == "bwrap" and bw.rlimit_as
+    assert bw.kind == "bwrap" and bw.argv[0] == "bwrap" and bw.rlimit_as == 2 * 1024**3
     se = wrap("sandbox-exec", s, cmd)
     assert se.profile and se.argv[0] == "sandbox-exec"
     with pytest.raises(RpcError):

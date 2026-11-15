@@ -43,7 +43,7 @@ def main():
     args = parser.parse_args()
     ts, ys = load_runs("data/sample.csv")
     sm = smooth(np.asarray(ys), args.width)
-    noise = np.random.normal(size=len(ts), scale=3.5)
+    noise = np.random.normal(0.0, 3.5, size=len(ts))
     np.save("results/smooth.npy", sm + noise)
     print(sm.mean())
 

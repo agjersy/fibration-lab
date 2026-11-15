@@ -68,16 +68,17 @@ def test_show_naming_sidecars_and_savefig(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     figs = out / "figures"
     names = sorted(p.name for p in figs.iterdir())
-    assert names == sorted([
-        "fig-1.png", "fig-1.svg", "fig-1.json",
-        "residuals.png", "residuals.svg", "residuals.json",
-        "residuals-2.png", "residuals-2.svg", "residuals-2.json",
-        "decay-fit-run-1.png", "decay-fit-run-1.svg", "decay-fit-run-1.json",
-    ])
+    stems = ("fig-1", "residuals", "residuals-2", "decay-fit-run-1")
+    assert names == sorted(
+        f"{stem}{ext}{meta}" for stem in stems for ext in (".png", ".svg") for meta in ("", ".meta.json")
+    )
     assert (figs / "fig-1.png").read_bytes()[:4] == b"\x89PNG"
     assert b"<svg" in (figs / "fig-1.svg").read_bytes()[:400]
 
-    sc = json.loads((figs / "residuals.json").read_text())
+    sc = json.loads((figs / "residuals.png.meta.json").read_text())
+    assert {k: v for k, v in json.loads((figs / "residuals.svg.meta.json").read_text()).items() if k != "created_at"} == {
+        k: v for k, v in sc.items() if k != "created_at"
+    }
     assert sc == {
         "run_id": "20260101-000000-abcdef",
         "script": "plot_script.py",
@@ -88,15 +89,16 @@ def test_show_naming_sidecars_and_savefig(tmp_path: Path):
         "width_in": sc["width_in"], "height_in": sc["height_in"], "dpi": sc["dpi"],
     }
     assert sc["created_at"].endswith("Z") and sc["width_in"] > 0 and sc["dpi"] > 0
-    sc1 = json.loads((figs / "fig-1.json").read_text())
+    sc1 = json.loads((figs / "fig-1.png.meta.json").read_text())
     assert sc1["title"] is None and sc1["axes"] == [{"title": None, "xlabel": None, "ylabel": None}]
-    sc4 = json.loads((figs / "decay-fit-run-1.json").read_text())
+    sc4 = json.loads((figs / "decay-fit-run-1.png.meta.json").read_text())
     assert (sc4["width_in"], sc4["height_in"], sc4["dpi"]) == (4.0, 3.0, 50.0)
 
     # savefig: saved where asked plus a sidecar next to it
     explicit = tmp_path / "explicit_dir" / "custom.png"
     assert explicit.exists()
-    side = json.loads(explicit.with_suffix(".json").read_text())
+    assert not explicit.with_suffix(".json").exists()
+    side = json.loads((explicit.parent / "custom.png.meta.json").read_text())
     assert side["title"] == "explicit" and side["run_id"] == "20260101-000000-abcdef"
 
 
@@ -106,8 +108,8 @@ def test_fallback_without_out_dir(tmp_path: Path):
     proc = run_backend(tmp_path, {}, cwd=cwd)
     assert proc.returncode == 0, proc.stderr
     figs = cwd / "out" / "figures"
-    assert (figs / "fig-1.png").exists() and (figs / "residuals-2.json").exists()
-    assert json.loads((figs / "fig-1.json").read_text())["run_id"] is None
+    assert (figs / "fig-1.png").exists() and (figs / "residuals-2.png.meta.json").exists()
+    assert json.loads((figs / "fig-1.png.meta.json").read_text())["run_id"] is None
 
 
 def test_module_imports_only_stdlib_and_matplotlib():
@@ -120,4 +122,4 @@ def test_module_imports_only_stdlib_and_matplotlib():
             tops.update(a.name.split(".")[0] for a in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             tops.add(node.module.split(".")[0])
-    assert tops <= {"json", "os", "re", "sys", "datetime", "pathlib", "matplotlib", "__future__"}, tops
+    assert tops <= {"atexit", "json", "os", "re", "sys", "datetime", "pathlib", "matplotlib", "__future__"}, tops

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import shutil
@@ -14,8 +15,10 @@ from pathlib import Path
 from .errors import SANDBOX_UNAVAILABLE, RpcError
 
 KINDS = ("auto", "bwrap", "sandbox-exec", "limits", "none")
-DEFAULT_RLIMIT_AS = 8 * 1024**3  # 8 GiB
+DEFAULT_RLIMIT_AS: int | None = None  # no address-space limit unless [limits] asks for one
 DEFAULT_RLIMIT_NOFILE = 4096
+
+log = logging.getLogger("analyst_kernel.sandbox")
 
 
 @dataclass
@@ -27,23 +30,24 @@ class SandboxSpec:
     run_dir: Path  # <runs_dir>/<run_id>, writable
     out_dir: Path  # the run's output directory, writable
     data_dirs: list[Path] = field(default_factory=list)
+    support_dirs: list[Path] = field(default_factory=list)  # kernel-owned code the run imports (analyst_mpl)
     tooling_dir: Path | None = None
     derived_dir: Path | None = None
     home: Path | None = None
     python: Path | None = None  # session interpreter; its base installation is made readable
     network: bool = False
-    rlimit_as: int = DEFAULT_RLIMIT_AS
-    rlimit_nofile: int = DEFAULT_RLIMIT_NOFILE
+    rlimit_as: int | None = DEFAULT_RLIMIT_AS  # bytes; None or 0 means unlimited
+    rlimit_nofile: int | None = DEFAULT_RLIMIT_NOFILE
 
     def read_only_dirs(self) -> list[Path]:
         dirs: list[Path] = [self.root]
         if self.venv is not None:
             dirs.append(self.venv)
         if self.python is not None:
-            dirs += interpreter_dirs(self.python)
+            dirs += interpreter_dirs(self.python, self.home)
         if self.tooling_dir is not None and self.tooling_dir.exists():
             dirs.append(self.tooling_dir)
-        for d in self.data_dirs:
+        for d in [*self.support_dirs, *self.data_dirs]:
             if d.exists():
                 dirs.append(d)
         return _dedupe(_with_realpaths(dirs))
@@ -85,14 +89,19 @@ def _with_realpaths(paths: list[Path]) -> list[Path]:
     return out
 
 
-def interpreter_dirs(python: Path) -> list[Path]:
+def interpreter_dirs(python: Path, home: Path | None = None) -> list[Path]:
     """Directories the session interpreter needs besides its venv.
 
     A venv's ``bin/python`` is a symlink to a base installation, typically under the home
     directory (``~/.local/share/uv/python/<build>/bin/python3.x`` for ``uv``), which the
     sandbox otherwise hides. The base installation is found two ways and both are returned:
     by resolving the symlink, and from ``home =`` in the venv's ``pyvenv.cfg``.
+
+    A prefix that equals the home directory or contains it (an interpreter at ``~/python``
+    or ``~/bin/python``, or a ``pyvenv.cfg`` naming ``/``) is refused: exposing it would
+    undo the rule that hides the home directory.
     """
+    home_r = Path(os.path.realpath(home or _home()))
     prefixes: list[Path] = []
     real = Path(os.path.realpath(python))
     prefixes.append(real.parent.parent if real.parent.name == "bin" else real.parent)
@@ -105,7 +114,15 @@ def interpreter_dirs(python: Path) -> list[Path]:
                 prefixes.append(base_bin.parent if base_bin.name == "bin" else base_bin)
     except OSError:
         pass
-    return [p for p in _dedupe(prefixes) if p.exists() and p != Path("/")]
+    out: list[Path] = []
+    for p in _dedupe(prefixes):
+        if not p.exists():
+            continue
+        if p == home_r or p in home_r.parents:
+            log.warning("interpreter prefix %s would expose the home directory; not made readable", p)
+            continue
+        out.append(p)
+    return out
 
 
 def _dedupe(paths: list[Path]) -> list[Path]:
@@ -316,10 +333,15 @@ def sandbox_exec_profile(spec: SandboxSpec) -> str:
         lines.append(f"(allow file-read-metadata (literal {_q(a)}))")
     for d in ro:
         lines.append(f"(allow file-read* (subpath {_q(d)}))")
-    for d in rw:
-        lines.append(f"(allow file-read* file-write* (subpath {_q(d)}))")
     lines.append('(allow file-write* (subpath "/private/tmp"))')
     lines.append('(allow file-write* (subpath "/private/var/folders"))')
+    # Later rules win. A repo under a temp directory would otherwise be writable through
+    # the two rules above, so the source tree is denied again before the writable
+    # directories (which may live inside it) are granted.
+    for d in _dedupe(_with_realpaths([spec.root])):
+        lines.append(f"(deny file-write* (subpath {_q(d)}))")
+    for d in rw:
+        lines.append(f"(allow file-read* file-write* (subpath {_q(d)}))")
     lines.append('(allow file-write* (literal "/dev/null"))')
     lines.append("(allow process*)")
     lines.append("(allow sysctl-read)")
@@ -341,17 +363,17 @@ def sandbox_exec_argv(spec: SandboxSpec, cmd: list[str], exe: str = "sandbox-exe
 def wrap(kind: str, spec: SandboxSpec, cmd: list[str]) -> SandboxCommand:
     """Wrap ``cmd`` for the chosen sandbox kind."""
     if kind == "bwrap":
-        return SandboxCommand(kind, bwrap_argv(spec, cmd), spec.rlimit_as, spec.rlimit_nofile)
+        return SandboxCommand(kind, bwrap_argv(spec, cmd), spec.rlimit_as or None, spec.rlimit_nofile or None)
     if kind == "sandbox-exec":
         return SandboxCommand(
             kind,
             sandbox_exec_argv(spec, cmd),
-            spec.rlimit_as,
-            spec.rlimit_nofile,
+            spec.rlimit_as or None,
+            spec.rlimit_nofile or None,
             profile=sandbox_exec_profile(spec),
         )
     if kind == "limits":
-        return SandboxCommand(kind, list(cmd), spec.rlimit_as, spec.rlimit_nofile)
+        return SandboxCommand(kind, list(cmd), spec.rlimit_as or None, spec.rlimit_nofile or None)
     if kind == "none":
         return SandboxCommand(kind, list(cmd))
     raise RpcError(SANDBOX_UNAVAILABLE, f"unknown sandbox kind {kind!r}")

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import resource
+import sys
+
 import pytest
 
 from analyst_kernel.errors import TIMEOUT, RpcError
+from analyst_kernel.kernel import Kernel
 
 
 def test_snippet_persistent_state(kernel):
@@ -40,9 +44,24 @@ def test_snippet_timeout_restarts_repl(kernel):
     assert r["ok"] and r["value_repr"] == "False"  # fresh REPL after the kill
 
 
-def test_snippet_has_resource_limits(kernel):
-    r = kernel.call("exec.snippet", {"code": "import resource; resource.getrlimit(resource.RLIMIT_AS)[0]"})
-    assert r["ok"] and int(r["value_repr"]) == 8 * 1024**3
+def test_snippet_has_no_address_space_limit_by_default(kernel):
+    # B10: RLIMIT_AS is opt-in; the open-files limit still applies
+    code = "import resource; (resource.getrlimit(resource.RLIMIT_AS)[0], resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+    r = kernel.call("exec.snippet", {"code": code})
+    as_limit, nofile = eval(r["value_repr"])
+    assert r["ok"] and as_limit == resource.getrlimit(resource.RLIMIT_AS)[0] and nofile <= 4096
+
+
+def test_snippet_limits_from_project_config(repo, tmp_path):
+    with (repo / ".analyst" / "project.toml").open("a") as fh:
+        fh.write("\n[limits]\naddress_space_gb = 3\nopen_files = 512\n")
+    k = Kernel(sys.executable, repo, tmp_path / "runs", sandbox="limits")
+    try:
+        code = "import resource; (resource.getrlimit(resource.RLIMIT_AS)[0], resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
+        r = k.call("exec.snippet", {"code": code})
+        assert r["ok"] and eval(r["value_repr"]) == (3 * 1024**3, 512)
+    finally:
+        k.close()
 
 
 def test_snippet_params(kernel):

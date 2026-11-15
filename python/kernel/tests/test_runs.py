@@ -52,7 +52,7 @@ def test_run_fit_decay_end_to_end(kernel: Kernel, repo: Path, notes: Notes, tmp_
     assert fig["sidecar"]["title"] == "Decay fit"
     assert fig["sidecar"]["axes"] == [{"title": "Decay fit", "xlabel": "t (s)", "ylabel": "signal"}]
     assert arts["decay-fit.svg"]["kind"] == "figure"
-    assert "decay-fit.json" not in arts  # sidecar is not an artifact
+    assert not any(name.endswith(".meta.json") for name in arts)  # sidecars are not artifacts
     assert arts["fit.json"]["kind"] == "json" and arts["fit.json"]["rendered"] is True
     recorded = [json.loads(ln) for ln in (run_dir / "artifacts.jsonl").read_text().splitlines()]
     assert {a["path"] for a in recorded} == {a["path"] for a in arts.values()}
@@ -231,11 +231,13 @@ def test_artifact_scanner_rules(tmp_path: Path):
     assert found[0]["kind"] == "figure" and "sidecar" not in found[0]
     # figure with a sidecar: sidecar attached and the json is not an artifact
     (out / "two.png").write_bytes(b"png")
-    (out / "two.json").write_text(json.dumps({"title": "T"}))
+    side = {"run_id": None, "script": "s.py", "args": [], "title": "T", "axes": [], "created_at": "2026-01-01T00:00:00.000Z",
+            "width_in": 6.4, "height_in": 4.8, "dpi": 100.0}
+    (out / "two.png.meta.json").write_text(json.dumps(side))
     sc.scan()
     found = sc.scan()
-    assert [a["path"] for a in found] == ["out/s/r/two.png"] and found[0]["sidecar"] == {"title": "T"}
-    assert "out/s/r/two.json" not in sc.emitted
+    assert [a["path"] for a in found] == ["out/s/r/two.png"] and found[0]["sidecar"] == side
+    assert "out/s/r/two.png.meta.json" not in sc.emitted
     # unrelated json is an artifact; run.json never is; final scan flushes new files immediately
     (out / "data.json").write_text("{}")
     (out / "late.npz").write_bytes(b"x")

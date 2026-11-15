@@ -46,9 +46,17 @@ class Dispatcher:
 
     def __init__(self) -> None:
         self._methods: dict[str, Handler] = {}
+        self._lanes: dict[str, str] = {}
 
-    def register(self, name: str, handler: Handler) -> None:
+    def register(self, name: str, handler: Handler, lane: str | None = None) -> None:
+        """Register a method. Methods sharing a ``lane`` run one at a time on a dedicated
+        worker, so a queue of slow calls (snippets) cannot occupy the shared request pool."""
         self._methods[name] = handler
+        if lane:
+            self._lanes[name] = lane
+
+    def lane(self, name: str) -> str | None:
+        return self._lanes.get(name)
 
     def methods(self) -> list[str]:
         return sorted(self._methods)
@@ -97,6 +105,7 @@ class Server:
         self._out = stdout if stdout is not None else sys.stdout.buffer
         self._write_lock = threading.Lock()
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rpc")
+        self._lanes: dict[str, ThreadPoolExecutor] = {}
         self._stop = threading.Event()
         self.shutdown_method = "kernel.shutdown"
 
@@ -152,6 +161,13 @@ class Server:
             self._run_request(req_id, method, msg.get("params"))
             self._stop.set()
             return
+        lane = self.dispatcher.lane(method)
+        if lane is not None:
+            pool = self._lanes.get(lane)
+            if pool is None:
+                pool = self._lanes[lane] = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"rpc-{lane}")
+            pool.submit(self._run_request, req_id, method, msg.get("params"))
+            return
         self._pool.submit(self._run_request, req_id, method, msg.get("params"))
 
     def _run_request(self, req_id: Any, method: str, params: Any) -> None:
@@ -185,3 +201,5 @@ class Server:
                 self._handle_line(line)
         finally:
             self._pool.shutdown(wait=True)
+            for pool in self._lanes.values():
+                pool.shutdown(wait=True)

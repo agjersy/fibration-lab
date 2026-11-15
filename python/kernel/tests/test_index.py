@@ -17,6 +17,7 @@ def test_scripts_index(kernel):
     assert opts["tau1"] == {
         "flags": ["--tau1"], "dest": "tau1", "type": "float", "default": 1.0,
         "help": "initial guess for the fast time constant (s)", "required": False, "choices": None, "action": None,
+        "nargs": None, "const": None, "positional": False,
     }
     assert opts["mode"]["choices"] == ["fast", "full"]
     assert opts["verbose"]["action"] == "store_true" and opts["verbose"]["default"] is False
@@ -40,6 +41,10 @@ def test_scripts_index_custom_globs_and_forms(kernel, repo: Path):
         "    p.add_argument('positional', help='p')\n"
         "    p.add_argument('--flag', action='store_false', help='f')\n"
         "    p.add_argument('--weird', default=compute(), help='w')\n"
+        "    p.add_argument('--level', nargs='?', const=3, default=1, type=int, help='l')\n"
+        "    p.add_argument('--pair', nargs=2, type=float, help='two numbers')\n"
+        "    p.add_argument('rest', nargs='*', help='r')\n"
+        "    p.add_argument('tail', nargs=argparse.REMAINDER, help='t')\n"
         "    return p\n"
         "def main(argv=None):\n    build_parser().parse_args(argv)\n"
         "if '__main__' == __name__:\n    main()\n"
@@ -54,6 +59,13 @@ def test_scripts_index_custom_globs_and_forms(kernel, repo: Path):
     assert o["positional"]["required"] is True and o["positional"]["flags"] == ["positional"]
     assert o["flag"]["default"] is True
     assert o["weird"]["default"] is None
+    # nargs / const / positional (PROTOCOL.md section 9)
+    assert o["positional"]["positional"] is True and o["positional"]["nargs"] is None
+    assert o["flag"]["positional"] is False and o["flag"]["const"] is None
+    assert o["level"]["nargs"] == "?" and o["level"]["const"] == 3 and o["level"]["positional"] is False
+    assert o["pair"]["nargs"] == 2
+    assert o["rest"]["nargs"] == "*" and o["rest"]["positional"] is True and o["rest"]["required"] is False
+    assert o["tail"]["nargs"] == "..." and o["tail"]["positional"] is True
 
 
 def test_infer_dest():

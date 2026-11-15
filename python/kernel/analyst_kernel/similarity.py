@@ -8,7 +8,9 @@ import difflib
 import hashlib
 import io
 import keyword
+import threading
 import tokenize
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,9 @@ class FunctionRecord:
     n_statements: int
     tokens: list[str] = field(default_factory=list)
     signature: str = ""
+    top_level: bool = True
+    counts: Counter = field(default_factory=Counter, repr=False, compare=False)
+    token_key: str = field(default="", repr=False, compare=False)
 
     def loc(self) -> dict[str, Any]:
         return {"path": self.path, "qualname": self.qualname, "line": self.line}
@@ -163,7 +168,11 @@ def function_source(source: str, node: ast.AST) -> str:
 
 
 def record_for(f: FuncDef, source: str, kind: str) -> FunctionRecord:
+    tokens = token_stream(function_source(source, f.node))
     return FunctionRecord(
+        top_level=not f.is_method,
+        counts=Counter(tokens),
+        token_key=hashlib.sha1("\x00".join(tokens).encode("utf-8")).hexdigest(),
         path=f.rel,
         qualname=f.qualname,
         name=f.name,
@@ -171,59 +180,143 @@ def record_for(f: FuncDef, source: str, kind: str) -> FunctionRecord:
         kind=kind,
         fingerprint=fingerprint(f.node),
         n_statements=statement_count(f.node),
-        tokens=token_stream(function_source(source, f.node)),
+        tokens=tokens,
         signature=ast.unparse(f.node.args),
     )
+
+
+# Per-file records keyed by (path, kind) and validated by (mtime_ns, size): tokenizing and
+# fingerprinting every function on every check is most of the cost on a large repo.
+_RECORD_CACHE: dict[tuple[str, str], tuple[tuple[int, int], list[FunctionRecord]]] = {}
+# Scores of token-stream pairs already compared, keyed by the two stream digests.
+_SCORE_CACHE: dict[tuple[str, str], float] = {}
+_SCORE_CACHE_MAX = 200_000
+_CACHE_LOCK = threading.Lock()
+
+
+def records_for_file(root: Path, path: Path, kind: str) -> list[FunctionRecord]:
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    key = (str(path.resolve()), kind)
+    stamp = (st.st_mtime_ns, st.st_size)
+    with _CACHE_LOCK:
+        hit = _RECORD_CACHE.get(key)
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    tree = parse_file(path)
+    if tree is None:
+        records: list[FunctionRecord] = []
+    else:
+        source = read_source(path)
+        records = [record_for(f, source, kind) for f in iter_functions(tree, path, root)]
+    with _CACHE_LOCK:
+        if len(_RECORD_CACHE) > 5000:
+            _RECORD_CACHE.clear()
+        _RECORD_CACHE[key] = (stamp, records)
+    return records
 
 
 def collect_functions(root: Path, config: ProjectConfig, files: list[tuple[Path, str]] | None = None) -> list[FunctionRecord]:
     """All functions in scripts and the library (or in ``files``: list of (path, kind))."""
     if files is None:
-        files = [(p, "script") for p in script_files(root, config.scripts)]
-        files += [(p, "library") for p in library_files(root, config.library)]
+        files = [(p, "script") for p in script_files(root, config.scripts, config.out_dir)]
+        files += [(p, "library") for p in library_files(root, config.library, config.out_dir)]
     records: list[FunctionRecord] = []
+    seen: set[str] = set()
     for path, kind in files:
-        tree = parse_file(path)
-        if tree is None:
+        key = str(path.resolve())
+        if key in seen:
             continue
-        source = read_source(path)
-        for f in iter_functions(tree, path, root):
-            records.append(record_for(f, source, kind))
+        seen.add(key)
+        records.extend(records_for_file(root, path, kind))
     return records
 
 
+def _exempt(r: FunctionRecord, allowed: set[str]) -> bool:
+    """Contract-mandated script functions (``main``, ``build_parser`` ...) look alike by design."""
+    return r.kind == "script" and r.top_level and r.name in allowed
+
+
+def _pair_score(ra: FunctionRecord, rb: FunctionRecord, threshold: float, matcher: difflib.SequenceMatcher) -> float | None:
+    """Similarity of two token streams when it can reach ``threshold``, else None.
+
+    Cheap upper bounds first: the length ratio bounds ``ratio()`` by ``2*min/(la+lb)`` and
+    the multiset overlap bounds it by ``2*overlap/(la+lb)``. Only survivors pay for the
+    quadratic matcher, and each distinct pair of streams is scored once per process.
+    """
+    la, lb = len(ra.tokens), len(rb.tokens)
+    total = la + lb
+    if 2.0 * min(la, lb) / total < threshold:
+        return None
+    if ra.token_key == rb.token_key:
+        return 1.0
+    overlap = sum((ra.counts & rb.counts).values())
+    if 2.0 * overlap / total < threshold:
+        return None
+    key = (ra.token_key, rb.token_key) if ra.token_key <= rb.token_key else (rb.token_key, ra.token_key)
+    with _CACHE_LOCK:
+        cached = _SCORE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    matcher.set_seq1(ra.tokens)
+    score = matcher.ratio()
+    with _CACHE_LOCK:
+        if len(_SCORE_CACHE) >= _SCORE_CACHE_MAX:
+            _SCORE_CACHE.clear()
+        _SCORE_CACHE[key] = score
+    return score
+
+
 def find_pairs(
-    records: list[FunctionRecord], threshold: float, min_tokens: int
+    records: list[FunctionRecord],
+    threshold: float,
+    min_tokens: int,
+    listed: set[str] | None = None,
+    allowed: set[str] | None = None,
 ) -> tuple[list[tuple[FunctionRecord, FunctionRecord]], list[tuple[FunctionRecord, FunctionRecord, float]]]:
-    """Exact duplicates (>= 3 statements) and near-duplicates above ``threshold``."""
+    """Exact duplicates (>= 3 statements) and near-duplicates at or above ``threshold``.
+
+    ``listed`` restricts the result to pairs with at least one side in those paths (the
+    other side may be anywhere in ``records``). ``allowed`` names the script functions the
+    contract requires; they are compared with nothing.
+    """
+    allowed = allowed or set()
+
+    def wanted(ra: FunctionRecord, rb: FunctionRecord) -> bool:
+        return listed is None or ra.path in listed or rb.path in listed
+
+    usable = [i for i, r in enumerate(records) if not _exempt(r, allowed)]
     duplicates: list[tuple[FunctionRecord, FunctionRecord]] = []
-    dup_keys: set[tuple[int, int]] = set()
     by_fp: dict[str, list[int]] = {}
-    for i, r in enumerate(records):
-        by_fp.setdefault(r.fingerprint, []).append(i)
+    for i in usable:
+        if records[i].n_statements >= 3:
+            by_fp.setdefault(records[i].fingerprint, []).append(i)
     for idxs in by_fp.values():
-        if len(idxs) < 2:
-            continue
         for a in range(len(idxs)):
             for b in range(a + 1, len(idxs)):
                 ra, rb = records[idxs[a]], records[idxs[b]]
-                if ra.n_statements >= 3 and rb.n_statements >= 3:
+                if wanted(ra, rb):
                     duplicates.append((ra, rb))
-                    dup_keys.add((idxs[a], idxs[b]))
-    near: list[tuple[FunctionRecord, FunctionRecord, float]] = []
-    eligible = [i for i, r in enumerate(records) if len(r.tokens) >= min_tokens]
-    for x in range(len(eligible)):
-        for y in range(x + 1, len(eligible)):
-            i, j = eligible[x], eligible[y]
-            if (i, j) in dup_keys or records[i].fingerprint == records[j].fingerprint:
+    scored: list[tuple[int, int, float]] = []
+    eligible = [i for i in usable if len(records[i].tokens) >= min_tokens]
+    matcher = difflib.SequenceMatcher(None, autojunk=False)
+    for y in range(1, len(eligible)):
+        rb = records[eligible[y]]
+        seq2_set = False
+        for x in range(y):
+            ra = records[eligible[x]]
+            if ra.fingerprint == rb.fingerprint or not wanted(ra, rb):
                 continue
-            ra, rb = records[i], records[j]
-            sm = difflib.SequenceMatcher(None, ra.tokens, rb.tokens, autojunk=False)
-            if sm.real_quick_ratio() < threshold or sm.quick_ratio() < threshold:
-                continue
-            score = sm.ratio()
-            if score >= threshold:
-                near.append((ra, rb, score))
+            if not seq2_set:
+                matcher.set_seq2(rb.tokens)  # the matcher indexes seq2 once for all partners
+                seq2_set = True
+            score = _pair_score(ra, rb, threshold, matcher)
+            if score is not None and score >= threshold:
+                scored.append((eligible[x], eligible[y], score))
+    scored.sort()
+    near = [(records[i], records[j], score) for i, j, score in scored]
     return duplicates, near
 
 
@@ -244,7 +337,9 @@ def find_twins(records: list[FunctionRecord]) -> list[tuple[FunctionRecord, Func
 def similar_pairs(root: Path, config: ProjectConfig, threshold: float | None = None) -> list[dict[str, Any]]:
     thr = float(threshold) if threshold is not None else config.near_duplicate_threshold
     records = collect_functions(root, config)
-    duplicates, near = find_pairs(records, thr, config.min_tokens_for_similarity)
+    duplicates, near = find_pairs(
+        records, thr, config.min_tokens_for_similarity, allowed=set(config.script_allowed_functions)
+    )
     pairs: list[dict[str, Any]] = []
     for a, b in duplicates:
         pairs.append({"kind": "duplicate", "score": 1.0, "a": a.loc(), "b": b.loc()})

@@ -1,4 +1,4 @@
-"""``python -m analyst_kernel --python P --root R --runs-dir D [--out-dir out] [--sandbox auto]``."""
+"""``python -m analyst_kernel --python P --root R --runs-dir D [--out-dir out] [--sandbox auto] [--data-dir ABS]...``."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import os
 import sys
 from pathlib import Path
 
+from .config import ConfigError
 from .errors import RpcError
 from .kernel import Kernel
 from .rpc import Server
@@ -21,6 +22,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs-dir", required=True, help="directory holding one subdirectory per run")
     parser.add_argument("--out-dir", default=None, help="output directory name under root (default: project config, else 'out')")
     parser.add_argument("--sandbox", default="auto", choices=KINDS, help="sandbox kind (default: auto)")
+    parser.add_argument(
+        "--data-dir",
+        action="append",
+        default=[],
+        metavar="ABS_PATH",
+        help="external data directory approved by the user, readable inside the sandbox (repeatable)",
+    )
     parser.add_argument("--log-level", default=os.environ.get("ANALYST_KERNEL_LOG", "INFO"), help="stderr log level")
     return parser
 
@@ -39,7 +47,11 @@ def main(argv: list[str] | None = None) -> int:
             runs_dir=Path(ns.runs_dir).expanduser(),
             out_dir=ns.out_dir,
             sandbox=ns.sandbox,
+            data_dirs=[os.path.expanduser(d) for d in ns.data_dir],
         )
+    except ConfigError as exc:
+        logging.error("configuration rejected: %s", exc)
+        return 2
     except RpcError as exc:
         logging.error("%s: %s", exc.message, exc.detail)
         return 3

@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from . import PROTOCOL_VERSION, __version__
-from .config import ProjectConfig, load_config
+from .config import ConfigError, ProjectConfig, load_config, project_data_dirs, validate_out_dir
 from .errors import RpcError, invalid_params
 from .paths import resolve_in_root
 from .rpc import Dispatcher
-from .runs import RunManager, resolve_data_dir
+from .runs import RunManager
 from .sandbox import SandboxSpec, detect, host_os, tooling_dir, venv_of
 
 log = logging.getLogger("analyst_kernel")
@@ -52,12 +52,34 @@ class Kernel:
         out_dir: str | None = None,
         sandbox: str = "auto",
         notify: Notify | None = None,
+        data_dirs: list[str] | None = None,
     ) -> None:
         self.python = python
         self.root = Path(root).resolve()
         self.runs_dir = Path(runs_dir).resolve()
         self.config: ProjectConfig = load_config(self.root)
-        self.out_dir_name = (out_dir or self.config.out_dir).strip("/")
+        # Raises ConfigError (exit code 2) unless out_dir is a relative path inside the root.
+        self.out_dir_name = validate_out_dir(self.root, out_dir or self.config.out_dir)
+        self.config.out_dir = self.out_dir_name
+        # Data directories: the repo's own config may only name directories inside the repo;
+        # anything outside comes from --data-dir, which the user approved in the global config.
+        self.warnings: list[str] = []
+        inside, self.warnings = project_data_dirs(self.root, self.config.data_dirs)
+        for name, target in self.config.targets.items():
+            entries = target.get("data_dirs")
+            if isinstance(entries, list):
+                kept, warned = project_data_dirs(self.root, [str(e) for e in entries])
+                target["data_dirs"] = [str(k) for k in kept]
+                self.warnings += [f"[targets.{name}] {w}" for w in warned]
+        external: list[Path] = []
+        for d in data_dirs or []:
+            p = Path(d)
+            if not p.is_absolute():
+                raise ConfigError(f"--data-dir {d!r} must be an absolute path")
+            external.append(p)
+        self.data_dirs: list[Path] = inside + external
+        for w in self.warnings:
+            log.warning("%s", w)
         self.sandbox = detect(sandbox)
         self.host = socket.gethostname()
         self.os_name = host_os()
@@ -73,7 +95,11 @@ class Kernel:
             mpl_dir=self.mpl_dir,
             host=self.host,
             out_dir_name=self.out_dir_name,
+            data_dirs=self.data_dirs,
         )
+        self._eq = None
+        self._eq_lock = threading.Lock()
+        self._closed = False
         self._snippets = None
         self._snippets_lock = threading.Lock()
         self.dispatcher = Dispatcher()
@@ -102,7 +128,7 @@ class Kernel:
         reg("run.status", self.m_run_status)
         reg("run.cancel", self.m_run_cancel)
         reg("runs.list", self.m_runs_list)
-        reg("exec.snippet", self.m_exec_snippet)
+        reg("exec.snippet", self.m_exec_snippet, lane="snippet")
         reg("out.list", self.m_out_list)
         reg("out.read", self.m_out_read)
         reg("eq.extract", self.m_eq_extract)
@@ -124,10 +150,13 @@ class Kernel:
             python=Path(self.python),
             run_dir=run_dir,
             out_dir=out_dir,
-            data_dirs=[resolve_data_dir(self.root, d) for d in self.config.data_dirs],
+            data_dirs=list(self.data_dirs),
+            support_dirs=[self.mpl_dir / "analyst_mpl"],
             tooling_dir=tooling_dir(),
             derived_dir=derived if derived.is_dir() else None,
             network=False,
+            rlimit_as=self.config.rlimit_as(),
+            rlimit_nofile=self.config.open_files,
         )
 
     def _tool_env(self, name: str) -> dict[str, str]:
@@ -135,6 +164,7 @@ class Kernel:
         out_dir = self.root / self.out_dir_name / f"_{name}"
         env = self.runs._build_env(f"_{name}", run_dir, out_dir, {})
         (run_dir / "mplconfig").mkdir(parents=True, exist_ok=True)
+        (run_dir / "tmp").mkdir(parents=True, exist_ok=True)
         return env
 
     # ---- lifecycle ----------------------------------------------------------------
@@ -142,6 +172,8 @@ class Kernel:
         pv = params.get("protocol_version")
         if pv is not None and pv != PROTOCOL_VERSION:
             raise invalid_params(f"protocol_version {pv!r} is not supported (kernel speaks {PROTOCOL_VERSION})")
+        for w in self.warnings:
+            log.warning("%s", w)
         return {
             "kernel_version": __version__,
             "protocol_version": PROTOCOL_VERSION,
@@ -158,11 +190,25 @@ class Kernel:
         return {"ok": True}
 
     def close(self) -> None:
+        """Stop helpers. A running snippet or equation analysis is killed, not waited for."""
+        self._closed = True
         with self._snippets_lock:
-            if self._snippets is not None:
-                self._snippets.shutdown()
-                self._snippets = None
+            snippets, self._snippets = self._snippets, None
+        if snippets is not None:
+            snippets.shutdown()
+        with self._eq_lock:
+            eq, self._eq = self._eq, None
+        if eq is not None:
+            eq.close()
         self.runs.shutdown()
+
+    def _eq_worker(self):
+        from .equations import EqWorker
+
+        with self._eq_lock:
+            if self._eq is None:
+                self._eq = EqWorker()
+            return self._eq
 
     # ---- environment -------------------------------------------------------------------
     def m_env_info(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -180,14 +226,15 @@ class Kernel:
         from .index_scripts import index_scripts, public_script
 
         globs = _str_list(params, "globs") or self.config.scripts
-        return {"scripts": [public_script(s) for s in index_scripts(self.root, globs)]}
+        # error 1002 for a glob outside the root; .venv, .git and the output directory are skipped
+        return {"scripts": [public_script(s) for s in index_scripts(self.root, globs, self.out_dir_name)]}
 
     def m_lib_index(self, params: dict[str, Any]) -> dict[str, Any]:
         from .index_lib import index_lib
 
         package = _opt(params, "package", (str,), self.config.library)
         resolve_in_root(self.root, package.replace(".", "/"))
-        return {"functions": index_lib(self.root, package, self.config.scripts)}
+        return {"functions": index_lib(self.root, package, self.config.scripts, self.out_dir_name)}
 
     # ---- runs -------------------------------------------------------------------------
     def m_run_start(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -234,6 +281,8 @@ class Kernel:
             raise invalid_params("code is required")
         timeout_s = _opt(params, "timeout_s", (int, float))
         with self._snippets_lock:
+            if self._closed:
+                return {"ok": False, "stdout": "", "stderr": "REPL unavailable: the kernel is shutting down", "value_repr": None}
             if self._snippets is None:
                 self._snippets = SnippetRunner(
                     self.python,
@@ -263,7 +312,11 @@ class Kernel:
     def m_eq_extract(self, params: dict[str, Any]) -> dict[str, Any]:
         from .equations import eq_extract
 
-        return {"equations": eq_extract(self.root, _opt(params, "path", (str,), ""), _opt(params, "function", (str,)))}
+        return {
+            "equations": eq_extract(
+                self.root, _opt(params, "path", (str,), ""), _opt(params, "function", (str,)), self._eq_worker()
+            )
+        }
 
     def m_eq_check(self, params: dict[str, Any]) -> dict[str, Any]:
         from .equations import eq_check
@@ -282,6 +335,7 @@ class Kernel:
             _opt(params, "trials", (int,)),
             _opt(params, "tol", (int, float)),
             ranges,
+            self._eq_worker(),
         )
 
     # ---- contract and lint -----------------------------------------------------------------
@@ -299,8 +353,9 @@ class Kernel:
         from .astutil import library_files, script_files
         from .lint import lint_run
 
-        defaults = script_files(self.root, self.config.scripts) + library_files(self.root, self.config.library)
+        out = self.out_dir_name
+        defaults = script_files(self.root, self.config.scripts, out) + library_files(self.root, self.config.library, out)
         return {"diagnostics": lint_run(self.root, _str_list(params, "paths"), defaults)}
 
 
-__all__ = ["Kernel", "RpcError", "sys"]
+__all__ = ["ConfigError", "Kernel", "RpcError", "sys"]

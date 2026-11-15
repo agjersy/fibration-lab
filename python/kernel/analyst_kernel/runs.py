@@ -16,17 +16,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .config import ProjectConfig
+from .config import ProjectConfig, project_data_dirs, validate_out_dir
 from .errors import RUN_NOT_FOUND, SCRIPT_NOT_FOUND, RpcError, invalid_params
 from .paths import mtime_iso, parse_iso, rel_to_root, resolve_in_root, utc_now_iso
 from .rpc import Deferred
+from .runstate import proc_start_token, read_status_line, same_process, transition, write_atomic
 from .sandbox import SandboxSpec, tooling_dir, venv_of, wrap
 
 log = logging.getLogger("analyst_kernel.runs")
 
 POLL_S = 0.25
-PASSTHROUGH_ENV = ("HOME", "PATH", "LANG", "TMPDIR", "VIRTUAL_ENV")
+CHUNK_BYTES = 64 * 1024  # largest run.stdout / run.stderr chunk
+MAX_CHUNKS_PER_POLL = 64  # a fast producer cannot hold the watcher in one tail forever
+PASSTHROUGH_ENV = ("HOME", "PATH", "LANG", "VIRTUAL_ENV")
 FIGURE_EXTS = (".png", ".svg", ".pdf")
+SIDECAR_SUFFIX = ".meta.json"
+STARTUP_GRACE_S = 10.0
 ARTIFACT_KINDS = {
     ".png": "figure",
     ".svg": "figure",
@@ -69,19 +74,6 @@ def new_run_id() -> str:
     return f"{stamp}-{secrets.token_hex(3)}"
 
 
-def write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def read_status_line(run_dir: Path) -> str:
-    try:
-        return (run_dir / "status").read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
-
-
 def status_from_line(line: str) -> tuple[str, int | None]:
     if line.startswith("done:"):
         try:
@@ -109,18 +101,111 @@ def read_meta(run_dir: Path) -> dict[str, Any]:
     return {k: meta.get(k) for k in META_KEYS}
 
 
-def pid_alive(pid: int | None) -> bool:
-    if not pid:
+def sidecar_path(figure: Path) -> Path:
+    """``residuals.png`` -> ``residuals.png.meta.json``."""
+    return figure.with_name(figure.name + SIDECAR_SUFFIX)
+
+
+def sidecar_target(path: Path) -> Path | None:
+    """The figure a ``<name>.<png|svg|pdf>.meta.json`` file describes, else None."""
+    if not path.name.lower().endswith(SIDECAR_SUFFIX):
+        return None
+    target = path.with_name(path.name[: -len(SIDECAR_SUFFIX)])
+    return target if target.suffix.lower() in FIGURE_EXTS else None
+
+
+def valid_sidecar(obj: Any) -> bool:
+    """Shape check for FigureSidecar (PROTOCOL.md 1.6); anything else is a user's JSON file."""
+
+    def opt_str(v: Any) -> bool:
+        return v is None or isinstance(v, str)
+
+    def number(v: Any) -> bool:
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    if not isinstance(obj, dict):
         return False
+    axes = obj.get("axes")
+    args = obj.get("args")
+    return (
+        "run_id" in obj
+        and opt_str(obj.get("run_id"))
+        and isinstance(obj.get("script"), str)
+        and isinstance(args, list)
+        and all(isinstance(a, str) for a in args)
+        and "title" in obj
+        and opt_str(obj.get("title"))
+        and isinstance(axes, list)
+        and all(
+            isinstance(ax, dict) and all(k in ax and opt_str(ax[k]) for k in ("title", "xlabel", "ylabel"))
+            for ax in axes
+        )
+        and isinstance(obj.get("created_at"), str)
+        and all(number(obj.get(k)) for k in ("width_in", "height_in", "dpi"))
+    )
+
+
+def read_sidecar(figure: Path) -> dict[str, Any] | None:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+        obj = json.loads(sidecar_path(figure).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return obj if valid_sidecar(obj) else None
+
+
+def utf8_cut(data: bytes) -> int:
+    """Length of the prefix of ``data`` that does not end inside a UTF-8 sequence.
+
+    Only a genuinely incomplete trailing sequence (a lead byte whose continuation bytes
+    have not arrived) is held back; invalid bytes are passed through and decoded with
+    replacement. This is an incremental decoder that keeps chunk offsets byte-exact.
+    """
+    n = len(data)
+    for back in range(1, min(4, n) + 1):
+        byte = data[n - back]
+        if byte & 0xC0 == 0x80:  # continuation byte: keep looking for the lead
+            continue
+        if byte >= 0xF5:
+            return n  # not a valid lead byte: nothing to wait for
+        if byte >= 0xF0:
+            need = 4
+        elif byte >= 0xE0:
+            need = 3
+        elif byte >= 0xC0:
+            need = 2
+        else:
+            return n
+        return n - back if back < need else n
+    return n
+
+
+def read_identity(run_dir: Path) -> tuple[int | None, str | None, str | None]:
+    """(supervisor pid, start-time token, started_at) from meta.json."""
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None, None
+    pid = meta.get("pid")
+    return (pid if isinstance(pid, int) else None), meta.get("pid_start"), meta.get("started_at")
+
+
+def supervisor_alive(run_dir: Path) -> bool:
+    """True when the recorded supervisor is still the process running this run."""
+    pid, token, started_at = read_identity(run_dir)
+    if pid is None:
+        # Not launched yet (or meta unreadable): give a fresh run a moment before judging.
+        started = parse_iso(started_at)
+        return started is not None and time.time() - started < STARTUP_GRACE_S
+    return same_process(pid, token)
+
+
+def reconcile(run_dir: Path) -> None:
+    """Mark a run ``failed`` when it claims to be running but its supervisor is gone."""
+    if read_status_line(run_dir) != "running" or supervisor_alive(run_dir):
+        return
+    time.sleep(0.05)  # the supervisor may have been between writing its result and exiting
+    if read_status_line(run_dir) == "running":
+        _finish_failed(run_dir, "analyst: the run's supervisor process is gone; the run is marked failed\n")
 
 
 class RunManager:
@@ -139,6 +224,7 @@ class RunManager:
         out_dir_name: str | None = None,
         supervisor_python: str | None = None,
         poll_s: float = POLL_S,
+        data_dirs: list[Path] | None = None,
     ) -> None:
         self.root = root.resolve()
         self.runs_dir = runs_dir.resolve()
@@ -148,7 +234,12 @@ class RunManager:
         self.notify = notify
         self.mpl_dir = mpl_dir
         self.host = host
-        self.out_dir_name = (out_dir_name or config.out_dir).strip("/")
+        self.out_dir_name = validate_out_dir(self.root, out_dir_name or config.out_dir)
+        if data_dirs is None:
+            data_dirs, warnings = project_data_dirs(self.root, config.data_dirs)
+            for w in warnings:
+                log.warning("%s", w)
+        self.data_dirs = list(data_dirs)
         self.supervisor_python = supervisor_python or sys.executable
         self.poll_s = poll_s
         self._watchers: dict[str, _Watcher] = {}
@@ -184,6 +275,7 @@ class RunManager:
                 "ANALYST_ROOT": str(self.root),
                 "MPLBACKEND": "module://analyst_mpl",
                 "MPLCONFIGDIR": str(run_dir / "mplconfig"),
+                "TMPDIR": str(run_dir / "tmp"),
                 "PYTHONPATH": pythonpath,
                 "PYTHONUNBUFFERED": "1",
             }
@@ -198,10 +290,13 @@ class RunManager:
             python=Path(self.python),
             run_dir=run_dir,
             out_dir=out_abs,
-            data_dirs=[resolve_data_dir(self.root, d) for d in self.config.data_dirs],
+            data_dirs=list(self.data_dirs),
+            support_dirs=[self.mpl_dir / "analyst_mpl"],
             tooling_dir=tooling_dir(),
             derived_dir=derived if derived.is_dir() else None,
             network=network,
+            rlimit_as=self.config.rlimit_as(),
+            rlimit_nofile=self.config.open_files,
         )
 
     # ---- run.start ------------------------------------------------------------
@@ -220,6 +315,8 @@ class RunManager:
             raise RpcError(SCRIPT_NOT_FOUND, f"{script} is not an existing Python file")
         script_rel = rel_to_root(self.root, script_abs)
         timeout = float(timeout_s) if timeout_s is not None else float(self.config.timeout_s)
+        if not timeout > 0:
+            raise invalid_params("timeout_s must be greater than zero")
 
         run_id = new_run_id()
         run_dir = self.runs_dir / run_id
@@ -228,6 +325,7 @@ class RunManager:
             run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True)
         (run_dir / "mplconfig").mkdir()
+        (run_dir / "tmp").mkdir()
         out_rel = f"{self.out_dir_name}/{script_abs.stem}/{run_id}"
         out_abs = self.root / out_rel
         out_abs.mkdir(parents=True, exist_ok=True)
@@ -299,11 +397,12 @@ class RunManager:
             meta["status"] = "failed"
             meta["finished_at"] = utc_now_iso()
             write_atomic(run_dir / "meta.json", json.dumps(meta, indent=2) + "\n")
-            write_atomic(run_dir / "status", "failed\n")
+            transition(run_dir, "failed")
             (run_dir / "stderr.log").write_text(f"analyst: could not launch supervisor: {exc}\n")
             proc = None
         else:
             meta["pid"] = proc.pid
+            meta["pid_start"] = proc_start_token(proc.pid, allow_zombie=True)
             write_atomic(run_dir / "meta.json", json.dumps(meta, indent=2) + "\n")
         watcher = _Watcher(self, run_id, run_dir, out_abs, proc, timeout)
         with self._lock:
@@ -313,7 +412,16 @@ class RunManager:
 
     # ---- run.status / runs.list ---------------------------------------------
     def status(self, run_id: str) -> dict[str, Any]:
-        return read_meta(self.run_dir(run_id))
+        run_dir = self.run_dir(run_id)
+        self._reconcile(run_id, run_dir)
+        return read_meta(run_dir)
+
+    def _reconcile(self, run_id: str, run_dir: Path) -> None:
+        """A run whose supervisor is gone is failed, not running (pid plus start time)."""
+        with self._lock:
+            watched = run_id in self._watchers
+        if not watched:  # a live watcher owns this decision and announces run.done
+            reconcile(run_dir)
 
     def list(self, limit: int | None = None) -> list[dict[str, Any]]:
         limit = int(limit) if limit is not None else 50
@@ -328,6 +436,7 @@ class RunManager:
             if name.startswith("_") or not (self.runs_dir / name / "meta.json").is_file():
                 continue
             try:
+                self._reconcile(name, self.runs_dir / name)
                 out.append(read_meta(self.runs_dir / name))
             except RpcError:
                 continue
@@ -339,26 +448,32 @@ class RunManager:
         line = read_status_line(run_dir)
         if line != "running":
             return False
-        meta = read_meta(run_dir)
-        write_atomic(run_dir / "status", "cancelled\n")
-        pid = meta.get("pid")
-        if pid:
-            _signal_group(int(pid), signal.SIGTERM)
-            threading.Thread(target=_kill_later, args=(int(pid), 5.0), daemon=True).start()
+        pid, token, _ = read_identity(run_dir)
+        if pid is None or not same_process(pid, token):
+            # Never signal a pid that is not provably this run's supervisor: the number may
+            # belong to an unrelated process group by now.
+            reconcile(run_dir)
+            return False
+        if transition(run_dir, "cancelled") != "cancelled":
+            return False  # the run finished first
+        _signal_group(pid, signal.SIGTERM)
+        threading.Thread(target=_kill_later, args=(pid, token, 5.0), daemon=True, name=f"cancel-{run_id}").start()
         return True
 
     # ---- run.attach -------------------------------------------------------------
     def attach(self, run_id: str, stdout_offset: int = 0, stderr_offset: int = 0) -> Deferred:
         run_dir = self.run_dir(run_id)
+        self._reconcile(run_id, run_dir)
         meta = read_meta(run_dir)
-        out_abs = self.root / meta["out_dir"]
+        out_abs = resolve_in_root(self.root, meta["out_dir"])
         with self._lock:
             watcher = self._watchers.get(run_id)
             if watcher is None and meta["status"] == "running":
                 timeout = _launch_timeout(run_dir, self.config.timeout_s)
+                # Not started here: the adopted watcher begins tailing only after the replay
+                # below has been written, so nothing is delivered twice or out of order.
                 watcher = _Watcher(self, run_id, run_dir, out_abs, None, timeout, adopt=True)
                 self._watchers[run_id] = watcher
-                watcher.start()
         result = {"status": meta["status"], "exit_code": meta["exit_code"]}
 
         def replay() -> None:
@@ -383,15 +498,15 @@ class RunManager:
                 _replay_log(self.notify, run_id, "run.stderr", run_dir / "stderr.log", stderr_offset, watcher.offsets["stderr"])
                 for art in watcher.known_artifacts():
                     self.notify("run.artifact", {"run_id": run_id, "artifact": art})
+            watcher.start_once()
             return
         # Finished run with no watcher: make sure late artifacts are on record, then replay.
         scanner = _ArtifactScanner(self.root, run_dir, out_abs)
         scanner.load_recorded()
-        for art in scanner.scan(final=True):
-            scanner.record(art)
+        scanner.record_all(scanner.scan(final=True))
         _replay_log(self.notify, run_id, "run.stdout", run_dir / "stdout.log", stdout_offset, None)
         _replay_log(self.notify, run_id, "run.stderr", run_dir / "stderr.log", stderr_offset, None)
-        for art in scanner.recorded:
+        for art in scanner.known():
             self.notify("run.artifact", {"run_id": run_id, "artifact": art})
         if meta["status"] != "running":
             self.notify(
@@ -414,12 +529,8 @@ class RunManager:
         for w in watchers:
             w.stop.set()
         for w in watchers:
-            w.join(timeout=2.0)
-
-
-def resolve_data_dir(root: Path, d: str) -> Path:
-    p = Path(os.path.expanduser(d))
-    return p if p.is_absolute() else root / p
+            if w.is_alive():
+                w.join(timeout=2.0)
 
 
 def _launch_timeout(run_dir: Path, default: float) -> float:
@@ -451,7 +562,8 @@ def _signal_group(pid: int, sig: int) -> None:
             pass
 
 
-def _kill_later(pid: int, delay: float) -> None:
+def _kill_later(pid: int, token: str | None, delay: float) -> None:
+    """SIGKILL the run's process group if it is still there after ``delay`` seconds."""
     deadline = time.monotonic() + delay
     while time.monotonic() < deadline:
         time.sleep(0.2)
@@ -459,24 +571,43 @@ def _kill_later(pid: int, delay: float) -> None:
             os.killpg(pid, 0)
         except OSError:
             return
-    _signal_group(pid, signal.SIGKILL)
+    # The group leader is the supervisor; once it has exited its pid (and so the group id)
+    # may be reused, so only a group still led by the same process is killed.
+    if same_process(pid, token):
+        _signal_group(pid, signal.SIGKILL)
 
 
 def _replay_log(
     notify: Notify, run_id: str, method: str, path: Path, start: int, end: int | None
 ) -> None:
+    """Replay ``[start, end)`` of a log (to EOF when ``end`` is None) in chunks of at most 64 KiB."""
+    offset = max(0, int(start))
     try:
         with path.open("rb") as fh:
-            fh.seek(max(0, int(start)))
-            data = fh.read() if end is None else fh.read(max(0, end - int(start)))
+            if end is None:
+                end = os.fstat(fh.fileno()).st_size
+            while offset < end:
+                fh.seek(offset)
+                data = fh.read(min(CHUNK_BYTES, end - offset))
+                if not data:
+                    return
+                last = offset + len(data) >= end
+                cut = len(data) if last else (utf8_cut(data) or len(data))
+                chunk = data[:cut].decode("utf-8", errors="replace")
+                notify(method, {"run_id": run_id, "chunk": chunk, "offset": offset})
+                offset += cut
     except OSError:
         return
-    if data:
-        notify(method, {"run_id": run_id, "chunk": data.decode("utf-8", errors="replace"), "offset": int(start)})
 
 
 class _ArtifactScanner:
-    """Discover artifacts under a run's output directory with the size-stable rule."""
+    """Discover artifacts under a run's output directory with the size-stable rule.
+
+    While the run is live a file is announced once its size has been stable for one poll and
+    is not zero. The final scan looks at every file again: new files are announced at once,
+    and a file whose size, mtime, or sidecar changed since it was announced is announced
+    again, so the last record for a path is always the final state.
+    """
 
     def __init__(self, root: Path, run_dir: Path, out_abs: Path) -> None:
         self.root = root
@@ -484,8 +615,18 @@ class _ArtifactScanner:
         self.out_abs = out_abs
         self.sizes: dict[Path, int] = {}
         self.sidecar_waits: dict[Path, int] = {}
-        self.emitted: set[str] = set()
-        self.recorded: list[dict[str, Any]] = []
+        self.announced: dict[str, dict[str, Any]] = {}  # path -> latest record, in announce order
+
+    @property
+    def emitted(self) -> set[str]:
+        return set(self.announced)
+
+    @property
+    def recorded(self) -> list[dict[str, Any]]:
+        return list(self.announced.values())
+
+    def known(self) -> list[dict[str, Any]]:
+        return list(self.announced.values())
 
     def load_recorded(self) -> None:
         try:
@@ -495,55 +636,72 @@ class _ArtifactScanner:
         for line in lines:
             try:
                 art = json.loads(line)
-            except ValueError:
+                self.announced[art["path"]] = art
+            except (ValueError, KeyError, TypeError):
                 continue
-            self.recorded.append(art)
-            self.emitted.add(art["path"])
 
     def record(self, art: dict[str, Any]) -> None:
-        self.recorded.append(art)
+        """Append one record (live discovery)."""
+        self.announced[art["path"]] = art
         with (self.run_dir / "artifacts.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(art, separators=(",", ":")) + "\n")
+
+    def record_all(self, arts: list[dict[str, Any]]) -> None:
+        """Record the result of a final scan: the file ends up with one final record per path."""
+        if not arts:
+            return
+        for art in arts:
+            self.announced[art["path"]] = art
+        text = "".join(json.dumps(a, separators=(",", ":")) + "\n" for a in self.announced.values())
+        try:
+            write_atomic(self.run_dir / "artifacts.jsonl", text)
+        except OSError:
+            log.exception("could not rewrite artifacts.jsonl in %s", self.run_dir)
+
+    def _files(self) -> list[Path]:
+        out: list[Path] = []
+        for dirpath, dirnames, filenames in os.walk(self.out_abs):
+            dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
+            for name in filenames:
+                p = Path(dirpath) / name
+                if p.is_file() and not p.is_symlink():
+                    out.append(p)
+        return sorted(out)
 
     def scan(self, final: bool = False) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
         if not self.out_abs.is_dir():
             return found
-        for file in sorted(p for p in self.out_abs.rglob("*") if p.is_file()):
+        for file in self._files():
             if file.name.endswith(".tmp"):
                 continue
             if file.parent == self.out_abs and file.name == "run.json":
                 continue
-            rel = rel_to_root(self.root, file)
-            if rel in self.emitted:
+            target = sidecar_target(file)
+            # ``x.png.meta.json``: a sidecar when it describes an existing figure. Anything
+            # else under that name is the user's own JSON and is listed once the run ends.
+            if target is not None and (not final or (target.is_file() and read_sidecar(target) is not None)):
                 continue
+            rel = rel_to_root(self.root, file)
             try:
                 st = file.stat()
             except OSError:
                 continue
-            prev = self.sizes.get(file)
-            self.sizes[file] = st.st_size
-            if not final and (prev is None or prev != st.st_size):
-                continue
-            ext = file.suffix.lower()
-            if ext == ".json" and any(file.with_suffix(e).exists() for e in FIGURE_EXTS):
-                continue  # sidecar of a figure, not an artifact
             kind = artifact_kind(file)
-            sidecar = None
-            if kind == "figure":
-                sc = file.with_suffix(".json")
-                if sc.exists():
-                    try:
-                        sidecar = json.loads(sc.read_text(encoding="utf-8"))
-                    except (OSError, ValueError):
-                        if not final:
-                            continue
-                        sidecar = None
-                elif not final:
-                    waits = self.sidecar_waits.get(file, 0) + 1
-                    self.sidecar_waits[file] = waits
-                    if waits <= 2:
-                        continue
+            previous = self.announced.get(rel)
+            if previous is not None and not final:
+                continue
+            if previous is None and not final:
+                prev_size = self.sizes.get(file)
+                self.sizes[file] = st.st_size
+                if prev_size is None or prev_size != st.st_size or st.st_size == 0:
+                    continue  # still growing, or opened but not written yet
+            sidecar = read_sidecar(file) if kind == "figure" else None
+            if kind == "figure" and sidecar is None and not final and previous is None:
+                waits = self.sidecar_waits.get(file, 0) + 1
+                self.sidecar_waits[file] = waits
+                if waits <= 2:
+                    continue  # the sidecar is written right after the image
             art: dict[str, Any] = {
                 "kind": kind,
                 "path": rel,
@@ -551,9 +709,11 @@ class _ArtifactScanner:
                 "created_at": mtime_iso(st.st_mtime),
                 "rendered": kind in RENDERED_KINDS,
             }
-            if isinstance(sidecar, dict):
+            if sidecar is not None:
                 art["sidecar"] = sidecar
-            self.emitted.add(rel)
+            if previous == art:
+                continue
+            self.announced[rel] = art
             found.append(art)
         return found
 
@@ -580,6 +740,7 @@ class _Watcher(threading.Thread):
         self.timeout_s = timeout_s
         self.stop = threading.Event()
         self.lock = threading.Lock()
+        self._begun = False
         self.scanner = _ArtifactScanner(manager.root, run_dir, out_abs)
         self.offsets = {"stdout": 0, "stderr": 0}
         if adopt:
@@ -591,8 +752,20 @@ class _Watcher(threading.Thread):
                 except OSError:
                     self.offsets[name] = 0
 
+    def start_once(self) -> None:
+        with self.lock:
+            if self._begun:
+                return
+            self._begun = True
+        self.start()
+
+    def start(self) -> None:
+        with self.lock:
+            self._begun = True
+        super().start()
+
     def known_artifacts(self) -> list[dict[str, Any]]:
-        return list(self.scanner.recorded)
+        return self.scanner.known()
 
     def _notify(self, method: str, params: dict[str, Any]) -> None:
         try:
@@ -600,44 +773,50 @@ class _Watcher(threading.Thread):
         except Exception:
             log.exception("notification %s failed", method)
 
-    def _tail(self, name: str) -> None:
+    def _tail(self, name: str, final: bool = False) -> None:
+        """Emit new log output in chunks of at most 64 KiB; ``final`` flushes everything."""
         path = self.run_dir / f"{name}.log"
         try:
-            with path.open("rb") as fh:
-                fh.seek(self.offsets[name])
-                data = fh.read()
+            fh = path.open("rb")
         except OSError:
             return
-        if not data:
-            return
-        # Keep partial UTF-8 sequences for the next poll.
-        cut = len(data)
-        while cut > max(0, len(data) - 4):
-            try:
-                data[:cut].decode("utf-8")
-                break
-            except UnicodeDecodeError:
-                cut -= 1
-        if cut <= 0:
-            return
-        chunk = data[:cut].decode("utf-8", errors="replace")
-        offset = self.offsets[name]
-        self.offsets[name] = offset + cut
-        self._notify(f"run.{name}", {"run_id": self.run_id, "chunk": chunk, "offset": offset})
+        with fh:
+            sent = 0
+            while final or sent < MAX_CHUNKS_PER_POLL:
+                offset = self.offsets[name]
+                try:
+                    fh.seek(offset)
+                    data = fh.read(CHUNK_BYTES)
+                except OSError:
+                    return
+                if not data:
+                    return
+                full = len(data) == CHUNK_BYTES
+                # A sequence cut by the chunk boundary or by the writer waits for its tail;
+                # at the end of the run whatever is left is flushed with replacement.
+                cut = len(data) if (final and not full) else utf8_cut(data)
+                if cut <= 0:
+                    return
+                chunk = data[:cut].decode("utf-8", errors="replace")
+                self.offsets[name] = offset + cut
+                self._notify(f"run.{name}", {"run_id": self.run_id, "chunk": chunk, "offset": offset})
+                sent += 1
+                if not full and not final:
+                    return
 
     def _artifacts(self, final: bool) -> None:
-        for art in self.scanner.scan(final=final):
-            self.scanner.record(art)
+        arts = self.scanner.scan(final=final)
+        if final:
+            self.scanner.record_all(arts)
+        for art in arts:
+            if not final:
+                self.scanner.record(art)
             self._notify("run.artifact", {"run_id": self.run_id, "artifact": art})
 
     def _supervisor_alive(self) -> bool:
         if self.proc is not None:
             return self.proc.poll() is None
-        try:
-            pid = json.loads((self.run_dir / "meta.json").read_text()).get("pid")
-        except (OSError, ValueError):
-            return False
-        return pid_alive(pid)
+        return supervisor_alive(self.run_dir)
 
     def run(self) -> None:
         t0 = time.monotonic()
@@ -653,14 +832,15 @@ class _Watcher(threading.Thread):
                     break
                 if not self._supervisor_alive():
                     # Supervisor vanished without recording a result.
-                    _finish_failed(self.run_dir)
+                    time.sleep(0.05)
+                    if read_status_line(self.run_dir) == "running":
+                        _finish_failed(self.run_dir, "analyst: the run's supervisor process is gone; the run is marked failed\n")
                     break
-                if self.timeout_s and time.time() - started > self.timeout_s + 10.0:
+                if self.timeout_s and time.time() - started > self.timeout_s + 15.0:
                     # Backstop: the supervisor should have done this already.
-                    write_atomic(self.run_dir / "status", "timeout\n")
-                    pid = _read_meta_field(self.run_dir, "pid")
-                    if pid:
-                        _signal_group(int(pid), signal.SIGKILL)
+                    pid, token, _ = read_identity(self.run_dir)
+                    if transition(self.run_dir, "timeout") == "timeout" and pid and same_process(pid, token):
+                        _signal_group(pid, signal.SIGKILL)
                     break
                 self.stop.wait(self.manager.poll_s)
             if self.stop.is_set():
@@ -668,15 +848,14 @@ class _Watcher(threading.Thread):
             # Let the supervisor finish writing meta.json, then do the final flush.
             deadline = time.monotonic() + 2.0
             while time.monotonic() < deadline:
-                if self.proc is not None and self.proc.poll() is not None:
+                if not self._supervisor_alive():
                     break
-                if self.proc is None and not self._supervisor_alive():
+                if _read_meta_field(self.run_dir, "finished_at"):
                     break
                 time.sleep(0.05)
             with self.lock:
-                self._tail("stdout")
-                self._tail("stderr")
-                self._artifacts(final=False)
+                self._tail("stdout", final=True)
+                self._tail("stderr", final=True)
                 self._artifacts(final=True)
             meta = read_meta(self.run_dir)
             if meta.get("finished_at") is None:
@@ -704,14 +883,22 @@ def _read_meta_field(run_dir: Path, key: str) -> Any:
         return None
 
 
-def _finish_failed(run_dir: Path) -> None:
-    write_atomic(run_dir / "status", "failed\n")
+def _finish_failed(run_dir: Path, note: str | None = None) -> None:
+    if transition(run_dir, "failed") != "failed":
+        return  # a real result was recorded in the meantime
+    if note:
+        try:
+            with (run_dir / "stderr.log").open("a", encoding="utf-8") as fh:
+                fh.write(note)
+        except OSError:
+            pass
     try:
         meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
     meta["status"] = "failed"
-    meta["finished_at"] = utc_now_iso()
+    meta["exit_code"] = None
+    meta["finished_at"] = meta.get("finished_at") or utc_now_iso()
     write_atomic(run_dir / "meta.json", json.dumps(meta, indent=2) + "\n")
 
 

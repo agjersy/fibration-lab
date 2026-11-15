@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import ProjectConfig
+from .errors import PATH_OUTSIDE_ROOT, RpcError
+
+# Directories that never hold project sources. ``out_dir`` is added per call.
+SKIP_DIRS = frozenset({".venv", ".git", "__pycache__", "node_modules", ".analyst"})
 
 
 @dataclass
@@ -36,7 +40,7 @@ def parse_file(path: Path) -> ast.Module | None:
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
         return ast.parse(source, filename=str(path))
-    except (SyntaxError, ValueError, OSError):
+    except (SyntaxError, ValueError, OSError, RecursionError, MemoryError):
         return None
 
 
@@ -84,21 +88,86 @@ def import_aliases(tree: ast.Module) -> dict[str, str]:
     return out
 
 
-def script_files(root: Path, globs: list[str]) -> list[Path]:
+def _skipped(rel_parts: tuple[str, ...], out_dir: str | None) -> bool:
+    if any(part in SKIP_DIRS for part in rel_parts[:-1]):
+        return True
+    if out_dir:
+        out_parts = Path(out_dir).parts
+        return rel_parts[: len(out_parts)] == out_parts
+    return False
+
+
+def in_skipped_dir(root: Path, directory: Path, out_dir: str | None = None) -> bool:
+    """True when ``directory`` is, or lies inside, ``.venv``, ``.git`` or the output directory."""
+    try:
+        rel = directory.resolve().relative_to(root.resolve())
+    except ValueError:
+        return True
+    return _skipped((*rel.parts, ""), out_dir)
+
+
+def check_glob(pattern: str) -> None:
+    """Error 1002 for a glob that can match outside the repo root."""
+    parts = Path(pattern).parts
+    if not pattern or Path(pattern).is_absolute() or pattern.startswith("~") or ".." in parts:
+        raise RpcError(PATH_OUTSIDE_ROOT, f"glob {pattern!r} is outside the repo root")
+
+
+def script_files(root: Path, globs: list[str], out_dir: str | None = None) -> list[Path]:
+    """Python files matching ``globs`` under root, never from ``.venv``, ``.git`` or ``out_dir``.
+
+    Raises error 1002 for a glob that is absolute or contains ``..``; matches that resolve
+    outside the root through a symlink are skipped.
+    """
+    root_r = root.resolve()
     seen: dict[str, Path] = {}
     for pattern in globs:
+        check_glob(pattern)
         for match in sorted(glob.glob(os.path.join(str(root), pattern), recursive=True)):
             p = Path(match)
-            if p.is_file() and p.suffix == ".py":
-                seen.setdefault(str(p.resolve()), p)
+            if not (p.is_file() and p.suffix == ".py"):
+                continue
+            real = p.resolve()
+            try:
+                rel = real.relative_to(root_r)
+            except ValueError:
+                continue
+            if _skipped(rel.parts, out_dir):
+                continue
+            seen.setdefault(str(real), p)
     return [seen[k] for k in sorted(seen)]
 
 
-def library_files(root: Path, package: str) -> list[Path]:
+def python_files_under(root: Path, directory: Path, out_dir: str | None = None) -> list[Path]:
+    """Every ``.py`` file below ``directory``, pruning ``.venv``, ``.git``, ``out_dir`` and symlinked dirs."""
+    root_r = root.resolve()
+    out: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(directory):
+        here = Path(dirpath)
+        keep = []
+        for d in sorted(dirnames):
+            child = here / d
+            if d in SKIP_DIRS or child.is_symlink():
+                continue
+            try:
+                rel = child.resolve().relative_to(root_r)
+            except ValueError:
+                continue
+            if out_dir and rel.parts == Path(out_dir).parts:
+                continue
+            keep.append(d)
+        dirnames[:] = keep
+        for name in sorted(filenames):
+            if name.endswith(".py") and (here / name).is_file():
+                out.append(here / name)
+    return sorted(out)
+
+
+def library_files(root: Path, package: str, out_dir: str | None = None) -> list[Path]:
     pkg_dir = root / package.replace(".", "/")
     if not pkg_dir.is_dir():
         return []
-    return sorted(p for p in pkg_dir.rglob("*.py") if p.is_file())
+    return python_files_under(root, pkg_dir, out_dir)
 
 
 def classify_path(root: Path, path: Path, config: ProjectConfig) -> str:

@@ -53,7 +53,7 @@ def test_rule_details_on_bad_script(kernel):
     inputs = by_rule["cli.option-for-every-input"]
     msgs = [d["message"] for d in inputs]
     assert any("'data/sample.csv'" in m and "load_runs" in m for m in msgs)
-    assert any("3.5" in m for m in msgs)
+    assert any("3.5" in m and "normal" in m for m in msgs)
     assert any("'results/smooth.npy'" in m for m in msgs)
     assert all("add_argument" in d["hint"] for d in inputs)
 
@@ -100,10 +100,12 @@ def test_library_rules(kernel, repo: Path):
     ds = diags(kernel, paths=["analysis/models.py"])
     assert [(d["rule"], d["line"]) for d in ds] == [("doc.docstring", 30), ("math.required", 30), ("math.required", 34)]
     assert all(d["path"] == "analysis/models.py" for d in ds)
-    # io.py is not under math_required and is documented
-    assert diags(kernel, paths=["analysis/io.py"]) == []
+    # io.py is not under math_required and is documented, so it has no per-file findings; the
+    # cross-file rules still compare it with every script (C4)
+    per_file = {"doc.docstring", "math.required", "out.layout"}
+    assert not [d for d in diags(kernel, paths=["analysis/io.py"]) if d["rule"] in per_file]
     # a directory path expands
-    assert {d["path"] for d in diags(kernel, paths=["analysis"])} == {"analysis/models.py"}
+    assert {d["path"] for d in diags(kernel, paths=["analysis"]) if d["rule"] in per_file} == {"analysis/models.py"}
 
 
 def test_option_for_every_input_scope(kernel, repo: Path):
@@ -122,6 +124,7 @@ def test_option_for_every_input_scope(kernel, repo: Path):
         "    import os\n"
         "    os.path.join(args.n, 'summary.json')\n"  # output name in a later position: fine
         "    count_rows(args.n, name='report.csv')\n"  # keyword: fine
+        "    count_rows(args.n, name='nested/kw.csv', scale=3.5)\n"  # keywords are never flagged
         "    count_rows(args.n, 'nested/report.csv')\n"  # slash: flagged wherever it sits
         "    return 0\n\n"
         "def helper():\n    count_rows('untouched/outside/main.csv')\n\n"
@@ -131,10 +134,9 @@ def test_option_for_every_input_scope(kernel, repo: Path):
     found = sorted((d["line"], d["message"].split(" passed")[0]) for d in ds)
     assert found == [
         (12, "numeric literal 42"),
-        (13, "numeric literal -3"),
         (14, "numeric literal 5"),
-        (18, "path literal 'nested/report.csv'"),
-        (25, "path literal 'data.csv'"),
+        (19, "path literal 'nested/report.csv'"),
+        (26, "path literal 'data.csv'"),
     ]
 
 
