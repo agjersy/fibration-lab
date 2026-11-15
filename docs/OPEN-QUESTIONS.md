@@ -18,22 +18,15 @@
 
 | Item | Decision | Where it landed |
 |---|---|---|
-| OQ-P1 Platforms | Windows and macOS are first-class from phase 1 (MSI and PKG/DMG installers, Windows and macOS CI runners). Linux builds from the same code and is supported in phase 4. Skill-script isolation on Windows is weaker and badged. | ARCHITECTURE.md P2, sections 3, 12 |
+| OQ-P1 Platforms | Windows and macOS are first-class from phase 1 (MSI and PKG/DMG installers, Windows and macOS CI runners). Linux builds from the same code and is supported in phase 4. | ARCHITECTURE.md P2, sections 3, 12 |
 | OQ-P2 Endpoints and first user | First-version endpoints: the Anthropic API, internal API gateways (Anthropic Messages or OpenAI-compatible), and open-weight models on internal GPU servers; Bedrock, Vertex, and Foundry are later auth back ends on the same adapter. The app is always a desktop app calling a server. First user is you, but enterprise-ready from phase 0 (offline bundling, proxy and CA, audit log); managed configuration and organization libraries in phase 3. | ARCHITECTURE.md P6, P12, section 11 |
 | OQ-P3 Deck source of truth | Two project modes. Structured (default): typed deck document on template layouts, deterministic renderer, native `process`, `timeline`, `matrix`, and `hierarchy` primitives, plus per-slide script-generated slides as an escape hatch. Code generation (switchable per project): the deck is a sandboxed `python-pptx` build script using the shared deck SDK, checked on its output. Structured → code is a lossless eject; code → structured is a revert to the pre-eject snapshot or a best-effort import. Code execution is therefore required (sandbox details in OQ-P7). | ARCHITECTURE.md P3, P11, sections 5, 5.1, 7.3 |
 | OQ-P4 In-app editing | Content-level editing in structured mode: text in place, layout change, reorder/duplicate/delete, locks on slides and elements, chart and table data, speaker notes, diagram primitive content. No free move/resize or styling; final pixel polish happens in PowerPoint after export. In code mode, editing is editing the build script. | ARCHITECTURE.md sections 5.1, 14 |
 | OQ-P5 Round-trip and import | Phase 1 is one-way: export is final, but every export carries stable element ids. Structured-mode re-import of PowerPoint edits (text, order, layout, chart data on known elements; unknown changes kept as locked foreign elements) in phase 2. Code-mode re-import later, best-effort, as a reviewable script patch. Existing decks not made by the app are references only; a best-effort 'convert to project' importer comes later (it also serves code → structured switching). | ARCHITECTURE.md sections 5, 5.1, 10 |
 | OQ-P6 Rendering engine | Fidelity render chain: PowerPoint automation when installed (COM on Windows, AppleScript on macOS), else a bundled LibreOffice shipped as a separately installable component, else a system LibreOffice. Structured mode keeps the live HTML preview for editing. Without any engine: no PDF/PNG export and no code-mode previews, stated in the UI. CI uses LibreOffice; a Windows runner with PowerPoint is used where available. | ARCHITECTURE.md P5, sections 3, 10 |
+| OQ-P7 Skills and code sandbox | Full Agent Skills including scripts, run by the app (ask by default, deniable by config). One OS-native sandbox for all code (builds, generated slides, skill scripts): macOS `sandbox-exec`, Windows AppContainer + job object, Linux `bubblewrap` in phase 4; no network, writes only to scratch and output; badged fallback to resource limits. Code uses a fixed, pinned package set bundled offline in the installer. | ARCHITECTURE.md P7, P11, sections 12, 12.1 |
 
 ## 3. Open
-
-### OQ-P7. Skills and code execution
-
-**Options.** (a) Instruction-only skills (`SKILL.md` and resources, no scripts). (b) Full Agent Skills including scripts, run locally in a sandbox, approved per policy. (c) Full skills plus a general sandboxed Python tool, as in Analyst.
-
-**Recommendation.** (b). OQ-P3 already requires a local sandbox for code generation mode and generated slides, so skill scripts reuse it. Provider-hosted skills do not exist on gateways or open-weight servers (and not on Bedrock or Vertex later), so the app has to run them; scripts are what make skills useful for charts and diagrams. A general code tool (c) is not needed for decks and is the hardest thing to justify to an enterprise security review. On Windows, scripts run with a restricted token and a job object and are badged as weaker isolation; a managed config can disable scripts entirely.
-
-**Decide.** Do you already have skills (yours or your organization's) you want to run? Do they include scripts?
 
 ### OQ-P8. References: scope and handling
 

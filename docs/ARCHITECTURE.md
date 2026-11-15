@@ -12,11 +12,11 @@
 | P4 | `.pptx` writer | `python-pptx` in an app-owned, bundled Python runtime (the "deck kernel"), driven over JSON-RPC like Analyst's kernel | Proposed |
 | P5 | Preview and PDF/PNG export | Live HTML/SVG preview from the deck document (structured mode), plus a fidelity render of the actual `.pptx` by PowerPoint automation when installed, else a separately installable bundled LibreOffice, else a system LibreOffice | Decided (OQ-P6) |
 | P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
-| P7 | Skills | Anthropic Agent Skills format (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every provider | Proposed, OQ-P7 |
+| P7 | Skills | Full Anthropic Agent Skills (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every endpoint; scripts in the code sandbox, ask by default | Decided (OQ-P7) |
 | P8 | References | Local extraction and SQLite FTS5 index; search/read tools for the agent; per-element citations in the deck document. Native PDF document blocks with citations used when the provider supports them and the set is small | Proposed |
 | P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Proposed (shared) |
 | P10 | Checkpoints | Content-addressed snapshot store inside the project (no dependency on a system `git`) | Proposed, OQ-P10 |
-| P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run Python in a local sandbox with no network, approved per policy. No general shell or REPL tool | Decided by OQ-P3; sandbox details OQ-P7 |
+| P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
 | P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, system proxy and trust store, local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Proposed (shared) |
 | P14 | Code sharing with Analyst | Common crates (`protocol` patterns, providers, policy, transcript, skills, MCP) extracted into a shared workspace | Open, OQ-P11 |
@@ -331,9 +331,30 @@ Features that differ by platform are probed or configured, not assumed. Relevant
 
 **Format.** Anthropic Agent Skills: a folder with `SKILL.md` (front matter `name`, `description`; markdown body) plus optional resources (templates, examples, brand guides) and scripts. This is the format Claude users already author and share, and Analyst can adopt it too (OQ-P11).
 
-**Execution by the app.** At the start of a conversation the agent sees each available skill's name and description. It loads a skill's body with `skill.load` and its resources with `skill.read_resource` when relevant; the user can pin or disable skills per project. Scripts run only through `skill.run_script`, under policy (`ask` by default), in a sandbox where the OS allows (Analyst's `sandbox-exec` profile on macOS; `bubblewrap` on Linux; a restricted token and job object on Windows, badged as weaker), with no network and write access limited to a scratch directory whose outputs can be imported as assets.
+**Execution by the app.** At the start of a conversation the agent sees each available skill's name and description. It loads a skill's body with `skill.load` and its resources with `skill.read_resource` when relevant; the user can pin or disable skills per project. Scripts run only through `skill.run_script`, under policy (`ask` by default; `deny` by configuration), in the code sandbox (section 12.1) with the skill folder read-only and outputs importable as assets.
 
 **Sources.** Built-in skills (storyline writing, chart selection, executive summary, the deck contract explained), `~/.present/skills/`, project `.present/skills/`, and a managed organization library that users cannot modify.
+
+### 12.1 Code sandbox (decided, OQ-P7)
+
+One sandbox for all code the app runs: code-mode builds, generated slides, and skill scripts. No general shell or REPL exists.
+
+| Resource | Default |
+|---|---|
+| Interpreter and packages | The bundled Python runtime with a fixed, pinned package set shipped in the installer: `python-pptx`, `present_sdk`, `openpyxl`, `python-docx`, `Pillow`, `numpy`, `pandas`, `matplotlib`. No package installation at run time; the set is versioned with the app and listed in the about dialog for audit. |
+| Filesystem read | The runtime, the deck SDK, the project's `template/`, `assets/`, and `deck/`, the running skill's folder, and reference extracts the agent passes explicitly. Home directory and the rest of the disk hidden. |
+| Filesystem write | A per-run scratch directory and the build output path only. |
+| Network | None, on every platform. |
+| Resources | Wall-clock timeout (default 60 s per build), memory cap, process count. |
+| Environment | Minimal allowlist; no credentials ever. |
+
+Per platform, without admin rights or extra installs:
+
+- **macOS:** `sandbox-exec` with a generated profile (Analyst's profile adapted).
+- **Windows:** an AppContainer process (no network capabilities; access granted only to the folders above through ACLs on a per-run directory) inside a job object for CPU, memory, process, and UI limits.
+- **Linux (phase 4):** `bubblewrap`, as in Analyst.
+
+Where the isolation primitive is unavailable (for example AppContainer blocked by policy), runs fall back to resource limits only and every affected card is badged "unsandboxed"; a managed configuration can turn that fallback into a refusal.
 
 ## 13. Policy, gating, and checkpoints
 
