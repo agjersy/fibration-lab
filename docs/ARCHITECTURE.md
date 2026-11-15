@@ -1,6 +1,6 @@
 # Personal Present — Application Design and Architecture
 
-*Status: workshop decisions closed (2026-11-15); every item in the decision summary is decided. Next step: the build spec. Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Reference architecture: Personal Analyst `docs/ARCHITECTURE.md`; sections marked **(shared)** reuse its design and are only summarized here.*
+*Status: workshop decisions closed (2026-11-15); every item in the decision summary is decided. The build is specified in [BUILD-SPEC.md](BUILD-SPEC.md) with contracts in [PROTOCOL.md](PROTOCOL.md) and [IPC.md](IPC.md). Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Reference architecture: Personal Analyst `docs/ARCHITECTURE.md`; sections marked **(shared)** reuse its design and are only summarized here.*
 
 ## 1. Decision summary
 
@@ -474,21 +474,9 @@ Managed configuration (read-only, admin-owned):
 - **Output validity, on every change:** render a corpus of deck documents against several real templates; validate every `.pptx` against the ECMA-376 schemas; re-open with `python-pptx`; convert with LibreOffice; on a Windows CI runner with PowerPoint (if available) open and save each file and fail on repair prompts.
 - **Agent evaluations, model agnostic:** deck tasks (build from a report, build from a spreadsheet, restyle onto a new template, shorten a deck to N slides, fix checker failures) with graders that inspect only the output: opens clean, checker passes, citation coverage, number-check pass rate, slide count and layout use as asked, no edits to locked slides. Scorecard per configured model and provider, as in Analyst.
 
-## 18. Repository structure (proposed)
+## 18. Repository structure
 
-```
-apps/desktop/
-  src-tauri/          Tauri shell (thin glue over crates/core)
-  src/                React renderer
-crates/protocol/      IPC and kernel types; TypeScript bindings via ts-rs
-crates/core/          projects, agent loop, policy, providers, skills, references, deck store, audit
-crates/cli/           headless harness (`present`) for phase 0 and evals
-python/kernel/        present_kernel: template inspector, renderer (pptx and code back ends), extractors, checker, fidelity renderer, sandboxed build runner
-python/sdk/           present_sdk: deck SDK used by the renderer, build scripts, and generated slides
-schemas/              deck document JSON Schema, template description schema
-evals/                deck tasks, graders, templates, scorecard runner
-docs/
-```
+The normative layout, including the shared-to-be `wb-*` crates and `packages/wb-ui`, is in [BUILD-SPEC.md](BUILD-SPEC.md) section 3.
 
 **Shared code (decided, OQ-P11).** Code common to both apps lives in a third repository (working name `agent-workbench-common`) and is consumed by Present and Analyst as git dependencies pinned to tags:
 

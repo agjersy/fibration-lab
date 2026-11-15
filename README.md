@@ -6,10 +6,13 @@ Model agnostic (Claude through the Anthropic API or an internal gateway; open-we
 
 ## Status
 
-**Design decided.** All workshop questions are closed (see the decision record). No code yet; the build spec for a coding agent is the next step.
+**Ready to build.** The design is decided and the build specification is written. No code yet; implementation starts with [docs/BUILD-SPEC.md](docs/BUILD-SPEC.md).
 
 ## Documents
 
 - [docs/VISION.md](docs/VISION.md): product vision, principles, core experiences, roadmap
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): application design and architecture 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): application design and architecture
+- [docs/PROTOCOL.md](docs/PROTOCOL.md): contract between the deck kernel, deck SDK, core, CLI, and evaluation suite
+- [docs/IPC.md](docs/IPC.md): desktop contract between the React renderer and the Rust core
+- [docs/BUILD-SPEC.md](docs/BUILD-SPEC.md): build order, work packages, and acceptance criteria for the coding agent
 - [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md): decision record and evidence to gather in phase 0
