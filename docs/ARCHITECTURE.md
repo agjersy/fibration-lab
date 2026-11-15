@@ -179,7 +179,7 @@ A project is in one of two modes, chosen at creation and switchable later.
 | Agent tools | `slide.propose_*` on the document | `code.propose_edit` on the script, `deck.build` |
 | Review | Slide diff: before/after thumbnails + text diff | Code diff (CodeMirror, per hunk, as in Analyst) + before/after thumbnails of every slide whose output changed |
 | Preview | Live HTML preview + fidelity render | Fidelity render only, after each build |
-| In-app editing | Text, layout, order, locks, chart data (OQ-P4) | Edit the script; slide-level locks become "frozen" slides the build must reproduce byte-for-byte in text (checked) |
+| In-app editing | Content level: text, layout, order, locks, chart, table, and primitive data, notes (OQ-P4) | Edit the script; slide-level locks become "frozen" slides the build must reproduce byte-for-byte in text (checked) |
 | Citations | Stored on runs and series in the document | Attached in code through the SDK (`cite(shape_or_run, "ref:...")`), written into the `.pptx` as tags and read back by the checker and source lens |
 | Requires code execution | Only for generated slides and skill scripts | Always |
 
@@ -382,7 +382,7 @@ The layout keeps Analyst's shape (project tabs on top, sidebar left, work area c
 | References | List with extraction status; open a reference in the Sources panel; drag a passage into chat. |
 | Assets | Images and imported Analyst figures. |
 | Skills | Available skills, active state per project. |
-| Slide canvas | Live preview; click to edit text in place; layout picker; lock; citation markers that open the source lens. |
+| Slide canvas | Live preview; click to edit text in place; layout picker; lock slide or element; edit chart, table, and diagram-primitive content in a side sheet; citation markers that open the source lens. No free move, resize, or styling (decided, OQ-P4): positioning comes from layouts and primitives, and pixel polish happens in PowerPoint. In code mode the canvas is read-only and edits go to the script. |
 | Agent chat | Streaming; cards for outline, slide proposals, checks, skill script runs, exports, approvals; mode and model switch; context indicator. |
 | Sources | Reference viewer at the cited passage (PDF page view, document text, sheet range, slide). |
 | Checks | Diagnostics by slide and rule, click to jump. |

@@ -21,16 +21,9 @@
 | OQ-P1 Platforms | Windows and macOS are first-class from phase 1 (MSI and PKG/DMG installers, Windows and macOS CI runners). Linux builds from the same code and is supported in phase 4. Skill-script isolation on Windows is weaker and badged. | ARCHITECTURE.md P2, sections 3, 12 |
 | OQ-P2 Endpoints and first user | First-version endpoints: the Anthropic API, internal API gateways (Anthropic Messages or OpenAI-compatible), and open-weight models on internal GPU servers; Bedrock, Vertex, and Foundry are later auth back ends on the same adapter. The app is always a desktop app calling a server. First user is you, but enterprise-ready from phase 0 (offline bundling, proxy and CA, audit log); managed configuration and organization libraries in phase 3. | ARCHITECTURE.md P6, P12, section 11 |
 | OQ-P3 Deck source of truth | Two project modes. Structured (default): typed deck document on template layouts, deterministic renderer, native `process`, `timeline`, `matrix`, and `hierarchy` primitives, plus per-slide script-generated slides as an escape hatch. Code generation (switchable per project): the deck is a sandboxed `python-pptx` build script using the shared deck SDK, checked on its output. Structured → code is a lossless eject; code → structured is a revert to the pre-eject snapshot or a best-effort import. Code execution is therefore required (sandbox details in OQ-P7). | ARCHITECTURE.md P3, P11, sections 5, 5.1, 7.3 |
+| OQ-P4 In-app editing | Content-level editing in structured mode: text in place, layout change, reorder/duplicate/delete, locks on slides and elements, chart and table data, speaker notes, diagram primitive content. No free move/resize or styling; final pixel polish happens in PowerPoint after export. In code mode, editing is editing the build script. | ARCHITECTURE.md sections 5.1, 14 |
 
 ## 3. Open
-
-### OQ-P4. How much editing in the app
-
-**Options.** (a) Text, layout, order, locks, chart data, notes in the app; everything else in PowerPoint after export. (b) A fuller canvas editor (move and resize, shapes, styling). (c) Chat-only changes; no direct editing.
-
-**Recommendation.** (a). PowerPoint is the best slide editor and the user already owns it. The app's job is to reach a good deck quickly and verifiably; the last few percent of polish happens in PowerPoint.
-
-**Decide.** Is "finish in PowerPoint" the expected workflow, or should the app be where the deck lives until it is presented?
 
 ### OQ-P5. Round-trip: bringing PowerPoint edits back
 
