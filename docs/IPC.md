@@ -210,3 +210,34 @@ Lives in `src/ipc/mock.ts` and is selected automatically when the Tauri API is n
 - `terminal_open` echoes input and answers `ls` and `python --version` plausibly.
 - `models_list` returns two entries (one local, one remote); `targets_list` returns `local` and one `ssh` target.
 - Latency is simulated at 50 to 300 ms so loading states are visible.
+
+## 7. Additions after the November 2026 review
+
+These are additive and implemented together with the fixes in [REVIEW.md](REVIEW.md).
+
+**Types**
+
+- `OptionInfo` gains `nargs: string | number | null`, `const: any`, and `positional: boolean`. The run form sends positionals as bare values in declaration order, splits list values for `nargs`, and handles `store_true`, `store_false`, `store_const`, `count`, and `BooleanOptionalAction`; anything else gets a raw "extra arguments" field.
+- `RunView` gains `conversation: ConversationId | null`: the conversation whose agent turn started the run, null for manual and terminal runs. Chat run cards attach by this field, not by "whichever conversation is busy".
+- `SessionInfo` gains `pending_proposals: ProposalView[]`, so a renderer that reloads mid-approval shows the cards again.
+- `ProviderKeyStatus { provider, has_key, source: "env" | "stored" | null, api_key_env: string | null }`.
+
+**Events**
+
+- `{ type: "resync" }`: this subscriber fell behind and events were dropped. The renderer refetches `session_info`, `runs_list`, `figures_list`, and the active conversation's transcript, and reconciles run output through `run_get`.
+- Terminal output travels on its own bounded, coalescing path and can no longer displace control events.
+
+**Commands**
+
+| command | args | result | notes |
+|---|---|---|---|
+| `provider_keys_status` | `{}` | `ProviderKeyStatus[]` | one row per configured provider |
+| `provider_key_set` | `{ provider, key }` | `null` | stores the key in `$ANALYST_HOME/credentials.toml` (mode 0600); an empty key removes it. The environment variable named by `api_key_env` takes precedence when set |
+
+**Ordering and lifecycle rules**
+
+- The renderer calls `session_open` first, then `session_subscribe`, then `session_info` to reconcile. `session_subscribe` on a session that is not open is `not_found`.
+- `session_open` and `session_create` never wait for the kernel. Data that needs no kernel (`fs_tree`, `runs_list`, `figures_list`, transcripts) loads independently of `index_get`.
+- `chat_cancel` also cancels any run the turn started.
+- When the active sandbox is `limits` or `none`, run-class tools (`run.script`, `exec.snippet`, `shell.run`) arrive as proposals with `reason: "ask"` and a summary that says the run is unsandboxed, unless the project sets `policy.unsandboxed_runs = "auto"`.
+- Edit proposals and renderer file commands refuse paths under `.git/` and `.analyst/`, and any path that resolves outside the repo through a symlink.

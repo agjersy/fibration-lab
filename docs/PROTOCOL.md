@@ -450,3 +450,46 @@ count = 3
 ```
 
 Scorecard per model: `{model, tasks: [{name, passed, checks: [{kind, passed, detail}], steps, input_tokens, output_tokens, wall_s, unwanted_edits}], summary: {pass_rate, contract_rate, eq_rate, unwanted_edit_rate, tool_error_rate}}` written to `evals/results/<model>-<timestamp>.json` and a markdown table to stdout. Graders never see the model name.
+
+## 9. Changes after the November 2026 review
+
+Protocol version stays 1; every change is additive or tightens validation. Where this section conflicts with an earlier one, this section wins.
+
+**Kernel launch.** New repeatable argument `--data-dir <abs path>`: external data directories approved by the user (from the global config's target `data_dirs`). `data_dirs` in the repo's `project.toml` (including per-target overrides) must resolve inside the repo root; entries that do not are ignored with a warning in `kernel.hello` logs. `out_dir` must be a relative path inside the root; anything else is rejected at startup with exit code 2.
+
+**`scripts.index`.** `OptionInfo` gains `nargs` (string, number, or null), `const` (literal or null), and `positional` (boolean).
+
+**Runs.**
+- `run.stdout` / `run.stderr` chunks are at most 64 KiB; larger output is split across notifications. `run.attach` replays in chunks of the same size.
+- Decoding uses an incremental UTF-8 decoder with replacement, flushed at end of run.
+- An artifact is re-statted on the final scan; if its size or mtime changed since it was announced, `run.artifact` is emitted again with the final size and `artifacts.jsonl` holds the final record. Zero-byte files are not announced while the run is live.
+- Figure sidecars are named `<file name>.meta.json` (for example `residuals.png.meta.json`), written only for `.png`, `.svg`, and `.pdf`, and never overwrite a file that is not itself a sidecar. The scanner validates the sidecar shape.
+- `show(block=False)` and `plt.pause()` save without closing the figure, under a stable per-figure stem that later saves overwrite. Figures still open at interpreter exit are saved.
+- Run identity: `meta.json` records the supervisor's start time; `run.status`, `runs.list`, and `run.cancel` verify pid plus start time before trusting or signalling a pid, and mark a run whose supervisor is gone as `failed`.
+- On timeout the supervisor kills the whole process group after the grace period. `timeout_s` must be greater than zero.
+- `TMPDIR` for a run is `<runs_dir>/<run_id>/tmp`.
+
+**Resource limits.** No address-space limit by default. `[limits]` in `project.toml`: `address_space_gb` (0 or absent means unlimited), `open_files` (default 4096). `RLIMIT_AS` counts virtual memory, so a limit below the size of memory-mapped data makes `np.memmap` fail; that is why it is opt-in.
+
+**`exec.snippet`.** The REPL protocol uses a private file descriptor, so snippet output on fd 1 or 2 (subprocesses, C libraries) is captured instead of corrupting the protocol. Output and `value_repr` are capped at 64 KiB each. Snippets run on their own single worker and cannot starve other requests; `kernel.shutdown` kills a running snippet.
+
+**Equations.**
+- `Math:` and derived expressions are parsed by a whitelisting AST walker (names become symbols; only the functions listed in section 3 are callable). `sympy.parse_expr`, `sympify`, and `eval` are never applied to repository text.
+- Parsing, derivation, simplification, and lambdify run in a killable subprocess with a time budget; constant exponents above 1000 are rejected as unsupported.
+- `eq.check` tolerance: agree when `|actual - expected| <= tol * max(|expected|, s)` for every trial, where `s` is `tol` times the largest `|expected|` in the sample (and the check is `unavailable` if every expected value is exactly zero and any actual is non-zero beyond 1e-300). There is no fixed absolute floor.
+- A malformed `Math:` section is always reported: `eq.extract` sets `reason`, and `eq.check` returns `unavailable` with that reason rather than checking the derived expression against itself.
+
+**Contract rules (section 3 amendments).**
+- `cli.no-absolute-paths` ignores constant fragments inside f-strings unless the f-string starts with one.
+- `cli.option-for-every-input`: a string is path-like only if it has no whitespace and either has a directory segment with a file extension or ends in a data extension as the first positional argument. Keyword arguments, logging calls, and label/title/legend calls are exempt. Numeric literals are flagged only as positional arguments. `open()` and `Path()` are no longer exempt as builtins.
+- `lib.duplicate` and `lib.near-duplicate` skip functions named in `script_allowed_functions` when they are defined in scripts.
+- With `paths`, cross-file rules compare the listed files against all scripts and the whole library, reporting pairs where at least one side is listed.
+- Near-duplicate search prefilters by length ratio and token-multiset overlap and caches per-file records by mtime.
+
+**Policy (section 2.2).** New key `policy.unsandboxed_runs = "ask" | "auto"` (default `"ask"`): when the kernel reports sandbox `limits` or `none`, run-class tools require approval regardless of `runs`. Scope: `declare_scope` resets at the start of each turn; a declaration that adds files to an existing scope within a turn requires approval. Paths under `.git/` and `.analyst/` are never editable by the agent. Protected globs match case-insensitively on case-insensitive filesystems.
+
+**Repo sync (section 7 amendments).** The file list is hashed without deadlock (`git ls-files -s -z` for tracked files; untracked files hashed with concurrent read and write). After a push, files on the mirror that are absent from the list are deleted, except under `out_dir`, `.venv/`, and `.analyst/`. The mirror directory is `<remote_root>/<repo name>-<8 hex of the local repo path hash>`. A sync is skipped only when the mirror's recorded tree hash (`<mirror>/.analyst/.tree-hash`) matches. Only artifacts with `rendered: true`, plus their sidecars and `run.json`, are pulled back, once per run. `uv add` and `uv remove` run against the local repo and are then synced and applied remotely with `uv sync`. SSH runs with `ConnectTimeout=10`, `ServerAliveInterval=15`, `ServerAliveCountMax=3`; hosts beginning with `-` are rejected.
+
+**Providers (section 4 amendments).** `max_tokens` defaults to 16384 and is configurable per model (`max_output_tokens`). No `temperature` is sent. A stream that ends before a terminal event is `stop: error`. Tool-call arguments cut off by the output limit produce a tool error telling the model to split the edit. Requests retry with backoff on 429, 5xx, and overload before the first byte; a 400 or 422 mentioning `stream_options` is retried once without it. A failed capability probe is not cached, and config overrides always win over the cache.
+
+**Evaluation (section 8 amendments).** Checks count only runs and artifacts the agent produced during the task; `no_edits` diffs the tree against the fixture commit; `edits_within_scope` evaluates each edit against the scope in force when it was decided; `unwanted_edits` counts only accepted out-of-scope edits. Each task runs with a temporary `ANALYST_HOME`.

@@ -292,6 +292,9 @@ pub struct SessionInfo {
     pub active_conversation: ConversationId,
     pub target_kind: TargetKind,
     pub target_host: Option<String>,
+    /// Proposals still awaiting a decision, so a reloaded renderer can show them again.
+    #[serde(default)]
+    pub pending_proposals: Vec<ProposalView>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -347,6 +350,9 @@ pub struct RunView {
     pub stdout_tail: String,
     /// Last 4 KiB.
     pub stderr_tail: String,
+    /// Conversation whose agent turn started this run; null for manual and terminal runs.
+    #[serde(default)]
+    pub conversation: Option<ConversationId>,
 }
 
 /// `RunView & { stdout: string; stderr: string }` (result of `run_get`).
@@ -626,6 +632,9 @@ pub enum SessionEvent {
     SessionChanged {
         info: SessionInfo,
     },
+    /// This subscriber fell behind and events were dropped. The renderer must refetch
+    /// `session_info`, `runs_list`, `figures_list`, and the active transcript.
+    Resync,
 }
 
 #[cfg(test)]
@@ -698,6 +707,7 @@ mod tests {
             .with_large_int("number");
         // Root types; dependencies are exported alongside.
         AppInfo::export_all(&cfg).unwrap();
+        ProviderKeyStatus::export_all(&cfg).unwrap();
         SessionSummary::export_all(&cfg).unwrap();
         SessionInfo::export_all(&cfg).unwrap();
         PolicyView::export_all(&cfg).unwrap();
@@ -761,4 +771,14 @@ mod tests {
         assert!(names.iter().any(|n| n == "TranscriptEvent"));
         assert!(names.iter().any(|n| n == "EqCheck"));
     }
+}
+
+/// Where a provider's API key comes from (result rows of `provider_keys_status`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProviderKeyStatus {
+    pub provider: String,
+    pub has_key: bool,
+    /// `"env"` (the provider's `api_key_env` is set), `"stored"` (saved through the app), or null.
+    pub source: Option<String>,
+    pub api_key_env: Option<String>,
 }

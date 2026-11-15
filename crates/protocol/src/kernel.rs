@@ -103,6 +103,17 @@ pub struct OptionInfo {
     pub choices: Option<Vec<Value>>,
     #[serde(default)]
     pub action: Option<String>,
+    /// argparse `nargs` (`"*"`, `"+"`, `"?"`, or a number) when given.
+    #[serde(default)]
+    #[ts(type = "string | number | null")]
+    pub nargs: Option<Value>,
+    /// argparse `const` literal when given.
+    #[serde(default, rename = "const")]
+    #[ts(type = "any")]
+    pub const_value: Value,
+    /// True for positional arguments (no leading dash in `flags`).
+    #[serde(default)]
+    pub positional: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

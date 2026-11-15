@@ -57,6 +57,7 @@ export type { ProposalDecision } from "./ProposalDecision";
 export type { ProposalKind } from "./ProposalKind";
 export type { ProposalReason } from "./ProposalReason";
 export type { ProposalView } from "./ProposalView";
+export type { ProviderKeyStatus } from "./ProviderKeyStatus";
 export type { ProviderKind } from "./ProviderKind";
 export type { RunDetail } from "./RunDetail";
 export type { RunMeta } from "./RunMeta";

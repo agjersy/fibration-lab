@@ -10,4 +10,8 @@ stdout_tail: string,
 /**
  * Last 4 KiB.
  */
-stderr_tail: string, };
+stderr_tail: string, 
+/**
+ * Conversation whose agent turn started this run; null for manual and terminal runs.
+ */
+conversation: string | null, };

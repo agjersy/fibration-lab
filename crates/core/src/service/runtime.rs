@@ -116,6 +116,7 @@ pub struct RunRecord {
 impl RunRecord {
     pub fn view(&self) -> RunView {
         RunView {
+            conversation: None,
             meta: self.meta.clone(),
             target: self.target.clone(),
             artifacts: self.artifacts.clone(),
@@ -466,6 +467,7 @@ impl SessionRuntime {
             .collect();
         let target = self.target();
         SessionInfo {
+            pending_proposals: Vec::new(),
             policy: PolicyView::from(&self.effective_policy()),
             kernel: self.kernel_state(),
             sandbox: hello.as_ref().map(|h| h.sandbox.clone()),
@@ -985,6 +987,7 @@ impl SessionRuntime {
             for r in runs.into_iter().rev() {
                 if seen.insert(r.meta.run_id.clone()) {
                     views.push(RunView {
+                        conversation: None,
                         meta: r.meta,
                         target: r.target,
                         artifacts: vec![],
@@ -1018,6 +1021,7 @@ impl SessionRuntime {
             .unwrap_or_default();
         Ok(RunDetail {
             view: RunView {
+                conversation: None,
                 meta: run.meta,
                 target: run.target,
                 artifacts,
@@ -1319,6 +1323,7 @@ impl SessionRuntime {
 
     fn synthesized_view(&self, s: &ScannedRun) -> RunView {
         RunView {
+            conversation: None,
             meta: RunMeta {
                 run_id: s.run_id.clone(),
                 script: s.script.clone(),
@@ -1352,6 +1357,7 @@ impl SessionRuntime {
                 Some(r) => r.view(),
                 None => match session.find_run(&scanned.run_id).ok().flatten() {
                     Some(r) => RunView {
+                        conversation: None,
                         meta: r.meta,
                         target: r.target,
                         artifacts: vec![],
@@ -1383,6 +1389,7 @@ impl SessionRuntime {
                     .run_record(&r.meta.run_id)
                     .map(|rec| rec.view())
                     .unwrap_or(RunView {
+                        conversation: None,
                         meta: r.meta,
                         target: r.target,
                         artifacts: vec![],

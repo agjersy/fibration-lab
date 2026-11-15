@@ -2,12 +2,17 @@
 import type { ConversationSummary } from "./ConversationSummary";
 import type { KernelState } from "./KernelState";
 import type { PolicyView } from "./PolicyView";
+import type { ProposalView } from "./ProposalView";
 import type { TargetKind } from "./TargetKind";
 
 /**
  * `SessionInfo extends SessionSummary`.
  */
-export type SessionInfo = { policy: PolicyView, kernel: KernelState, sandbox: string | null, python_abs: string | null, conversations: Array<ConversationSummary>, active_conversation: string, target_kind: TargetKind, target_host: string | null, id: string, 
+export type SessionInfo = { policy: PolicyView, kernel: KernelState, sandbox: string | null, python_abs: string | null, conversations: Array<ConversationSummary>, active_conversation: string, target_kind: TargetKind, target_host: string | null, 
+/**
+ * Proposals still awaiting a decision, so a reloaded renderer can show them again.
+ */
+pending_proposals: Array<ProposalView>, id: string, 
 /**
  * Repo directory name unless renamed.
  */
