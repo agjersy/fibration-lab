@@ -36,6 +36,7 @@ fn fixture(script: &str) -> Fixture {
         runs_dir: runs.to_string_lossy().to_string(),
         out_dir: None,
         sandbox: Some("none".into()),
+        data_dirs: vec![],
     };
     Fixture {
         root: repo.path().to_path_buf(),
@@ -177,5 +178,231 @@ async fn reconnect_reattaches_running_runs() {
     }
     assert_eq!(all.matches("tick 0").count(), 1, "no duplicate replay");
     assert!(client.active_runs().await.is_empty());
+    client.shutdown().await.unwrap();
+}
+
+/// R6: a kernel that stops answering must fail the call instead of hanging forever.
+#[tokio::test]
+async fn calls_time_out_when_the_kernel_stops_answering() {
+    let fx = fixture(FAST_SCRIPT);
+    let client = KernelClient::connect(Box::new(fx.transport.clone()), "test")
+        .await
+        .expect("connect");
+    assert_eq!(client.call_timeout(), Duration::from_secs(120));
+    // The snippet outlives the limit given to this one call.
+    let started = std::time::Instant::now();
+    let err = client
+        .call_value_with_timeout(
+            "exec.snippet",
+            serde_json::json!({"code": "import time; time.sleep(5)"}),
+            Duration::from_millis(300),
+        )
+        .await
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(4));
+    let msg = err.to_string();
+    assert!(
+        msg.contains("exec.snippet") && msg.contains("did not answer"),
+        "{msg}"
+    );
+    assert!(matches!(
+        err,
+        analyst_core::kernel::KernelError::Timeout { .. }
+    ));
+    // The default limit is configurable.
+    client.set_call_timeout(Duration::from_millis(200));
+    assert_eq!(client.call_timeout(), Duration::from_millis(200));
+}
+
+#[cfg(target_os = "linux")]
+fn alive(pid: u32) -> bool {
+    // A killed but not yet reaped child is a zombie: its status line says so.
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => !stat.contains(") Z "),
+        Err(_) => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_gone(pid: u32) -> bool {
+    for _ in 0..100 {
+        if !alive(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+/// R8: abandoning a connect (timeout) must not leave the spawned process behind.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn abandoned_connect_kills_the_child() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("pid");
+    // A "kernel" that never answers hello (like ssh waiting on a dead host).
+    let code = format!(
+        "import os,time; open({:?},'w').write(str(os.getpid())); time.sleep(600)",
+        pidfile.to_string_lossy()
+    );
+    let args = KernelArgs {
+        python: "python3".into(),
+        root: dir.path().to_string_lossy().to_string(),
+        runs_dir: dir.path().to_string_lossy().to_string(),
+        out_dir: None,
+        sandbox: None,
+        data_dirs: vec![],
+    };
+    let transport = LocalStdio::with_launcher(vec!["python3".into(), "-c".into(), code], args);
+    let r = tokio::time::timeout(
+        Duration::from_secs(3),
+        KernelClient::connect(Box::new(transport), "test"),
+    )
+    .await;
+    assert!(r.is_err(), "connect should still be waiting for hello");
+    let pid: u32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        wait_gone(pid).await,
+        "process {pid} leaked after the abandoned connect"
+    );
+}
+
+/// R8: dropping the last client handle ends the kernel process.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn dropping_the_last_handle_kills_the_kernel() {
+    let fx = fixture(FAST_SCRIPT);
+    let client = KernelClient::connect(Box::new(fx.transport.clone()), "test")
+        .await
+        .expect("connect");
+    let hello = client.hello().await.unwrap();
+    let Some(pid) = kernel_pid(&client).await else {
+        eprintln!("skipping: cannot determine the kernel pid ({hello:?})");
+        return;
+    };
+    assert!(alive(pid));
+    let second = client.clone();
+    drop(client);
+    assert!(
+        second.is_connected().await,
+        "a remaining handle keeps it alive"
+    );
+    assert!(alive(pid));
+    drop(second);
+    assert!(
+        wait_gone(pid).await,
+        "kernel {pid} survived its last handle"
+    );
+}
+
+/// The kernel's pid, found through a snippet (the fake kernel runs it in-process or in a
+/// direct child).
+#[cfg(target_os = "linux")]
+async fn kernel_pid(client: &KernelClient) -> Option<u32> {
+    let r = client
+        .exec_snippet("import os; print(os.getpid(), os.getppid())", None)
+        .await
+        .ok()?;
+    let mut it = r.stdout.split_whitespace();
+    let me: u32 = it.next()?.parse().ok()?;
+    let parent: u32 = it.next()?.parse().ok()?;
+    // Whichever of the two is running fake_kernel.py is the kernel.
+    for pid in [me, parent] {
+        let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        if String::from_utf8_lossy(&cmd).contains("fake_kernel.py") {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// A10: a run whose owner is dropped (turn cancelled) is cancelled on the target.
+#[tokio::test]
+async fn cancel_guard_cancels_the_run_when_dropped() {
+    let fx = fixture(
+        "import time\nfor i in range(100):\n    print('tick', i, flush=True)\n    time.sleep(0.2)\n",
+    );
+    let client = KernelClient::connect(Box::new(fx.transport.clone()), "test")
+        .await
+        .expect("connect");
+    let mut rx = client.subscribe();
+    let params = || RunStartParams {
+        script: "scripts/hello.py".into(),
+        timeout_s: Some(60.0),
+        ..Default::default()
+    };
+    let started = client.run_start(params()).await.unwrap();
+    let guard = client.cancel_guard(&started.run_id);
+    assert_eq!(guard.run_id(), started.run_id);
+    drop(guard);
+    let (done, _, _, _) =
+        analyst_core::evals::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(15)).await;
+    assert_eq!(done.expect("run.done").status, RunStatus::Cancelled);
+
+    // A disarmed guard leaves the run alone.
+    let second = client.run_start(params()).await.unwrap();
+    client.cancel_guard(&second.run_id).disarm();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        client.run_status(&second.run_id).await.unwrap().status,
+        RunStatus::Running
+    );
+    client.run_cancel(&second.run_id).await.unwrap();
+    client.shutdown().await.unwrap();
+}
+
+/// A10 through the tool layer: dropping a `run.script` call (what cancelling a turn does)
+/// stops the script instead of leaving it running on the target.
+#[tokio::test]
+async fn dropping_a_run_script_call_cancels_the_run() {
+    use analyst_core::session::Session;
+    use analyst_core::tools::ToolContext;
+    use analyst_protocol::config::ProjectConfig;
+
+    let fx = fixture(
+        "import time\nfor i in range(200):\n    print('tick', i, flush=True)\n    time.sleep(0.2)\n",
+    );
+    let home = tempfile::tempdir().unwrap();
+    analyst_core::checkpoint::git(&fx.root, &["init", "-q"], None).unwrap();
+    let client = KernelClient::connect(Box::new(fx.transport.clone()), "test")
+        .await
+        .expect("connect");
+    let session = Session::create(home.path(), &fx.root, "local", "p/m").unwrap();
+    let mut ctx = ToolContext::new(
+        &fx.root,
+        home.path(),
+        session,
+        "c1",
+        ProjectConfig::default(),
+    );
+    ctx.kernel = Some(client.clone());
+    let mut rx = client.subscribe();
+    let args = serde_json::json!({"script": "scripts/hello.py"});
+    // The call is still streaming when its future is dropped.
+    let dropped = tokio::time::timeout(
+        Duration::from_secs(2),
+        ctx.dispatch("t1", "run.script", &args),
+    )
+    .await;
+    assert!(dropped.is_err(), "the run should still be in progress");
+    let run_id = client
+        .runs_list(Some(1))
+        .await
+        .unwrap()
+        .runs
+        .first()
+        .map(|r| r.run_id.clone())
+        .expect("a run was started");
+    let (done, _, _, _) =
+        analyst_core::evals::wait_for_run(&mut rx, &run_id, Duration::from_secs(15)).await;
+    let status = match done {
+        Some(d) => d.status,
+        None => client.run_status(&run_id).await.unwrap().status,
+    };
+    assert_eq!(status, RunStatus::Cancelled);
     client.shutdown().await.unwrap();
 }

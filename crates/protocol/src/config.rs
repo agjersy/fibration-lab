@@ -83,7 +83,13 @@ pub struct ModelConfig {
     pub tools: Option<ToolSupport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
+    /// Output token limit per model call (`max_tokens`); default 16384.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
 }
+
+/// Default `max_tokens` when a model has no `max_output_tokens` override (PROTOCOL 9).
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16384;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[serde(rename_all = "lowercase")]
@@ -113,13 +119,70 @@ pub struct TargetConfig {
 // ---- project config ----
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default)]
+#[serde(from = "ProjectConfigRaw", into = "ProjectConfigRaw")]
 pub struct ProjectConfig {
     pub project: ProjectSection,
     pub contract: ContractConfig,
     pub policy: PolicyConfig,
+    /// `policy.unsandboxed_runs` in the file (PROTOCOL 9). Kept beside `policy` rather than
+    /// inside [`PolicyConfig`] so a session policy override can never loosen it.
+    pub unsandboxed_runs: UnsandboxedRuns,
     /// Per-target overrides keyed by target name.
     pub targets: BTreeMap<String, TargetOverride>,
+}
+
+/// What run-class tools do when the kernel reports sandbox `limits` or `none`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum UnsandboxedRuns {
+    #[default]
+    Ask,
+    Auto,
+}
+
+/// On-disk shape of `[policy]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+struct PolicyTable {
+    #[serde(flatten)]
+    base: PolicyConfig,
+    unsandboxed_runs: UnsandboxedRuns,
+}
+
+/// On-disk shape of `project.toml`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+struct ProjectConfigRaw {
+    project: ProjectSection,
+    contract: ContractConfig,
+    policy: PolicyTable,
+    targets: BTreeMap<String, TargetOverride>,
+}
+
+impl From<ProjectConfigRaw> for ProjectConfig {
+    fn from(r: ProjectConfigRaw) -> Self {
+        ProjectConfig {
+            project: r.project,
+            contract: r.contract,
+            policy: r.policy.base,
+            unsandboxed_runs: r.policy.unsandboxed_runs,
+            targets: r.targets,
+        }
+    }
+}
+
+impl From<ProjectConfig> for ProjectConfigRaw {
+    fn from(c: ProjectConfig) -> Self {
+        ProjectConfigRaw {
+            project: c.project,
+            contract: c.contract,
+            policy: PolicyTable {
+                base: c.policy,
+                unsandboxed_runs: c.unsandboxed_runs,
+            },
+            targets: c.targets,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -363,6 +426,14 @@ data_dirs = ["/data/shared/run3"]
         assert_eq!(c.policy.runs, RunPolicy::Ask);
         assert_eq!(c.policy.packages, AskPolicy::Deny);
         assert_eq!(c.policy.max_steps, 12);
+        assert_eq!(c.unsandboxed_runs, UnsandboxedRuns::Ask);
+        let auto: ProjectConfig =
+            toml::from_str("[policy]\nunsandboxed_runs = \"auto\"\nruns = \"ask\"\n").unwrap();
+        assert_eq!(auto.unsandboxed_runs, UnsandboxedRuns::Auto);
+        assert_eq!(auto.policy.runs, RunPolicy::Ask);
+        assert!(toml::to_string(&auto)
+            .unwrap()
+            .contains("unsandboxed_runs = \"auto\""));
         assert_eq!(c.contract.severity["lib.near-duplicate"], "warn");
         assert_eq!(
             c.targets["lab-gpu"].data_dirs.as_deref(),

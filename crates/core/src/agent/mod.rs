@@ -1,6 +1,16 @@
 //! The agent loop (ARCHITECTURE 5.7): context assembly, modes, a bounded tool loop with policy
 //! evaluation and approvals, scope declaration, post-edit lint and contract checks with
 //! bounded auto-fix, run failures fed back, turn summaries, and compaction.
+//!
+//! Invariants this module maintains:
+//!
+//! - Every way out of a turn (normal end, step limit, model error, recording error) goes
+//!   through one finaliser that leaves a history both providers accept, records the turn
+//!   summary, and re-baselines the working tree.
+//! - Compaction only ever cuts the history where no tool call is separated from its result,
+//!   works inside the current turn, and always makes progress even when the summary call
+//!   fails.
+//! - The declared edit scope lasts one turn, and widening it needs approval.
 
 pub mod approver;
 pub mod prompt;
@@ -10,14 +20,14 @@ pub use approver::{
 };
 
 use crate::checkpoint;
-use crate::policy::{Decision as PolicyDecision, Policy};
+use crate::policy::{Decision as PolicyDecision, Policy, ScopeChange};
 use crate::providers::text_protocol;
 use crate::providers::ModelClient;
 use crate::tools::proposals::{self, Proposal};
 use crate::tools::registry::{self, ToolClass};
 use crate::tools::ToolContext;
-use crate::util::{estimate_tokens, now_rfc3339};
-use analyst_protocol::config::ToolSupport;
+use crate::util::{estimate_tokens, now_rfc3339, truncate_bytes};
+use analyst_protocol::config::{ToolSupport, DEFAULT_MAX_OUTPUT_TOKENS};
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::{Diagnostic, Severity};
 use analyst_protocol::model::{
@@ -27,7 +37,7 @@ use analyst_protocol::transcript::{DecidedBy, Decision, Event, ProposalKind};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -42,6 +52,8 @@ pub struct AgentConfig {
     pub model_name: String,
     pub caps: ModelCapabilities,
     pub checkpoint_keep: usize,
+    /// Explicit output token limit per model call. `None` uses the model's configured
+    /// `max_output_tokens`, else 16384, never more than half the context window.
     pub max_tokens: Option<u32>,
 }
 
@@ -55,8 +67,17 @@ impl AgentConfig {
             model_name: model_name.to_string(),
             caps,
             checkpoint_keep: 20,
-            max_tokens: Some(4096),
+            max_tokens: None,
         }
+    }
+
+    /// The `max_tokens` sent with each request.
+    pub fn effective_max_tokens(&self) -> u32 {
+        let want = self
+            .max_tokens
+            .or(self.caps.max_output_tokens)
+            .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
+        want.min((self.caps.context_window / 2).max(1024)).max(1)
     }
 }
 
@@ -72,7 +93,8 @@ pub struct TurnSummary {
     pub output_tokens: u64,
     pub tool_calls: u32,
     pub tool_errors: u32,
-    /// Accepted edits outside the declared scope (or with no scope declared).
+    /// Edits that were applied to a file outside the scope in force when they were decided
+    /// (or with no scope declared).
     pub unwanted_edits: u32,
     pub open_issues: Vec<String>,
     pub stopped_by_max_steps: bool,
@@ -91,6 +113,17 @@ pub struct Agent {
     pinned: Vec<String>,
     turn_counter: u32,
     project_map: String,
+    /// Set while a turn is running; still set afterwards only if the turn future was dropped.
+    mid_turn: bool,
+    /// Files this agent wrote during the current (or an aborted) turn.
+    touched: BTreeSet<String>,
+    /// `declare_scope` calls accepted this turn.
+    declarations: u32,
+    /// History size right after the last summarising compaction (thrash guard).
+    compact_floor: usize,
+    /// Tool-call ids used so far in this conversation. Providers may repeat ids between
+    /// responses; the transcript and the history need them unique.
+    used_call_ids: HashSet<String>,
     pub on_text: Option<TextSink>,
     pub on_event: Option<EventSink>,
 }
@@ -103,6 +136,17 @@ struct Collected {
     stop: StopReason,
     message: Option<String>,
 }
+
+/// Per-turn working state shared by the loop and the finaliser.
+#[derive(Default)]
+struct TurnState {
+    summary: TurnSummary,
+    files_changed: BTreeSet<String>,
+    last_text: String,
+}
+
+const CANCELLED_RESULT: &str =
+    "{\"error\":\"interrupted: the turn ended before this tool call produced a result\"}";
 
 impl Agent {
     pub fn new(
@@ -122,6 +166,11 @@ impl Agent {
             pinned: vec![],
             turn_counter: 0,
             project_map: String::new(),
+            mid_turn: false,
+            touched: BTreeSet::new(),
+            declarations: 0,
+            compact_floor: 0,
+            used_call_ids: HashSet::new(),
             on_text: None,
             on_event: None,
         }
@@ -136,44 +185,152 @@ impl Agent {
         &self.history
     }
 
-    /// Make the history well-formed again after a turn was aborted mid-way (the desktop app
-    /// cancels turns by dropping the future): every assistant tool call needs a result, and the
-    /// history must end with an assistant message before the next user message.
-    pub fn recover_after_cancel(&mut self) {
-        if let Some(last) = self.history.last() {
-            if last.role == Role::Assistant {
-                let pending: Vec<String> = last
-                    .content
-                    .iter()
-                    .filter_map(|p| match p {
-                        ContentPart::ToolCall { id, .. } => Some(id.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                if !pending.is_empty() {
-                    let parts = pending
-                        .into_iter()
-                        .map(|id| ContentPart::ToolResult {
-                            tool_call_id: id,
-                            content: "{\"error\":\"cancelled by the user\"}".into(),
-                            is_error: true,
-                        })
-                        .collect();
-                    self.history.push(Message {
-                        role: Role::User,
-                        content: parts,
-                    });
-                }
-            }
-        }
-        if !matches!(self.history.last(), Some(m) if m.role == Role::Assistant) {
-            self.history
-                .push(Message::assistant_text("(turn cancelled by the user)"));
-        }
-    }
-
     pub fn pinned_facts(&self) -> &[String] {
         &self.pinned
+    }
+
+    /// Whether a turn was started and never finalised (its future was dropped).
+    pub fn is_mid_turn(&self) -> bool {
+        self.mid_turn
+    }
+
+    /// Tell the policy which sandbox the kernel reported. `run_turn` does this itself from
+    /// `kernel.hello` before the first tool call; callers with other knowledge may set it too.
+    pub fn set_sandbox(&mut self, kind: &str) {
+        self.policy.set_sandbox(kind);
+    }
+
+    /// Make the agent usable again after a turn was aborted mid-way (the desktop app cancels
+    /// turns by dropping the future): the history is repaired so both providers accept it,
+    /// and the working tree is re-baselined so the next turn does not report the agent's own
+    /// edits as the user's. Runs started by the dropped turn cancel themselves (see
+    /// `KernelClient::cancel_guard`). Idempotent; `run_turn` also calls it when needed.
+    pub fn recover_after_cancel(&mut self) {
+        repair_history(&mut self.history, "(turn cancelled by the user)");
+        let _ = self.ctx.session.mark_worktree();
+        self.touched.clear();
+        self.mid_turn = false;
+    }
+
+    /// Rebuild the model history, pinned facts, turn counter, and (for a turn that never
+    /// finished) the declared scope from a stored transcript, so a reopened conversation
+    /// continues where it stopped (A11). Replaces any state the agent had.
+    pub fn rehydrate(&mut self, events: &[Event]) {
+        let text_protocol = self.uses_text_protocol();
+        let mut history: Vec<Message> = Vec::new();
+        let mut pinned: Vec<String> = Vec::new();
+        let mut scope: Option<Vec<String>> = None;
+        let mut turns = 0u32;
+        // Tool calls by id: (model-facing name, arguments).
+        let mut calls: std::collections::HashMap<String, (String, Value)> = Default::default();
+        let push =
+            |history: &mut Vec<Message>, role: Role, part: ContentPart| match history.last_mut() {
+                Some(m) if m.role == role => m.content.push(part),
+                _ => history.push(Message {
+                    role,
+                    content: vec![part],
+                }),
+            };
+        for e in events {
+            match e {
+                Event::User { text, .. } => {
+                    turns += 1;
+                    scope = None;
+                    pinned.retain(|p| !p.starts_with("Declared scope:") && !p.starts_with("Plan:"));
+                    // A new user message always starts a new message, even after tool results.
+                    history.push(Message::user_text(text.clone()));
+                }
+                Event::Assistant { text, .. } => {
+                    if text.starts_with("[model error]") || text.starts_with("[turn cancelled") {
+                        continue;
+                    }
+                    push(
+                        &mut history,
+                        Role::Assistant,
+                        ContentPart::Text { text: text.clone() },
+                    );
+                }
+                Event::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                    ..
+                } => {
+                    calls.insert(id.clone(), (name.clone(), arguments.clone()));
+                    self.used_call_ids.insert(id.clone());
+                    let part = if text_protocol {
+                        ContentPart::Text {
+                            text: format!(
+                                "```tool_call\n{}\n```",
+                                json!({"name": name, "arguments": arguments})
+                            ),
+                        }
+                    } else {
+                        ContentPart::ToolCall {
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments: arguments.clone(),
+                        }
+                    };
+                    push(&mut history, Role::Assistant, part);
+                }
+                Event::ToolResult { id, ok, result, .. } => {
+                    let Some((name, args)) = calls.get(id) else {
+                        continue;
+                    };
+                    if *ok {
+                        match registry::internal_name(name) {
+                            Some("pin_fact") => {
+                                if let Some(f) = args.get("fact").and_then(Value::as_str) {
+                                    pinned.push(f.to_string());
+                                }
+                            }
+                            Some("declare_scope") => {
+                                let files = str_array(result.get("scope"));
+                                pinned.retain(|p| !p.starts_with("Declared scope:"));
+                                pinned.push(format!("Declared scope: {}", files.join(", ")));
+                                if let Some(plan) = args.get("plan").and_then(Value::as_str) {
+                                    pinned.push(format!("Plan: {}", truncate_bytes(plan, 500)));
+                                }
+                                scope = Some(files);
+                            }
+                            _ => {}
+                        }
+                    }
+                    let part = if text_protocol {
+                        ContentPart::Text {
+                            text: text_protocol::format_result(name, result),
+                        }
+                    } else {
+                        ContentPart::ToolResult {
+                            tool_call_id: id.clone(),
+                            content: serde_json::to_string(result).unwrap_or_default(),
+                            is_error: !*ok,
+                        }
+                    };
+                    push(&mut history, Role::User, part);
+                }
+                Event::Summary { files_changed, .. } => {
+                    // The turn finished: its scope is gone.
+                    scope = None;
+                    if !files_changed.is_empty() {
+                        pinned.push(format!(
+                            "Turn {turns}: changed {}",
+                            files_changed.join(", ")
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        repair_history(&mut history, "(the previous turn was interrupted)");
+        self.history = history;
+        self.pinned = pinned;
+        self.turn_counter = turns;
+        self.policy.scope = scope;
+        self.mid_turn = false;
+        self.touched.clear();
+        self.compact_floor = 0;
     }
 
     fn uses_text_protocol(&self) -> bool {
@@ -227,8 +384,7 @@ impl Agent {
             } else {
                 registry::defs_for_mode(self.config.mode)
             },
-            max_tokens: self.config.max_tokens,
-            temperature: None,
+            max_tokens: Some(self.config.effective_max_tokens()),
         }
     }
 
@@ -239,8 +395,9 @@ impl Agent {
             calls: vec![],
             input_tokens: 0,
             output_tokens: 0,
-            stop: StopReason::End,
-            message: None,
+            // A stream that ends without a stop event did not finish.
+            stop: StopReason::Error,
+            message: Some("the model stream ended without a stop event".into()),
         };
         while let Some(ev) = stream.next().await {
             match ev {
@@ -274,12 +431,78 @@ impl Agent {
 
     /// Run one turn for a user message.
     pub async fn run_turn(&mut self, user_text: &str) -> Result<TurnSummary> {
+        if self.mid_turn {
+            // The previous turn's future was dropped and nobody cleaned up.
+            self.recover_after_cancel();
+        }
+        repair_history(&mut self.history, "(the previous turn was interrupted)");
         self.turn_counter += 1;
-        let turn_id = format!("{}-{}", self.ctx.session.id(), self.turn_counter);
-        let mut summary = TurnSummary::default();
+        self.mid_turn = true;
+        self.touched.clear();
+        self.declarations = 0;
+        // The declared scope lasts one turn (G5).
+        self.policy.begin_turn();
+        self.pinned
+            .retain(|p| !p.starts_with("Declared scope:") && !p.starts_with("Plan:"));
+        // The policy must know the sandbox before the first tool call (G2).
+        self.policy.unsandboxed_runs = self.ctx.project.unsandboxed_runs;
+        if let Some(k) = &self.ctx.kernel {
+            if let Some(h) = k.hello().await {
+                self.policy.set_sandbox(&h.sandbox);
+            }
+        }
+        let mut st = TurnState::default();
+        let outcome = self.turn_body(user_text, &mut st).await;
+        self.finish_turn(st, outcome)
+    }
 
+    /// The one place a turn ends (A1): whatever happened, the history is left valid for both
+    /// providers, the summary is recorded, and the worktree baseline is moved past the
+    /// agent's own edits.
+    fn finish_turn(&mut self, st: TurnState, outcome: Result<()>) -> Result<TurnSummary> {
+        let TurnState {
+            mut summary,
+            files_changed,
+            last_text,
+        } = st;
+        let note = match &outcome {
+            Err(e) => format!("(the turn ended early: {e})"),
+            Ok(()) if summary.stopped_by_max_steps => format!(
+                "(stopped after the limit of {} steps; ask me to continue)",
+                self.config.max_steps
+            ),
+            Ok(()) => "(turn ended)".to_string(),
+        };
+        repair_history(&mut self.history, &note);
+        summary.text = last_text;
+        summary.files_changed = files_changed.into_iter().collect();
+        if !summary.files_changed.is_empty() {
+            self.pinned.push(format!(
+                "Turn {}: changed {}",
+                self.turn_counter,
+                summary.files_changed.join(", ")
+            ));
+        }
+        let recorded = self.record(Event::Summary {
+            ts: now_rfc3339(),
+            text: summary.text.clone(),
+            files_changed: summary.files_changed.clone(),
+            runs: summary.runs.clone(),
+            figures: summary.figures.clone(),
+        });
+        let _ = self.ctx.session.mark_worktree();
+        self.touched.clear();
+        self.mid_turn = false;
+        outcome?;
+        recorded?;
+        Ok(summary)
+    }
+
+    async fn turn_body(&mut self, user_text: &str, st: &mut TurnState) -> Result<()> {
         if self.config.mode == Mode::Build {
-            match checkpoint::create(&self.ctx.repo, &turn_id) {
+            // Unique across conversations and processes; an existing ref is never replaced.
+            let id = checkpoint::new_id(&self.ctx.conv_id);
+            match checkpoint::create(&self.ctx.repo, &id) {
                 Ok(r) => {
                     self.record(Event::Checkpoint {
                         ts: now_rfc3339(),
@@ -312,22 +535,20 @@ impl Agent {
         self.history.push(Message::user_text(text));
 
         let mut fix_rounds = 0u32;
-        let mut files_changed: BTreeSet<String> = BTreeSet::new();
-        let mut last_text = String::new();
         loop {
-            if summary.steps >= self.config.max_steps {
-                summary.stopped_by_max_steps = true;
-                summary
+            if st.summary.steps >= self.config.max_steps {
+                st.summary.stopped_by_max_steps = true;
+                st.summary
                     .open_issues
                     .push(format!("stopped after max_steps={}", self.config.max_steps));
-                break;
+                return Ok(());
             }
-            summary.steps += 1;
+            st.summary.steps += 1;
             self.maybe_compact().await;
 
             let c = self.call_model().await;
-            summary.input_tokens += c.input_tokens;
-            summary.output_tokens += c.output_tokens;
+            st.summary.input_tokens += c.input_tokens;
+            st.summary.output_tokens += c.output_tokens;
             self.record(Event::Usage {
                 ts: now_rfc3339(),
                 input_tokens: c.input_tokens,
@@ -336,10 +557,15 @@ impl Agent {
             })?;
             if c.stop == StopReason::Error {
                 let msg = c.message.clone().unwrap_or_else(|| "model error".into());
+                // Keep whatever text arrived before the failure visible to the user.
+                if !c.text.trim().is_empty() {
+                    st.last_text = c.text.clone();
+                }
                 self.record(Event::Assistant {
                     ts: now_rfc3339(),
                     text: format!("[model error] {msg}"),
                 })?;
+                st.summary.open_issues.push(format!("model error: {msg}"));
                 return Err(anyhow!("model error: {msg}"));
             }
 
@@ -350,7 +576,7 @@ impl Agent {
                     .enumerate()
                     .map(|(i, p)| {
                         (
-                            format!("tc-{}-{}-{i}", self.turn_counter, summary.steps),
+                            format!("tc-{}-{}-{i}", self.turn_counter, st.summary.steps),
                             p.name,
                             p.arguments,
                         )
@@ -361,20 +587,36 @@ impl Agent {
                 (c.text.clone(), vec![])
             };
             calls.extend(c.calls.clone());
+            // Ids key the results in the next request and in the transcript.
+            for (i, call) in calls.iter_mut().enumerate() {
+                if call.0.is_empty() || !self.used_call_ids.insert(call.0.clone()) {
+                    call.0 = format!(
+                        "tc-{}-{}-{i}-{}",
+                        self.turn_counter,
+                        st.summary.steps,
+                        crate::util::short_rand()
+                    );
+                    self.used_call_ids.insert(call.0.clone());
+                }
+            }
 
             let mut assistant_parts = Vec::new();
-            if !clean_text.trim().is_empty() {
+            // Whitespace-only text is neither recorded nor sent back (A4).
+            let has_text = !clean_text.trim().is_empty();
+            if has_text {
                 self.record(Event::Assistant {
                     ts: now_rfc3339(),
                     text: clean_text.clone(),
                 })?;
-                last_text = clean_text.clone();
+                st.last_text = clean_text.clone();
             }
             if self.uses_text_protocol() {
-                assistant_parts.push(ContentPart::Text {
-                    text: c.text.clone(),
-                });
-            } else if !clean_text.is_empty() {
+                if !c.text.trim().is_empty() {
+                    assistant_parts.push(ContentPart::Text {
+                        text: c.text.clone(),
+                    });
+                }
+            } else if has_text {
                 assistant_parts.push(ContentPart::Text {
                     text: clean_text.clone(),
                 });
@@ -406,30 +648,35 @@ impl Agent {
 
             if calls.is_empty() {
                 if c.stop == StopReason::MaxTokens {
-                    summary
+                    st.summary
                         .open_issues
                         .push("the model hit its output token limit".into());
                 }
-                break;
+                return Ok(());
             }
 
             let mut result_parts: Vec<ContentPart> = Vec::new();
             let mut edited_this_round: Vec<String> = Vec::new();
             for (id, model_name, args) in &calls {
-                summary.tool_calls += 1;
+                st.summary.tool_calls += 1;
                 let outcome = self
-                    .execute_call(id, model_name, args, &mut summary, &mut edited_this_round)
+                    .execute_call(
+                        id,
+                        model_name,
+                        args,
+                        &mut st.summary,
+                        &mut edited_this_round,
+                    )
                     .await;
-                self.record(Event::ToolResult {
-                    ts: now_rfc3339(),
-                    id: id.clone(),
-                    ok: outcome.ok,
-                    result: outcome.result.clone(),
-                    truncated: if outcome.truncated { Some(true) } else { None },
-                })?;
-                if !outcome.ok {
-                    summary.tool_errors += 1;
+                for f in &edited_this_round {
+                    self.touched.insert(f.clone());
+                    st.files_changed.insert(f.clone());
                 }
+                if !outcome.ok {
+                    st.summary.tool_errors += 1;
+                }
+                // The result goes into the history before anything that can fail, so a call
+                // is never left without its result.
                 if self.uses_text_protocol() {
                     result_parts.push(ContentPart::Text {
                         text: text_protocol::format_result(model_name, &outcome.result),
@@ -441,9 +688,19 @@ impl Agent {
                         is_error: !outcome.ok,
                     });
                 }
-            }
-            for f in &edited_this_round {
-                files_changed.insert(f.clone());
+                if let Err(e) = self.record(Event::ToolResult {
+                    ts: now_rfc3339(),
+                    id: id.clone(),
+                    ok: outcome.ok,
+                    result: outcome.result.clone(),
+                    truncated: if outcome.truncated { Some(true) } else { None },
+                }) {
+                    self.history.push(Message {
+                        role: Role::User,
+                        content: result_parts,
+                    });
+                    return Err(e);
+                }
             }
             if !edited_this_round.is_empty() {
                 if let Some(feedback) = self.post_edit_checks(&edited_this_round).await {
@@ -453,7 +710,7 @@ impl Agent {
                             text: format!("[auto-check round {fix_rounds}/{}] Diagnostics after your edits (fix errors before finishing):\n{feedback}", self.config.auto_fix_iterations),
                         });
                     } else {
-                        summary.open_issues.push(format!(
+                        st.summary.open_issues.push(format!(
                             "diagnostics remain after {} auto-fix rounds:\n{feedback}",
                             self.config.auto_fix_iterations
                         ));
@@ -463,30 +720,90 @@ impl Agent {
                     }
                 }
             }
+            if c.stop == StopReason::MaxTokens {
+                result_parts.push(ContentPart::Text {
+                    text: "[note] Your last response was cut off at the output token limit. Keep each response and each tool call smaller.".into(),
+                });
+            }
             self.history.push(Message {
                 role: Role::User,
                 content: result_parts,
             });
         }
+    }
 
-        summary.text = last_text;
-        summary.files_changed = files_changed.into_iter().collect();
-        if !summary.files_changed.is_empty() {
-            self.pinned.push(format!(
-                "Turn {}: changed {}",
-                self.turn_counter,
-                summary.files_changed.join(", ")
-            ));
+    fn tool_error(&self, id: &str, message: impl Into<String>) -> crate::tools::ToolOutcome {
+        self.ctx
+            .cap_result(id, Err(crate::tools::ToolError::new(message)))
+    }
+
+    /// `declare_scope`: the first declaration of a turn is free; one that only repeats or
+    /// narrows the scope is free; one that adds files goes through the approver (G5).
+    async fn declare_scope(&mut self, id: &str, args: &Value) -> crate::tools::ToolOutcome {
+        let files = str_array(args.get("files"));
+        let change = self.policy.scope_change(&files);
+        let mut widened = false;
+        if let ScopeChange::Widens(added) = &change {
+            let current = self.policy.scope.clone().unwrap_or_default();
+            let reason = format!(
+                "the agent asks to widen its declared edit scope by adding {} (scope so far: {})",
+                added.join(", "),
+                if current.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    current.join(", ")
+                }
+            );
+            let req = ApprovalRequest {
+                tool: "declare_scope".to_string(),
+                args: json!({
+                    "add": added,
+                    "current_scope": current,
+                    "requested_scope": files,
+                    "plan": args.get("plan"),
+                }),
+                reason: reason.clone(),
+                proposal: None,
+            };
+            match self.approver.decide(&req).await {
+                ApprovalDecision::Accept { .. } => widened = true,
+                ApprovalDecision::Reject { reason: why } => {
+                    let why = why
+                        .filter(|r| !r.trim().is_empty())
+                        .map(|r| format!("; user says: {r}"))
+                        .unwrap_or_default();
+                    return self.tool_error(
+                        id,
+                        format!(
+                            "the user did not approve widening the scope{why}. The scope is unchanged: {}. Edits to other files still need approval one by one.",
+                            current.join(", ")
+                        ),
+                    );
+                }
+            }
         }
-        self.record(Event::Summary {
-            ts: now_rfc3339(),
-            text: summary.text.clone(),
-            files_changed: summary.files_changed.clone(),
-            runs: summary.runs.clone(),
-            figures: summary.figures.clone(),
-        })?;
-        let _ = self.ctx.session.mark_worktree();
-        Ok(summary)
+        self.policy.declare_scope(files);
+        self.declarations += 1;
+        let scope = self.policy.scope.clone().unwrap_or_default();
+        self.pinned.retain(|p| !p.starts_with("Declared scope:"));
+        self.pinned
+            .push(format!("Declared scope: {}", scope.join(", ")));
+        if let Some(plan) = args.get("plan").and_then(Value::as_str) {
+            self.pinned.retain(|p| !p.starts_with("Plan:"));
+            self.pinned
+                .push(format!("Plan: {}", truncate_bytes(plan, 500)));
+        }
+        // The result is the transcript's record of the scope in force from here on, with its
+        // order within the turn.
+        self.ctx.cap_result(
+            id,
+            Ok(json!({
+                "ok": true,
+                "scope": scope,
+                "declaration": self.declarations,
+                "widened_with_approval": widened,
+            })),
+        )
     }
 
     async fn execute_call(
@@ -498,36 +815,26 @@ impl Agent {
         edited: &mut Vec<String>,
     ) -> crate::tools::ToolOutcome {
         let Some(name) = registry::internal_name(model_name) else {
-            return self.ctx.cap_result(
-                id,
-                Err(crate::tools::ToolError::new(format!(
-                    "unknown tool `{model_name}`"
-                ))),
-            );
+            return self.tool_error(id, format!("unknown tool `{model_name}`"));
         };
+        // Arguments the provider could not deliver as JSON are never executed (B6).
+        if args.get("_truncated").and_then(Value::as_bool) == Some(true) {
+            return self.tool_error(
+                id,
+                format!(
+                    "your `{model_name}` call was cut off by the output token limit ({} tokens) before its arguments were complete, so nothing was done. Split the work: create the file with a first part and extend it with further fs_propose_edit calls, or make several smaller edits.",
+                    self.config.effective_max_tokens()
+                ),
+            );
+        }
+        if args.get("_raw").is_some() && args.as_object().map(|o| o.len()) == Some(1) {
+            return self.tool_error(
+                id,
+                format!("the arguments of your `{model_name}` call were not valid JSON, so nothing was done; send the call again with a JSON object"),
+            );
+        }
         match name {
-            "declare_scope" => {
-                let files: Vec<String> = args
-                    .get("files")
-                    .and_then(Value::as_array)
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                self.policy.declare_scope(files.clone());
-                self.pinned.retain(|p| !p.starts_with("Declared scope:"));
-                self.pinned
-                    .push(format!("Declared scope: {}", files.join(", ")));
-                if let Some(plan) = args.get("plan").and_then(Value::as_str) {
-                    self.pinned
-                        .push(format!("Plan: {}", crate::util::truncate_bytes(plan, 500)));
-                }
-                return self
-                    .ctx
-                    .cap_result(id, Ok(json!({"ok": true, "scope": files})));
-            }
+            "declare_scope" => return self.declare_scope(id, args).await,
             "pin_fact" => {
                 if let Some(f) = args.get("fact").and_then(Value::as_str) {
                     self.pinned.push(f.to_string());
@@ -577,13 +884,7 @@ impl Agent {
                         by: DecidedBy::Policy,
                     });
                 }
-                return self.ctx.cap_result(
-                    id,
-                    Err(crate::tools::ToolError::new(format!(
-                        "denied by policy: {}",
-                        eval.reason
-                    ))),
-                );
+                return self.tool_error(id, format!("denied by policy: {}", eval.reason));
             }
             PolicyDecision::Ask => {
                 let req = ApprovalRequest {
@@ -594,31 +895,25 @@ impl Agent {
                 };
                 let decision = self.approver.decide(&req).await;
                 let ok = decision.accepted();
-                if is_edit
-                    || class == Some(ToolClass::Package)
-                    || class == Some(ToolClass::Shell)
-                    || class == Some(ToolClass::Git)
-                {
-                    if !is_edit {
-                        let _ = self.record(Event::Proposal {
-                            ts: now_rfc3339(),
-                            id: id.to_string(),
-                            kind: pk,
-                            summary: format!("{name} {}", compact_args(args)),
-                            diff: None,
-                        });
-                    }
-                    let _ = self.record(Event::Decision {
+                if !is_edit {
+                    let _ = self.record(Event::Proposal {
                         ts: now_rfc3339(),
-                        proposal_id: id.to_string(),
-                        decision: if ok {
-                            Decision::Accept
-                        } else {
-                            Decision::Reject
-                        },
-                        by: DecidedBy::User,
+                        id: id.to_string(),
+                        kind: pk,
+                        summary: format!("{name} {} ({})", compact_args(args), eval.reason),
+                        diff: None,
                     });
                 }
+                let _ = self.record(Event::Decision {
+                    ts: now_rfc3339(),
+                    proposal_id: id.to_string(),
+                    decision: if ok {
+                        Decision::Accept
+                    } else {
+                        Decision::Reject
+                    },
+                    by: DecidedBy::User,
+                });
                 match decision {
                     ApprovalDecision::Reject { reason } => {
                         let why = match reason {
@@ -627,17 +922,9 @@ impl Agent {
                             }
                             _ => eval.reason.clone(),
                         };
-                        return self.ctx.cap_result(
-                            id,
-                            Err(crate::tools::ToolError::new(format!(
-                                "rejected by the user ({why})"
-                            ))),
-                        );
+                        return self.tool_error(id, format!("rejected by the user ({why})"));
                     }
                     ApprovalDecision::Accept { content } => {
-                        if is_edit {
-                            summary.unwanted_edits += 1;
-                        }
                         if let (Some(c), Some(p)) = (content, proposal.as_mut()) {
                             if p.kind != ProposalKind::Delete {
                                 p.new_content = Some(c);
@@ -659,8 +946,12 @@ impl Agent {
             }
         }
         if let Some(p) = proposal {
+            let in_scope = self.policy.in_scope(&p.path);
             let r = proposals::apply(&self.ctx.repo, &p).map(|_| {
                 edited.push(p.path.clone());
+                if !in_scope {
+                    summary.unwanted_edits += 1;
+                }
                 if user_modified {
                     json!({
                         "applied": true,
@@ -738,94 +1029,145 @@ impl Agent {
         Some(s)
     }
 
-    fn context_tokens(&self) -> usize {
+    /// Tokens the request spends before any history: system prompt plus tool definitions.
+    fn overhead_tokens(&self) -> usize {
         let mut n = estimate_tokens(&self.system_prompt());
-        for m in &self.history {
-            n += message_tokens(m);
+        if !self.uses_text_protocol() {
+            for d in registry::defs_for_mode(self.config.mode) {
+                n += estimate_tokens(&d.description)
+                    + estimate_tokens(&d.parameters.to_string())
+                    + 10;
+            }
         }
         n
     }
 
-    /// Summarize older turns via the model when history exceeds the configured fraction of
-    /// the context window. Keeps a tail that starts at a genuine user message.
+    fn history_tokens(&self) -> usize {
+        self.history.iter().map(message_tokens).sum()
+    }
+
+    /// Tokens the history may use: the compaction fraction of the window minus the fixed
+    /// overhead, but never less than a tenth of the window.
+    fn history_budget(&self) -> usize {
+        let window = self.config.caps.context_window as usize;
+        let total = (window as f32 * self.config.compaction_fraction) as usize;
+        total
+            .saturating_sub(self.overhead_tokens())
+            .max(window / 10)
+    }
+
+    /// Bring the history under budget. Three stages, each tried only if the previous one was
+    /// not enough:
+    ///
+    /// 1. shrink old tool results and large tool-call arguments in place;
+    /// 2. replace the older part of the history with a summary. The cut is only ever made
+    ///    where no tool call is separated from its result, it may fall inside the current
+    ///    turn, and when the summary call fails a mechanical digest is used instead;
+    /// 3. hard-truncate what is left.
+    ///
+    /// The history is valid for both providers after every stage.
     pub async fn maybe_compact(&mut self) {
-        let budget =
-            (self.config.caps.context_window as f32 * self.config.compaction_fraction) as usize;
-        if self.context_tokens() <= budget || self.history.len() < 4 {
+        let budget = self.history_budget();
+        if self.history_tokens() <= budget {
             return;
         }
-        // Find the split: the latest genuine user message (text only) that is not the last message,
-        // leaving at least two messages before it to summarize.
-        let mut split = None;
-        for i in (2..self.history.len() - 1).rev() {
-            let m = &self.history[i];
-            if m.role == Role::User
-                && m.content
-                    .iter()
-                    .all(|p| matches!(p, ContentPart::Text { .. }))
-            {
-                split = Some(i);
-                break;
+        shrink_old_parts(&mut self.history, 4, 1500);
+        if self.history_tokens() <= budget {
+            return;
+        }
+        // Do not summarise again until the history has grown meaningfully since last time;
+        // otherwise an over-full context would cost a summary call at every step (B4).
+        let grown = self.history_tokens() > self.compact_floor + (budget / 5).max(100);
+        if grown {
+            if let Some(split) = choose_split(&self.history, budget / 2) {
+                let older: Vec<Message> = self.history[..split].to_vec();
+                let summary = match self.summarize(&older).await {
+                    Some(s) => s,
+                    None => {
+                        tracing::warn!("compaction summary failed; using a mechanical digest");
+                        mechanical_digest(&older)
+                    }
+                };
+                let tail: Vec<Message> = self.history[split..].to_vec();
+                let mut new_history = vec![Message::user_text(format!(
+                    "[Summary of earlier conversation]\n{}",
+                    summary.trim()
+                ))];
+                if tail.first().map(|m| m.role) != Some(Role::Assistant) {
+                    new_history.push(Message::assistant_text(
+                        "Understood; continuing from that summary.",
+                    ));
+                }
+                new_history.extend(tail);
+                self.history = new_history;
             }
         }
-        let split = match split {
-            Some(s) => s,
-            None => self.history.len() - 1,
-        };
-        if split < 2 {
-            return;
+        if self.history_tokens() > budget {
+            for limit in [2000usize, 600, 200] {
+                shrink_old_parts(&mut self.history, 0, limit);
+                if self.history_tokens() <= budget {
+                    break;
+                }
+            }
         }
-        let older: Vec<Message> = self.history[..split].to_vec();
+        self.compact_floor = self.history_tokens();
+    }
+
+    /// Ask the model for a summary of `older`. `None` on any failure.
+    async fn summarize(&self, older: &[Message]) -> Option<String> {
         let mut transcript = String::new();
-        for m in &older {
+        for m in older {
             let role = match m.role {
                 Role::User => "USER",
                 Role::Assistant => "ASSISTANT",
             };
             for p in &m.content {
                 match p {
-                    ContentPart::Text { text } => transcript.push_str(&format!(
-                        "{role}: {}\n",
-                        crate::util::truncate_bytes(text, 4000)
-                    )),
+                    ContentPart::Text { text } => {
+                        transcript.push_str(&format!("{role}: {}\n", truncate_bytes(text, 4000)))
+                    }
                     ContentPart::ToolCall {
                         name, arguments, ..
                     } => transcript.push_str(&format!(
                         "{role} CALL {name} {}\n",
-                        crate::util::truncate_bytes(&arguments.to_string(), 500)
+                        truncate_bytes(&arguments.to_string(), 500)
                     )),
-                    ContentPart::ToolResult { content, .. } => transcript.push_str(&format!(
-                        "RESULT {}\n",
-                        crate::util::truncate_bytes(content, 1500)
-                    )),
+                    ContentPart::ToolResult { content, .. } => {
+                        transcript.push_str(&format!("RESULT {}\n", truncate_bytes(content, 1500)))
+                    }
                     ContentPart::Image { .. } => transcript.push_str("[image]\n"),
                 }
             }
+        }
+        // The summary request must itself fit: at most half the window, keeping the start
+        // (the task) and the end (the latest state).
+        let cap = (self.config.caps.context_window as usize * 2).max(2000);
+        if transcript.len() > cap {
+            let head = truncate_bytes(&transcript, cap / 3).to_string();
+            let tail = crate::util::tail_bytes(&transcript, cap * 2 / 3);
+            transcript = format!("{head}\n[... middle omitted ...]\n{tail}");
         }
         let req = ChatRequest {
             model: self.model.model_id().to_string(),
             system: Some("You compact conversation history. Produce a dense summary that preserves every decision, file name, function name, parameter value, run id, error, and open question. Use short bullet points.".into()),
             messages: vec![Message::user_text(format!("Summarize this conversation segment:\n\n{transcript}"))],
             tools: vec![],
-            max_tokens: Some(1500),
-            temperature: Some(0.0),
+            max_tokens: Some(1500.min(self.config.effective_max_tokens())),
         };
         let c = crate::providers::collect(self.model.stream(req)).await;
-        if c.stop == Some(StopReason::Error) || c.text.trim().is_empty() {
-            tracing::warn!("compaction summary failed; keeping history");
-            return;
-        }
-        let tail: Vec<Message> = self.history[split..].to_vec();
-        let mut new_history = vec![
-            Message::user_text(format!(
-                "[Summary of earlier conversation]\n{}",
-                c.text.trim()
-            )),
-            Message::assistant_text("Understood; continuing from that summary."),
-        ];
-        new_history.extend(tail);
-        self.history = new_history;
+        let ok = matches!(c.stop, Some(StopReason::End) | Some(StopReason::MaxTokens));
+        (ok && !c.text.trim().is_empty()).then_some(c.text)
     }
+}
+
+fn str_array(v: Option<&Value>) -> Vec<String> {
+    v.and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn message_tokens(m: &Message) -> usize {
@@ -841,19 +1183,235 @@ fn message_tokens(m: &Message) -> usize {
         + 4
 }
 
+fn has_tool_results(m: &Message) -> bool {
+    m.content
+        .iter()
+        .any(|p| matches!(p, ContentPart::ToolResult { .. }))
+}
+
+/// Whether the history may be cut just before index `i`: the message there must not carry
+/// tool results, because those belong to the calls in the message before it.
+pub(crate) fn is_safe_boundary(history: &[Message], i: usize) -> bool {
+    i > 0 && i < history.len() && !has_tool_results(&history[i])
+}
+
+/// Where to cut for summarising: the earliest safe boundary whose tail fits `tail_budget`
+/// tokens, else the latest safe boundary there is. `None` when no safe cut exists.
+pub(crate) fn choose_split(history: &[Message], tail_budget: usize) -> Option<usize> {
+    let mut suffix = vec![0usize; history.len() + 1];
+    for i in (0..history.len()).rev() {
+        suffix[i] = suffix[i + 1] + message_tokens(&history[i]);
+    }
+    let safe: Vec<usize> = (1..history.len())
+        .filter(|i| is_safe_boundary(history, *i))
+        .collect();
+    safe.iter()
+        .copied()
+        .find(|i| suffix[*i] <= tail_budget)
+        .or_else(|| safe.last().copied())
+}
+
+fn elide(text: &str, limit: usize) -> Option<String> {
+    if text.len() <= limit + 80 {
+        return None;
+    }
+    Some(format!(
+        "{}\n[... {} bytes elided to save context; re-run the tool or re-read the file if you need them]",
+        truncate_bytes(text, limit),
+        text.len() - limit
+    ))
+}
+
+fn elide_value(v: &mut Value, limit: usize) {
+    match v {
+        Value::String(s) => {
+            if let Some(short) = elide(s, limit) {
+                *s = short;
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| elide_value(x, limit)),
+        Value::Object(m) => m.values_mut().for_each(|x| elide_value(x, limit)),
+        _ => {}
+    }
+}
+
+/// Shorten tool results, text-protocol results, and large string arguments in every message
+/// except the last `keep_recent`. Structure (roles, call ids, pairing) is untouched.
+fn shrink_old_parts(history: &mut [Message], keep_recent: usize, limit: usize) {
+    let n = history.len().saturating_sub(keep_recent);
+    for m in &mut history[..n] {
+        for p in &mut m.content {
+            match p {
+                ContentPart::ToolResult { content, .. } => {
+                    if let Some(short) = elide(content, limit) {
+                        *content = short;
+                    }
+                }
+                ContentPart::ToolCall { arguments, .. } => elide_value(arguments, limit),
+                ContentPart::Text { text } => {
+                    // Text is shortened only when it is a tool result in the text protocol,
+                    // or when hard-truncating everything (`keep_recent == 0`).
+                    if keep_recent == 0 || text.starts_with("tool_result ") {
+                        if let Some(short) = elide(text, limit) {
+                            *text = short;
+                        }
+                    }
+                }
+                ContentPart::Image { .. } => {}
+            }
+        }
+    }
+}
+
+/// A summary made without the model, for when the summary call fails: the first request and
+/// the tools that were used.
+fn mechanical_digest(older: &[Message]) -> String {
+    let first = older
+        .iter()
+        .find(|m| m.role == Role::User && !m.text().trim().is_empty())
+        .map(|m| truncate_bytes(m.text().trim(), 600).to_string())
+        .unwrap_or_default();
+    let mut tools: Vec<String> = Vec::new();
+    for m in older {
+        for p in &m.content {
+            if let ContentPart::ToolCall {
+                name, arguments, ..
+            } = p
+            {
+                let target = arguments
+                    .get("path")
+                    .or_else(|| arguments.get("script"))
+                    .and_then(Value::as_str)
+                    .map(|s| format!(" {s}"))
+                    .unwrap_or_default();
+                tools.push(format!("{name}{target}"));
+            }
+        }
+    }
+    let last = older
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant && !m.text().trim().is_empty())
+        .map(|m| truncate_bytes(m.text().trim(), 600).to_string())
+        .unwrap_or_default();
+    let mut shown = tools.clone();
+    shown.truncate(60);
+    format!(
+        "(An automatic summary could not be produced; {} earlier messages were dropped to fit the context window. Pinned facts in the system prompt still apply; re-read files rather than relying on memory.)\nFirst request: {first}\nTool calls so far ({}): {}\nLast assistant message: {last}",
+        older.len(),
+        tools.len(),
+        shown.join(", ")
+    )
+}
+
+/// Make a history acceptable to both providers:
+///
+/// - whitespace-only text is dropped and adjacent same-role messages are merged;
+/// - every assistant tool call is answered in the next message (missing results are filled
+///   in as errors), and tool results without a call are removed;
+/// - the first message is a user message, and the last is an assistant message, so the next
+///   user message can follow (`closing_note` is used when one has to be added).
+pub(crate) fn repair_history(history: &mut Vec<Message>, closing_note: &str) {
+    let mut msgs = crate::providers::normalize_messages(history);
+    let mut out: Vec<Message> = Vec::with_capacity(msgs.len() + 2);
+    let mut i = 0;
+    while i < msgs.len() {
+        let m = msgs[i].clone();
+        match m.role {
+            Role::Assistant => {
+                let ids: Vec<String> = m
+                    .content
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::ToolCall { id, .. } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                out.push(m);
+                if ids.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                // The answering message: results for exactly these ids first, then the rest.
+                let mut next = match msgs.get(i + 1) {
+                    Some(n) if n.role == Role::User => {
+                        i += 1;
+                        std::mem::replace(
+                            &mut msgs[i],
+                            Message {
+                                role: Role::User,
+                                content: vec![],
+                            },
+                        )
+                    }
+                    _ => Message {
+                        role: Role::User,
+                        content: vec![],
+                    },
+                };
+                let mut answered: Vec<ContentPart> = Vec::new();
+                for id in &ids {
+                    let pos = next.content.iter().position(
+                        |p| matches!(p, ContentPart::ToolResult { tool_call_id, .. } if tool_call_id == id),
+                    );
+                    answered.push(match pos {
+                        Some(p) => next.content.remove(p),
+                        None => ContentPart::ToolResult {
+                            tool_call_id: id.clone(),
+                            content: CANCELLED_RESULT.into(),
+                            is_error: true,
+                        },
+                    });
+                }
+                next.content
+                    .retain(|p| !matches!(p, ContentPart::ToolResult { .. }));
+                answered.extend(next.content);
+                out.push(Message {
+                    role: Role::User,
+                    content: answered,
+                });
+                i += 1;
+            }
+            Role::User => {
+                // No assistant call precedes this message: any tool result here is orphaned.
+                let content: Vec<ContentPart> = m
+                    .content
+                    .into_iter()
+                    .filter(|p| !matches!(p, ContentPart::ToolResult { .. }))
+                    .collect();
+                if !content.is_empty() {
+                    out.push(Message {
+                        role: Role::User,
+                        content,
+                    });
+                }
+                i += 1;
+            }
+        }
+    }
+    let mut out = crate::providers::normalize_messages(&out);
+    if out.first().map(|m| m.role) == Some(Role::Assistant) {
+        out.insert(0, Message::user_text("(earlier conversation omitted)"));
+    }
+    if out.last().map(|m| m.role) == Some(Role::User) {
+        out.push(Message::assistant_text(closing_note));
+    }
+    *history = out;
+}
+
 fn proposal_kind_for(tool: &str) -> ProposalKind {
     match tool {
         "fs.propose_create" => ProposalKind::Create,
         "fs.propose_delete" => ProposalKind::Delete,
         "pkg.add" | "pkg.remove" | "pkg.sync" => ProposalKind::Package,
-        "shell.run" => ProposalKind::Shell,
+        "shell.run" | "run.script" | "exec.snippet" => ProposalKind::Shell,
         "git.commit" => ProposalKind::Commit,
         _ => ProposalKind::Edit,
     }
 }
 
 fn compact_args(args: &Value) -> String {
-    crate::util::truncate_bytes(&args.to_string(), 200).to_string()
+    truncate_bytes(&args.to_string(), 200).to_string()
 }
 
 #[cfg(test)]
@@ -1215,7 +1773,7 @@ mod tests {
             }],
         ]));
         let mut a = agent(model.clone(), ctx, policy, Arc::new(RejectAllApprover), 5);
-        a.config.caps.context_window = 1000;
+        set_history_budget(&mut a, 800);
         a.run_turn("one").await.unwrap();
         a.run_turn("two").await.unwrap();
         a.run_turn("three").await.unwrap();
@@ -1230,5 +1788,766 @@ mod tests {
             .starts_with("[Summary of earlier conversation]\nSUMMARY-TEXT"));
         assert!(last.messages.iter().any(|m| m.text() == "three"));
         assert!(a.history().len() < 7);
+        assert_valid(a.history());
+    }
+
+    fn text(t: &str) -> ModelEvent {
+        ModelEvent::Text { delta: t.into() }
+    }
+
+    /// The shape both providers require: starts with a user message, roles alternate, every
+    /// tool call is answered in the very next message, and no result lacks its call.
+    fn assert_valid(history: &[Message]) {
+        assert!(!history.is_empty());
+        assert_eq!(history[0].role, Role::User, "{history:#?}");
+        for w in history.windows(2) {
+            assert_ne!(w[0].role, w[1].role, "roles must alternate: {history:#?}");
+        }
+        for (i, m) in history.iter().enumerate() {
+            let calls: Vec<&String> = m
+                .content
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::ToolCall { id, .. } => Some(id),
+                    _ => None,
+                })
+                .collect();
+            let results: Vec<&String> = m
+                .content
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::ToolResult { tool_call_id, .. } => Some(tool_call_id),
+                    _ => None,
+                })
+                .collect();
+            if !calls.is_empty() {
+                assert_eq!(m.role, Role::Assistant);
+                let next: Vec<&String> = history
+                    .get(i + 1)
+                    .map(|n| {
+                        n.content
+                            .iter()
+                            .filter_map(|p| match p {
+                                ContentPart::ToolResult { tool_call_id, .. } => Some(tool_call_id),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                assert_eq!(calls, next, "unanswered tool call at {i}: {history:#?}");
+            }
+            if !results.is_empty() {
+                assert!(i > 0, "orphan result at 0");
+                let prev: Vec<&String> = history[i - 1]
+                    .content
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::ToolCall { id, .. } => Some(id),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(results, prev, "orphan tool result at {i}: {history:#?}");
+            }
+            for p in &m.content {
+                if let ContentPart::Text { text } = p {
+                    assert!(!text.trim().is_empty(), "blank text at {i}");
+                }
+            }
+        }
+    }
+
+    /// Give the history `tokens` of room on top of the fixed overhead.
+    fn set_history_budget(a: &mut Agent, tokens: usize) {
+        let total = a.overhead_tokens() + tokens;
+        a.config.caps.context_window = (total as f32 / a.config.compaction_fraction) as u32 + 1;
+    }
+
+    /// B3: with no plain user message to cut at, the old code cut before a lone tool result.
+    #[tokio::test]
+    async fn compaction_never_orphans_a_tool_result() {
+        let (_h, repo, ctx, policy) = setup(EditPolicy::Review, Mode::Plan);
+        std::fs::write(repo.path().join("big.txt"), "y".repeat(6000)).unwrap();
+        // One turn of many read calls: the only plain user message is the first one.
+        let mut scripts: Vec<Vec<ModelEvent>> = (0..6)
+            .map(|i| {
+                vec![
+                    call(&format!("r{i}"), "fs_read", json!({"path": "big.txt"})),
+                    stop_tools(),
+                ]
+            })
+            .collect();
+        scripts.push(vec![text("done")]);
+        // Summary calls are answered from the same queue; make them recognisable.
+        let model = Arc::new(ScriptedModelClient::new(scripts));
+        let mut a = agent(model.clone(), ctx, policy, Arc::new(RejectAllApprover), 20);
+        set_history_budget(&mut a, 2500);
+        let _ = a.run_turn("read it many times").await;
+        assert_valid(a.history());
+        for req in model.recorded() {
+            if req.tools.is_empty() {
+                continue; // a summary request
+            }
+            assert_valid(&[req.messages.clone(), vec![Message::assistant_text("x")]].concat());
+        }
+        assert!(a.history_tokens() <= a.history_budget() + 50);
+    }
+
+    #[test]
+    fn split_points_keep_calls_with_their_results() {
+        let tc = |id: &str| Message {
+            role: Role::Assistant,
+            content: vec![ContentPart::ToolCall {
+                id: id.into(),
+                name: "fs_read".into(),
+                arguments: json!({}),
+            }],
+        };
+        let tr = |id: &str| Message {
+            role: Role::User,
+            content: vec![ContentPart::ToolResult {
+                tool_call_id: id.into(),
+                content: "z".repeat(400),
+                is_error: false,
+            }],
+        };
+        let h = vec![
+            Message::user_text("go"),
+            tc("1"),
+            tr("1"),
+            tc("2"),
+            tr("2"),
+            tc("3"),
+            tr("3"),
+        ];
+        for i in 0..=h.len() {
+            let safe = is_safe_boundary(&h, i);
+            assert_eq!(safe, matches!(i, 1 | 3 | 5), "boundary {i}");
+        }
+        // Tight budget: the latest safe cut, never the lone result at the end.
+        assert_eq!(choose_split(&h, 1), Some(5));
+        assert_eq!(choose_split(&h, 300), Some(3));
+        assert_eq!(choose_split(&h, 100_000), Some(1));
+        assert_eq!(choose_split(&h[..1], 10), None);
+    }
+
+    /// B4: the current turn alone exceeds the budget and the summary call fails. The history
+    /// must still shrink, with a bounded number of summary calls.
+    #[tokio::test]
+    async fn compaction_works_inside_a_turn_and_survives_summary_failure() {
+        struct Flaky {
+            inner: ScriptedModelClient,
+            summary_calls: std::sync::atomic::AtomicU32,
+        }
+        impl ModelClient for Flaky {
+            fn stream(&self, req: ChatRequest) -> futures::stream::BoxStream<'static, ModelEvent> {
+                if req.tools.is_empty() {
+                    self.summary_calls
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    return Box::pin(futures::stream::iter(vec![ModelEvent::Stop {
+                        reason: StopReason::Error,
+                        message: Some("HTTP 400: context length exceeded".into()),
+                    }]));
+                }
+                self.inner.stream(req)
+            }
+            fn model_id(&self) -> &str {
+                "flaky"
+            }
+        }
+        let (_h, repo, ctx, policy) = setup(EditPolicy::Review, Mode::Plan);
+        std::fs::write(repo.path().join("big.txt"), "y".repeat(12_000)).unwrap();
+        let steps = 16;
+        let mut scripts: Vec<Vec<ModelEvent>> = (0..steps - 1)
+            .map(|i| {
+                vec![
+                    call(&format!("r{i}"), "fs_read", json!({"path": "big.txt"})),
+                    stop_tools(),
+                ]
+            })
+            .collect();
+        scripts.push(vec![text("finished")]);
+        let model = Arc::new(Flaky {
+            inner: ScriptedModelClient::new(scripts),
+            summary_calls: Default::default(),
+        });
+        let mode = policy.mode;
+        let mut a = Agent::new(
+            model.clone(),
+            ctx,
+            policy,
+            Arc::new(RejectAllApprover),
+            AgentConfig::new(mode, "flaky/m", ModelCapabilities::default(), 40),
+        );
+        set_history_budget(&mut a, 2000);
+        let s = a.run_turn("read the big file repeatedly").await.unwrap();
+        assert_eq!(s.text, "finished");
+        assert_eq!(s.steps, steps);
+        assert_valid(a.history());
+        let budget = a.history_budget();
+        for req in model.inner.recorded() {
+            let used: usize = req.messages.iter().map(message_tokens).sum();
+            assert!(
+                used <= budget + 50,
+                "request history {used} > budget {budget}"
+            );
+        }
+        let summaries = model
+            .summary_calls
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            summaries <= steps / 2,
+            "{summaries} summary calls in {steps} steps"
+        );
+        // The failed summaries were replaced by a digest, not by keeping everything.
+        assert!(
+            a.history()
+                .iter()
+                .any(|m| m.text().contains("automatic summary could not be produced"))
+                || summaries == 0
+        );
+    }
+
+    /// A1: every early exit leaves a valid history, a summary event, and a clean baseline.
+    #[tokio::test]
+    async fn early_exits_are_finalised() {
+        // Step limit: the loop stops right after tool results.
+        let (_h, _r, ctx, policy) = setup(EditPolicy::Auto, Mode::Build);
+        let scripts: Vec<Vec<ModelEvent>> = vec![
+            vec![
+                call("s", "declare_scope", json!({"files": ["scripts/n.py"]})),
+                call(
+                    "e",
+                    "fs_propose_create",
+                    json!({"path": "scripts/n.py", "content": "n = 1\n"}),
+                ),
+                stop_tools(),
+            ],
+            vec![call("l", "fs_list", json!({})), stop_tools()],
+            // Next turn.
+            vec![text("second turn answer")],
+        ];
+        let model = Arc::new(ScriptedModelClient::new(scripts));
+        let mut a = agent(model.clone(), ctx, policy, Arc::new(AutoApprover), 2);
+        let s = a.run_turn("make n.py").await.unwrap();
+        assert!(s.stopped_by_max_steps);
+        assert_eq!(s.files_changed, vec!["scripts/n.py"]);
+        assert_valid(a.history());
+        assert_eq!(a.history().last().unwrap().role, Role::Assistant);
+        assert!(!a.is_mid_turn());
+        let events = a.ctx.session.read_transcript("c1").unwrap();
+        assert!(
+            matches!(events.last().unwrap(), Event::Summary { files_changed, .. } if files_changed == &vec!["scripts/n.py".to_string()])
+        );
+        a.run_turn("and now?").await.unwrap();
+        let reqs = model.recorded();
+        let last = reqs.last().unwrap();
+        assert_valid(&[last.messages.clone(), vec![Message::assistant_text("x")]].concat());
+        let user_text = last.messages.last().unwrap().text();
+        assert!(
+            !user_text.contains("Files changed by the user"),
+            "the agent's own edit was reported as the user's: {user_text}"
+        );
+
+        // Model error after an edit.
+        let (_h, _r, ctx, policy) = setup(EditPolicy::Auto, Mode::Build);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                call("s", "declare_scope", json!({"files": ["scripts/m.py"]})),
+                call(
+                    "e",
+                    "fs_propose_create",
+                    json!({"path": "scripts/m.py", "content": "m = 1\n"}),
+                ),
+                stop_tools(),
+            ],
+            vec![ModelEvent::Stop {
+                reason: StopReason::Error,
+                message: Some("HTTP 500".into()),
+            }],
+            vec![text("recovered")],
+        ]));
+        let mut a = agent(model.clone(), ctx, policy, Arc::new(AutoApprover), 10);
+        let err = a.run_turn("make m.py").await.unwrap_err().to_string();
+        assert!(err.contains("HTTP 500"));
+        assert_valid(a.history());
+        let events = a.ctx.session.read_transcript("c1").unwrap();
+        assert!(
+            matches!(events.last().unwrap(), Event::Summary { files_changed, .. } if files_changed.len() == 1),
+            "a failed turn still records its summary"
+        );
+        let s = a.run_turn("continue").await.unwrap();
+        assert_eq!(s.text, "recovered");
+        let last = model.recorded().pop().unwrap();
+        assert_valid(&[last.messages.clone(), vec![Message::assistant_text("x")]].concat());
+        assert!(!last
+            .messages
+            .last()
+            .unwrap()
+            .text()
+            .contains("Files changed by the user"));
+    }
+
+    /// A1 for cancellation: the turn future is dropped while a tool call awaits approval.
+    #[tokio::test]
+    async fn dropped_turn_is_repaired() {
+        struct Never;
+        #[async_trait::async_trait]
+        impl Approver for Never {
+            async fn approve(&self, _req: &ApprovalRequest) -> bool {
+                std::future::pending::<bool>().await
+            }
+        }
+        let (_h, _r, ctx, policy) = setup(EditPolicy::Review, Mode::Build);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                call("l", "fs_list", json!({})),
+                call(
+                    "e",
+                    "fs_propose_create",
+                    json!({"path": "scripts/q.py", "content": "q\n"}),
+                ),
+                stop_tools(),
+            ],
+            vec![text("after cancel")],
+        ]));
+        let mut a = agent(model.clone(), ctx, policy, Arc::new(Never), 10);
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            a.run_turn("create q"),
+        )
+        .await;
+        assert!(dropped.is_err(), "the turn should still be waiting");
+        assert!(a.is_mid_turn());
+        // No explicit recover call: the next turn repairs by itself.
+        a.approver = Arc::new(AutoApprover);
+        let s = a.run_turn("go on").await.unwrap();
+        assert_eq!(s.text, "after cancel");
+        let last = model.recorded().pop().unwrap();
+        assert_valid(&[last.messages.clone(), vec![Message::assistant_text("x")]].concat());
+        // And the explicit hook does the same thing.
+        a.recover_after_cancel();
+        assert_valid(a.history());
+    }
+
+    /// G5: scope is per turn, and widening it needs approval.
+    #[tokio::test]
+    async fn scope_resets_each_turn_and_widening_needs_approval() {
+        let (_h, repo, ctx, policy) = setup(EditPolicy::Auto, Mode::Build);
+        let create = |id: &str, path: &str| {
+            call(
+                id,
+                "fs_propose_create",
+                json!({"path": path, "content": "x = 1\n"}),
+            )
+        };
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            // Turn 1: declare a.py, then try to self-grant b.py.
+            vec![
+                call("s1", "declare_scope", json!({"files": ["scripts/a.py"]})),
+                call(
+                    "s2",
+                    "declare_scope",
+                    json!({"files": ["scripts/a.py", "scripts/b.py"]}),
+                ),
+                create("e1", "scripts/b.py"),
+                // Repeating or narrowing is free.
+                call("s3", "declare_scope", json!({"files": ["scripts/a.py"]})),
+                stop_tools(),
+            ],
+            vec![text("turn one done")],
+            // Turn 2: nothing declared yet, so the old scope must not apply.
+            vec![
+                call(
+                    "e2",
+                    "fs_propose_edit",
+                    json!({"path": "scripts/a.py", "edits": [{"old": "hello", "new": "bye"}]}),
+                ),
+                stop_tools(),
+            ],
+            vec![text("turn two done")],
+        ]));
+        let approver = Arc::new(RecordingApprover::new(false));
+        let mut a = agent(model.clone(), ctx, policy, approver.clone(), 10);
+        let s = a.run_turn("one").await.unwrap();
+        {
+            let seen = approver.seen.lock().unwrap();
+            assert_eq!(seen[0].tool, "declare_scope", "widening must ask");
+            assert!(seen[0].reason.contains("scripts/b.py"));
+            assert_eq!(seen[0].args["add"], json!(["scripts/b.py"]));
+            // The widening was rejected, so b.py is still out of scope and asks too.
+            assert_eq!(seen[1].tool, "fs.propose_create");
+            assert!(seen[1].reason.contains("outside the declared scope"));
+            assert_eq!(seen.len(), 2);
+        }
+        assert!(!repo.path().join("scripts/b.py").exists());
+        assert_eq!(s.unwanted_edits, 0);
+        assert_eq!(
+            a.policy.scope.as_deref(),
+            Some(&["scripts/a.py".to_string()][..])
+        );
+        // Declarations and their order are in the transcript.
+        let events = a.ctx.session.read_transcript("c1").unwrap();
+        let decl: Vec<(bool, Value)> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::ToolResult { id, ok, result, .. } if id.starts_with('s') => {
+                    Some((*ok, result.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(decl.len(), 3);
+        assert_eq!(decl[0].1["declaration"], 1);
+        assert_eq!(decl[0].1["scope"], json!(["scripts/a.py"]));
+        assert!(!decl[1].0, "the rejected widening is an error result");
+        assert_eq!(decl[2].1["declaration"], 2);
+
+        a.run_turn("two").await.unwrap();
+        let seen = approver.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3, "turn two's edit must ask: scope was reset");
+        assert_eq!(seen[2].tool, "fs.propose_edit");
+        assert!(seen[2].reason.contains("no scope declared"));
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("scripts/a.py")).unwrap(),
+            "print('hello')\n"
+        );
+        let sys = model.recorded()[2].system.clone().unwrap();
+        assert!(sys.contains("No scope declared yet"));
+        assert!(!sys.contains("Declared scope: scripts/a.py"));
+    }
+
+    #[tokio::test]
+    async fn approved_widening_extends_the_scope() {
+        let (_h, repo, ctx, policy) = setup(EditPolicy::Auto, Mode::Build);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                call("s1", "declare_scope", json!({"files": ["scripts/a.py"]})),
+                call(
+                    "s2",
+                    "declare_scope",
+                    json!({"files": ["scripts/a.py", "scripts/b.py"]}),
+                ),
+                call(
+                    "e1",
+                    "fs_propose_create",
+                    json!({"path": "scripts/b.py", "content": "b = 1\n"}),
+                ),
+                stop_tools(),
+            ],
+            vec![text("ok")],
+        ]));
+        let approver = Arc::new(RecordingApprover::new(true));
+        let mut a = agent(model, ctx, policy, approver.clone(), 10);
+        let s = a.run_turn("go").await.unwrap();
+        assert_eq!(
+            approver.seen.lock().unwrap().len(),
+            1,
+            "only the widening asks"
+        );
+        assert!(repo.path().join("scripts/b.py").is_file());
+        assert_eq!(s.unwanted_edits, 0, "an in-scope edit is not unwanted");
+    }
+
+    /// G2 end to end: without a confining sandbox a run asks, and the reason says why.
+    #[tokio::test]
+    async fn unsandboxed_run_tools_ask() {
+        let (_h, _r, ctx, policy) = setup(EditPolicy::Review, Mode::Run);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                call("x", "exec_snippet", json!({"code": "open('/etc/x','w')"})),
+                stop_tools(),
+            ],
+            vec![text("ok")],
+        ]));
+        let approver = Arc::new(RecordingApprover::new(false));
+        let mut a = agent(model.clone(), ctx, policy, approver.clone(), 5);
+        let s = a.run_turn("run it").await.unwrap();
+        let seen = approver.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].tool, "exec.snippet");
+        assert!(seen[0].reason.contains("unsandboxed"), "{}", seen[0].reason);
+        assert_eq!(s.tool_errors, 1);
+        assert!(model.recorded()[0]
+            .system
+            .as_ref()
+            .unwrap()
+            .contains("runs are unsandboxed"));
+    }
+
+    /// B6: a tool call cut off by the output limit is answered with an instruction, and
+    /// nothing is written.
+    #[tokio::test]
+    async fn truncated_tool_call_is_not_executed() {
+        let (_h, repo, ctx, policy) = setup(EditPolicy::Auto, Mode::Build);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                call(
+                    "t",
+                    "fs_propose_create",
+                    json!({"_truncated": true, "_raw": "{\"path\": \"scripts/big.py\", \"content\": \"x = "}),
+                ),
+                ModelEvent::Stop {
+                    reason: StopReason::MaxTokens,
+                    message: None,
+                },
+            ],
+            vec![text("will split")],
+        ]));
+        let mut a = agent(model.clone(), ctx, policy, Arc::new(AutoApprover), 5);
+        let s = a.run_turn("write a big file").await.unwrap();
+        assert_eq!(s.tool_errors, 1);
+        assert!(!repo.path().join("scripts/big.py").exists());
+        let reqs = model.recorded();
+        assert_eq!(reqs[0].max_tokens, Some(16384));
+        let results = &reqs[1].messages[2];
+        match &results.content[0] {
+            ContentPart::ToolResult {
+                content, is_error, ..
+            } => {
+                assert!(is_error);
+                assert!(content.contains("cut off by the output token limit"));
+                assert!(content.contains("Split"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_tokens_is_configurable_and_bounded() {
+        let mut c = AgentConfig::new(Mode::Build, "p/m", ModelCapabilities::default(), 5);
+        assert_eq!(c.effective_max_tokens(), 16384);
+        c.caps.max_output_tokens = Some(32000);
+        c.caps.context_window = 200_000;
+        assert_eq!(c.effective_max_tokens(), 32000);
+        c.max_tokens = Some(1000);
+        assert_eq!(c.effective_max_tokens(), 1000);
+        c.max_tokens = None;
+        c.caps.context_window = 8192;
+        assert_eq!(c.effective_max_tokens(), 4096);
+    }
+
+    /// A3: a server that reuses the same call id in every response.
+    #[tokio::test]
+    async fn repeated_call_ids_are_made_unique_across_steps() {
+        let (_h, _r, ctx, policy) = setup(EditPolicy::Review, Mode::Plan);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![call("call_1", "fs_list", json!({})), stop_tools()],
+            vec![
+                call("call_1", "fs_read", json!({"path": "scripts/a.py"})),
+                call("call_1", "fs_list", json!({"depth": 1})),
+                stop_tools(),
+            ],
+            vec![text("done")],
+        ]));
+        let mut a = agent(model.clone(), ctx, policy, Arc::new(RejectAllApprover), 5);
+        a.run_turn("look").await.unwrap();
+        let events = a.ctx.session.read_transcript("c1").unwrap();
+        let mut ids: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::ToolCall { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids.len(), 3);
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "call ids must be unique in the transcript");
+        assert_valid(a.history());
+    }
+
+    /// A4: whitespace-only assistant text is neither stored nor sent.
+    #[tokio::test]
+    async fn whitespace_only_text_is_dropped() {
+        let (_h, _r, ctx, policy) = setup(EditPolicy::Review, Mode::Plan);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                text("\n\n  "),
+                call("l", "fs_list", json!({})),
+                stop_tools(),
+            ],
+            vec![text("listed")],
+        ]));
+        let mut a = agent(model.clone(), ctx, policy, Arc::new(RejectAllApprover), 5);
+        a.run_turn("list").await.unwrap();
+        let asst = &model.recorded()[1].messages[1];
+        assert_eq!(asst.content.len(), 1);
+        assert!(matches!(asst.content[0], ContentPart::ToolCall { .. }));
+        let events = a.ctx.session.read_transcript("c1").unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, Event::Assistant { text, .. } if text.trim().is_empty())));
+        assert_valid(a.history());
+    }
+
+    /// B11: two conversations (or two processes) on one repo keep separate undo points.
+    #[tokio::test]
+    async fn checkpoints_do_not_collide_across_conversations() {
+        let (home, repo, ctx, policy) = setup(EditPolicy::Review, Mode::Build);
+        let m1 = Arc::new(ScriptedModelClient::new(vec![
+            vec![text("a")],
+            vec![text("b")],
+        ]));
+        let mut a1 = agent(m1, ctx, policy.clone(), Arc::new(RejectAllApprover), 3);
+        a1.run_turn("one").await.unwrap();
+        a1.run_turn("two").await.unwrap();
+        // A second conversation in the same session starts its own counter from scratch.
+        let session = Session::open(home.path(), a1.ctx.session.id()).unwrap();
+        let ctx2 = ToolContext::new(
+            repo.path(),
+            home.path(),
+            session,
+            "c2",
+            ProjectConfig::default(),
+        );
+        let m2 = Arc::new(ScriptedModelClient::new(vec![vec![text("c")]]));
+        let mut a2 = agent(m2, ctx2, policy, Arc::new(RejectAllApprover), 3);
+        a2.run_turn("three").await.unwrap();
+        let ids: Vec<String> = checkpoint::list(repo.path())
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert_eq!(ids.iter().filter(|i| i.starts_with("c1-")).count(), 2);
+        assert_eq!(ids.iter().filter(|i| i.starts_with("c2-")).count(), 1);
+    }
+
+    /// A11: a stored transcript restores history, pinned facts, and the turn counter.
+    #[tokio::test]
+    async fn rehydrate_restores_history_scope_and_pins() {
+        let (home, repo, ctx, policy) = setup(EditPolicy::Auto, Mode::Build);
+        let model = Arc::new(ScriptedModelClient::new(vec![
+            vec![
+                text("Planning."),
+                call(
+                    "s",
+                    "declare_scope",
+                    json!({"files": ["scripts/a.py"], "plan": "tweak a"}),
+                ),
+                call("p", "pin_fact", json!({"fact": "tau is 2.5"})),
+                call(
+                    "e",
+                    "fs_propose_edit",
+                    json!({"path": "scripts/a.py", "edits": [{"old": "hello", "new": "bye"}]}),
+                ),
+                stop_tools(),
+            ],
+            vec![text("Edited a.py.")],
+        ]));
+        let mut a = agent(model, ctx, policy.clone(), Arc::new(AutoApprover), 10);
+        a.run_turn("change the greeting").await.unwrap();
+        let original = a.history().to_vec();
+        let events = a.ctx.session.read_transcript("c1").unwrap();
+
+        let session = Session::open(home.path(), a.ctx.session.id()).unwrap();
+        let ctx2 = ToolContext::new(
+            repo.path(),
+            home.path(),
+            session,
+            "c1",
+            ProjectConfig::default(),
+        );
+        let model2 = Arc::new(ScriptedModelClient::new(vec![vec![text("continuing")]]));
+        let mut b = agent(model2.clone(), ctx2, policy, Arc::new(AutoApprover), 10);
+        b.rehydrate(&events);
+        assert_valid(b.history());
+        assert_eq!(b.history().len(), original.len());
+        assert_eq!(b.history()[0].text(), "change the greeting");
+        assert!(b.history()[1]
+            .content
+            .iter()
+            .any(|p| matches!(p, ContentPart::ToolCall { name, .. } if name == "fs_propose_edit")));
+        assert_eq!(b.history().last().unwrap().text(), "Edited a.py.");
+        assert!(b.pinned_facts().iter().any(|f| f == "tau is 2.5"));
+        assert!(b
+            .pinned_facts()
+            .iter()
+            .any(|f| f == "Turn 1: changed scripts/a.py"));
+        assert!(b.policy.scope.is_none(), "a finished turn's scope is gone");
+        b.run_turn("what did you do?").await.unwrap();
+        let req = &model2.recorded()[0];
+        assert_eq!(req.messages.len(), original.len() + 1);
+        assert!(req.system.as_ref().unwrap().contains("tau is 2.5"));
+
+        // A transcript that stops mid-turn keeps that turn's scope and is repaired.
+        let cut = events
+            .iter()
+            .position(|e| matches!(e, Event::ToolResult { id, .. } if id == "p"))
+            .unwrap();
+        b.rehydrate(&events[..=cut]);
+        assert_valid(b.history());
+        assert_eq!(
+            b.policy.scope.as_deref(),
+            Some(&["scripts/a.py".to_string()][..])
+        );
+        assert!(b
+            .pinned_facts()
+            .iter()
+            .any(|f| f.starts_with("Plan: tweak a")));
+    }
+
+    #[test]
+    fn repair_fixes_every_malformation() {
+        let mut h = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentPart::ToolResult {
+                    tool_call_id: "ghost".into(),
+                    content: "orphan".into(),
+                    is_error: false,
+                }],
+            },
+            Message::user_text("first"),
+            Message::user_text("second"),
+            Message::assistant_text("   "),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentPart::ToolCall {
+                        id: "a".into(),
+                        name: "fs_read".into(),
+                        arguments: json!({}),
+                    },
+                    ContentPart::ToolCall {
+                        id: "b".into(),
+                        name: "fs_list".into(),
+                        arguments: json!({}),
+                    },
+                ],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    ContentPart::Text {
+                        text: "note".into(),
+                    },
+                    ContentPart::ToolResult {
+                        tool_call_id: "b".into(),
+                        content: "ok".into(),
+                        is_error: false,
+                    },
+                ],
+            },
+        ];
+        repair_history(&mut h, "(closed)");
+        assert_valid(&h);
+        assert_eq!(h.len(), 4);
+        assert_eq!(h[0].text(), "first\nsecond");
+        match &h[2].content[0] {
+            ContentPart::ToolResult {
+                tool_call_id,
+                is_error,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "a");
+                assert!(is_error);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(h[3].text(), "(closed)");
+        let mut empty: Vec<Message> = vec![];
+        repair_history(&mut empty, "x");
+        assert!(empty.is_empty());
     }
 }

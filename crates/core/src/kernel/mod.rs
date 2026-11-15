@@ -4,7 +4,8 @@
 pub mod client;
 pub mod transport;
 
-pub use client::{KernelClient, KernelError};
+pub use client::{KernelClient, KernelError, RunCancelGuard, DEFAULT_CALL_TIMEOUT};
 pub use transport::{
-    resolve_tooling_python, KernelArgs, KernelTransport, LocalStdio, SpawnedKernel, SshStdio,
+    resolve_tooling_python, resolve_tooling_python_in, KernelArgs, KernelTransport, LocalStdio,
+    SpawnedKernel, SshStdio,
 };

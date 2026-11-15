@@ -1,21 +1,29 @@
 //! OpenAI-compatible chat completions adapter (PROTOCOL 4).
 
-use super::sse::SseParser;
-use super::{channel_stream, ModelClient};
+use super::{
+    channel_stream, generated_call_id, http_client, normalize_messages, pump, send_with_retry,
+    unparsed_arguments, HttpPolicy, ModelClient, SendFailure, SseState,
+};
 use analyst_protocol::model::{ChatRequest, ContentPart, ModelEvent, Role, StopReason};
 use futures::stream::BoxStream;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
 
-/// Build the JSON request body.
+/// Build the JSON request body (with `stream_options`).
 pub fn build_body(req: &ChatRequest) -> Value {
+    build_body_with(req, true)
+}
+
+/// Build the JSON request body. Adjacent same-role messages are merged, whitespace-only text
+/// is dropped, and no `temperature` is sent. `stream_options` is optional because some
+/// servers reject the field.
+pub fn build_body_with(req: &ChatRequest, stream_options: bool) -> Value {
     let mut messages: Vec<Value> = Vec::new();
     if let Some(system) = &req.system {
         if !system.is_empty() {
             messages.push(json!({"role": "system", "content": system}));
         }
     }
-    for m in &req.messages {
+    for m in &normalize_messages(&req.messages) {
         match m.role {
             Role::Assistant => {
                 let mut text = String::new();
@@ -95,8 +103,10 @@ pub fn build_body(req: &ChatRequest) -> Value {
         "model": req.model,
         "messages": messages,
         "stream": true,
-        "stream_options": {"include_usage": true},
     });
+    if stream_options {
+        body["stream_options"] = json!({"include_usage": true});
+    }
     if !req.tools.is_empty() {
         body["tools"] = Value::Array(
             req.tools
@@ -110,14 +120,12 @@ pub fn build_body(req: &ChatRequest) -> Value {
     if let Some(m) = req.max_tokens {
         body["max_tokens"] = json!(m);
     }
-    if let Some(t) = req.temperature {
-        body["temperature"] = json!(t);
-    }
     body
 }
 
 #[derive(Debug, Default)]
 struct PendingCall {
+    index: u64,
     id: String,
     name: String,
     arguments: String,
@@ -126,7 +134,9 @@ struct PendingCall {
 /// Incremental state for one streamed response.
 #[derive(Debug, Default)]
 pub struct StreamState {
-    calls: BTreeMap<u64, PendingCall>,
+    /// Calls in arrival order. Several may share a stream `index`: some servers send every
+    /// call as index 0.
+    calls: Vec<PendingCall>,
     finish_reason: Option<String>,
     usage: Option<(u64, u64)>,
     done: bool,
@@ -135,6 +145,34 @@ pub struct StreamState {
 impl StreamState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The call a delta belongs to. A delta continues the latest call with its index unless
+    /// it clearly starts another one: it carries a different id, or it carries a function
+    /// name when the current call already has one.
+    fn call_for(&mut self, index: u64, id: Option<&str>, name: Option<&str>) -> &mut PendingCall {
+        let pos = self.calls.iter().rposition(|c| c.index == index);
+        let starts_new = match pos {
+            None => true,
+            Some(p) => {
+                let cur = &self.calls[p];
+                let id_differs =
+                    matches!(id, Some(i) if !i.is_empty() && !cur.id.is_empty() && i != cur.id);
+                let renamed = matches!(name, Some(n) if !n.is_empty() && !cur.name.is_empty());
+                id_differs || renamed
+            }
+        };
+        if starts_new {
+            self.calls.push(PendingCall {
+                index,
+                ..Default::default()
+            });
+            let last = self.calls.len() - 1;
+            &mut self.calls[last]
+        } else {
+            let p = pos.unwrap_or(0);
+            &mut self.calls[p]
+        }
     }
 
     /// Feed one `data:` payload; returns the events it produces.
@@ -158,11 +196,12 @@ impl StreamState {
                 return out;
             }
         };
-        if let Some(err) = v.get("error") {
+        if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
             self.done = true;
             let msg = err
                 .get("message")
                 .and_then(Value::as_str)
+                .or_else(|| err.as_str())
                 .unwrap_or("provider error")
                 .to_string();
             out.push(ModelEvent::Stop {
@@ -195,17 +234,21 @@ impl StreamState {
                 if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                     for (i, c) in calls.iter().enumerate() {
                         let idx = c.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
-                        let entry = self.calls.entry(idx).or_default();
-                        if let Some(id) = c.get("id").and_then(Value::as_str) {
+                        let id = c.get("id").and_then(Value::as_str);
+                        let f = c.get("function");
+                        let name = f.and_then(|f| f.get("name")).and_then(Value::as_str);
+                        let entry = self.call_for(idx, id, name);
+                        if let Some(id) = id.filter(|i| !i.is_empty()) {
                             entry.id = id.to_string();
                         }
-                        if let Some(f) = c.get("function") {
-                            if let Some(n) = f.get("name").and_then(Value::as_str) {
-                                entry.name.push_str(n);
-                            }
-                            if let Some(a) = f.get("arguments").and_then(Value::as_str) {
-                                entry.arguments.push_str(a);
-                            }
+                        if let Some(n) = name {
+                            entry.name.push_str(n);
+                        }
+                        match f.and_then(|f| f.get("arguments")) {
+                            Some(Value::String(a)) => entry.arguments.push_str(a),
+                            // Some servers send the arguments as an object in one piece.
+                            Some(obj @ Value::Object(_)) => entry.arguments = obj.to_string(),
+                            _ => {}
                         }
                     }
                 }
@@ -217,6 +260,22 @@ impl StreamState {
         out
     }
 
+    /// The body ended. A stream with neither a `finish_reason` nor `[DONE]` is incomplete:
+    /// report an error instead of a normal end (B6).
+    pub fn finish_eof(&mut self) -> Vec<ModelEvent> {
+        if self.done || self.finish_reason.is_some() {
+            return self.finish();
+        }
+        self.done = true;
+        vec![ModelEvent::Stop {
+            reason: StopReason::Error,
+            message: Some(
+                "the model stream ended before the response was complete (connection dropped?)"
+                    .into(),
+            ),
+        }]
+    }
+
     /// Emit completed tool calls, usage and the stop event (idempotent).
     pub fn finish(&mut self) -> Vec<ModelEvent> {
         let mut out = Vec::new();
@@ -225,20 +284,26 @@ impl StreamState {
         }
         self.done = true;
         let had_calls = !self.calls.is_empty();
-        for (idx, c) in std::mem::take(&mut self.calls) {
+        let cut_off = self.finish_reason.as_deref() == Some("length");
+        let mut seen_ids: Vec<String> = Vec::new();
+        let n = self.calls.len();
+        for (pos, c) in std::mem::take(&mut self.calls).into_iter().enumerate() {
             let arguments = if c.arguments.trim().is_empty() {
                 json!({})
             } else {
-                match serde_json::from_str(&c.arguments) {
-                    Ok(v) => v,
-                    Err(_) => json!({"_raw": c.arguments}),
+                match serde_json::from_str::<Value>(&c.arguments) {
+                    Ok(v) if v.is_object() => v,
+                    // Only the last call can have been cut off by the output limit.
+                    _ => unparsed_arguments(&c.arguments, cut_off && pos + 1 == n),
                 }
             };
-            let id = if c.id.is_empty() {
-                format!("call_{idx}")
+            // Ids must be unique: they key the results in the next request and the transcript.
+            let id = if c.id.is_empty() || seen_ids.contains(&c.id) {
+                generated_call_id()
             } else {
                 c.id
             };
+            seen_ids.push(id.clone());
             out.push(ModelEvent::ToolCall {
                 id,
                 name: c.name,
@@ -251,18 +316,27 @@ impl StreamState {
                 output_tokens: o,
             });
         }
-        let reason = match self.finish_reason.as_deref() {
-            Some("tool_calls") | Some("function_call") => StopReason::ToolCalls,
-            Some("length") => StopReason::MaxTokens,
-            Some("content_filter") => StopReason::Error,
-            _ if had_calls => StopReason::ToolCalls,
-            _ => StopReason::End,
+        let (reason, message) = match self.finish_reason.as_deref() {
+            Some("tool_calls") | Some("function_call") => (StopReason::ToolCalls, None),
+            Some("length") => (StopReason::MaxTokens, None),
+            Some("content_filter") => (
+                StopReason::Error,
+                Some("the provider's content filter stopped the response".to_string()),
+            ),
+            _ if had_calls => (StopReason::ToolCalls, None),
+            _ => (StopReason::End, None),
         };
-        out.push(ModelEvent::Stop {
-            reason,
-            message: None,
-        });
+        out.push(ModelEvent::Stop { reason, message });
         out
+    }
+}
+
+impl SseState for StreamState {
+    fn on_event(&mut self, ev: &super::sse::SseEvent) -> Vec<ModelEvent> {
+        self.feed(&ev.data)
+    }
+    fn on_eof(&mut self) -> Vec<ModelEvent> {
+        self.finish_eof()
     }
 }
 
@@ -273,7 +347,7 @@ pub fn parse_sse_document(doc: &str) -> Vec<ModelEvent> {
     for ev in super::sse::parse_all(doc) {
         out.extend(st.feed(&ev.data));
     }
-    out.extend(st.finish());
+    out.extend(st.finish_eof());
     out
 }
 
@@ -282,15 +356,24 @@ pub struct OpenAiCompatClient {
     base_url: String,
     api_key: Option<String>,
     model: String,
+    pub policy: HttpPolicy,
+}
+
+/// Whether an error response says the server does not accept `stream_options`.
+fn rejects_stream_options(f: &SendFailure) -> bool {
+    matches!(f, SendFailure::Http { status, body }
+        if matches!(*status, 400 | 422) && body.contains("stream_options"))
 }
 
 impl OpenAiCompatClient {
     pub fn new(base_url: String, api_key: Option<String>, model: String) -> anyhow::Result<Self> {
+        let policy = HttpPolicy::default();
         Ok(OpenAiCompatClient {
-            http: reqwest::Client::builder().build()?,
+            http: http_client(&policy)?,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
+            policy,
         })
     }
 
@@ -314,74 +397,40 @@ impl OpenAiCompatClient {
 
 impl ModelClient for OpenAiCompatClient {
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, ModelEvent> {
-        let body = build_body(&req);
         let http = self.http.clone();
         let url = self.chat_url();
         let api_key = self.api_key.clone();
+        let policy = self.policy.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         tokio::spawn(async move {
-            let mut r = http.post(&url).json(&body);
-            if let Some(k) = &api_key {
-                r = r.bearer_auth(k);
+            let send = |body: Value| {
+                let (http, url, api_key, policy) = (&http, &url, &api_key, &policy);
+                async move {
+                    let make = || {
+                        let r = http.post(url).json(&body);
+                        match api_key {
+                            Some(k) => r.bearer_auth(k),
+                            None => r,
+                        }
+                    };
+                    send_with_retry(make, policy).await
+                }
+            };
+            let mut result = send(build_body_with(&req, true)).await;
+            if matches!(&result, Err(f) if rejects_stream_options(f)) {
+                // PROTOCOL 4: tolerate servers without `stream_options`; usage is then absent.
+                result = send(build_body_with(&req, false)).await;
             }
-            let resp = match r.send().await {
-                Ok(r) => r,
+            match result {
+                Ok(resp) => pump(resp, tx, policy.idle_timeout, StreamState::new()).await,
                 Err(e) => {
                     let _ = tx
                         .send(ModelEvent::Stop {
                             reason: StopReason::Error,
-                            message: Some(format!("request failed: {e}")),
+                            message: Some(e.message()),
                         })
                         .await;
-                    return;
                 }
-            };
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                let _ = tx
-                    .send(ModelEvent::Stop {
-                        reason: StopReason::Error,
-                        message: Some(format!(
-                            "HTTP {status}: {}",
-                            crate::util::truncate_bytes(&text, 2000)
-                        )),
-                    })
-                    .await;
-                return;
-            }
-            use futures::StreamExt;
-            let mut bytes = resp.bytes_stream();
-            let mut parser = SseParser::new();
-            let mut state = StreamState::new();
-            while let Some(chunk) = bytes.next().await {
-                let chunk = match chunk {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = tx
-                            .send(ModelEvent::Stop {
-                                reason: StopReason::Error,
-                                message: Some(format!("stream error: {e}")),
-                            })
-                            .await;
-                        return;
-                    }
-                };
-                for ev in parser.push(&chunk) {
-                    for me in state.feed(&ev.data) {
-                        if tx.send(me).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-            if let Some(ev) = parser.finish() {
-                for me in state.feed(&ev.data) {
-                    let _ = tx.send(me).await;
-                }
-            }
-            for me in state.finish() {
-                let _ = tx.send(me).await;
             }
         });
         channel_stream(rx)
@@ -510,7 +559,6 @@ mod tests {
                 parameters: json!({"type":"object","properties":{"path":{"type":"string"}}}),
             }],
             max_tokens: Some(100),
-            temperature: None,
         };
         let body = build_body(&req);
         assert_eq!(body["stream"], true);
@@ -541,5 +589,175 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "fs_read");
         assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    fn chunk(delta: Value, finish: Option<&str>) -> String {
+        format!(
+            "data: {}\n\n",
+            json!({"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+        )
+    }
+
+    /// A3: servers that send every call as index 0, with or without ids.
+    #[test]
+    fn repeated_index_and_missing_ids_yield_distinct_calls() {
+        let doc = [
+            chunk(json!({"tool_calls": [{"index": 0, "function": {"name": "fs_read", "arguments": "{\"path\": \"a.py\"}"}}]}), None),
+            chunk(json!({"tool_calls": [{"index": 0, "function": {"name": "fs_read", "arguments": "{\"path\": \"b.py\"}"}}]}), None),
+            chunk(json!({"tool_calls": [{"index": 0, "id": "x1", "function": {"name": "fs_list", "arguments": ""}}]}), None),
+            chunk(json!({"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]}), None),
+            chunk(json!({"tool_calls": [{"index": 0, "id": "x2", "function": {"arguments": "{\"depth\": 1}"}}]}), None),
+            chunk(json!({}), Some("tool_calls")),
+            "data: [DONE]\n\n".to_string(),
+        ]
+        .concat();
+        let calls: Vec<(String, String, Value)> = parse_sse_document(&doc)
+            .into_iter()
+            .filter_map(|e| match e {
+                ModelEvent::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                } => Some((id, name, arguments)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), 4, "{calls:?}");
+        assert_eq!(calls[0].2, json!({"path": "a.py"}));
+        assert_eq!(calls[1].2, json!({"path": "b.py"}));
+        assert_eq!(
+            (calls[2].0.as_str(), calls[2].1.as_str()),
+            ("x1", "fs_list")
+        );
+        assert_eq!(calls[3].0, "x2");
+        assert_eq!(calls[3].2, json!({"depth": 1}));
+        let mut ids: Vec<&String> = calls.iter().map(|c| &c.0).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 4, "ids must be unique");
+        assert_ne!(calls[0].0, "call_0");
+        // Generated ids differ between responses too.
+        let again = parse_sse_document(&doc);
+        assert!(matches!(&again[0], ModelEvent::ToolCall { id, .. } if *id != calls[0].0));
+    }
+
+    /// B6: `finish_reason: length` in the middle of tool-call arguments.
+    #[test]
+    fn truncated_tool_call_is_flagged() {
+        let doc = [
+            chunk(json!({"tool_calls": [{"index": 0, "id": "c1", "function": {"name": "fs_propose_create", "arguments": "{\"path\": \"a.py\", \"content\": \"x = "}}]}), None),
+            chunk(json!({}), Some("length")),
+        ]
+        .concat();
+        let events = parse_sse_document(&doc);
+        match &events[0] {
+            ModelEvent::ToolCall { arguments, .. } => {
+                assert_eq!(arguments["_truncated"], true);
+                assert!(arguments.get("path").is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            events.last(),
+            Some(ModelEvent::Stop {
+                reason: StopReason::MaxTokens,
+                ..
+            })
+        ));
+    }
+
+    /// B6: no `finish_reason` and no `[DONE]` means the connection dropped.
+    #[test]
+    fn eof_before_terminal_event_is_an_error() {
+        let doc = chunk(json!({"content": "partial"}), None);
+        let events = parse_sse_document(&doc);
+        assert!(matches!(
+            events.last(),
+            Some(ModelEvent::Stop { reason: StopReason::Error, message: Some(m) }) if m.contains("ended before")
+        ));
+        // A finish_reason without [DONE] is a complete response.
+        let doc = [
+            chunk(json!({"content": "all"}), None),
+            chunk(json!({}), Some("stop")),
+        ]
+        .concat();
+        assert!(matches!(
+            parse_sse_document(&doc).last(),
+            Some(ModelEvent::Stop {
+                reason: StopReason::End,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn body_has_no_temperature_and_merges_roles() {
+        let req = ChatRequest {
+            model: "m".into(),
+            system: None,
+            messages: vec![
+                Message::user_text("a"),
+                Message::user_text("b"),
+                Message::assistant_text("   "),
+                Message::user_text("c"),
+            ],
+            tools: vec![],
+            max_tokens: Some(16384),
+        };
+        let body = build_body(&req);
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["max_tokens"], 16384);
+        assert_eq!(
+            body["messages"],
+            json!([{"role": "user", "content": "a\nb\nc"}])
+        );
+        assert!(build_body_with(&req, false).get("stream_options").is_none());
+    }
+
+    /// A2: `stream_options` rejection is retried once without it; 5xx is retried.
+    #[tokio::test]
+    async fn stream_options_fallback_and_retry() {
+        use crate::providers::testserver::{serve, Canned};
+        let ok = [
+            chunk(json!({"content": "hi"}), None),
+            chunk(json!({}), Some("stop")),
+            "data: [DONE]\n\n".into(),
+        ]
+        .concat();
+        let server = serve(vec![
+            Canned::status(503, "warming up"),
+            Canned::status(400, "{\"error\":{\"message\":\"Unrecognized request argument supplied: stream_options\"}}"),
+            Canned::sse(&ok),
+        ])
+        .await;
+        let mut c = OpenAiCompatClient::new(server.url.clone(), None, "m".into()).unwrap();
+        c.policy.backoff_base = std::time::Duration::from_millis(5);
+        let got = crate::providers::collect(c.stream(ChatRequest {
+            model: "m".into(),
+            messages: vec![Message::user_text("x")],
+            ..Default::default()
+        }))
+        .await;
+        assert_eq!(got.stop, Some(StopReason::End), "{:?}", got.stop_message);
+        assert_eq!(got.text, "hi");
+        let bodies = server.bodies();
+        assert_eq!(bodies.len(), 3);
+        assert!(bodies[1].contains("stream_options"));
+        assert!(!bodies[2].contains("stream_options"));
+    }
+
+    /// B6 end to end: the server closes the connection mid-response.
+    #[tokio::test]
+    async fn dropped_connection_is_reported_as_an_error() {
+        use crate::providers::testserver::{serve, Canned};
+        let server = serve(vec![Canned::sse(&chunk(
+            json!({"content": "half an ans"}),
+            None,
+        ))])
+        .await;
+        let c = OpenAiCompatClient::new(server.url.clone(), None, "m".into()).unwrap();
+        let got = crate::providers::collect(c.stream(ChatRequest::default())).await;
+        assert_eq!(got.text, "half an ans");
+        assert_eq!(got.stop, Some(StopReason::Error));
     }
 }

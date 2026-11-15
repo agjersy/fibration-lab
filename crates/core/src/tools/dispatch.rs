@@ -6,7 +6,9 @@ use super::proposals;
 use crate::kernel::KernelClient;
 use crate::session::Session;
 use crate::target::{self, Target};
-use crate::util::{normalize_rel_path, now_rfc3339, truncate_bytes};
+use crate::util::{
+    normalize_rel_path, now_rfc3339, resolve_in_repo, resolve_in_roots, tail_bytes, truncate_bytes,
+};
 use analyst_protocol::config::ProjectConfig;
 use analyst_protocol::kernel::*;
 use analyst_protocol::transcript::Event;
@@ -75,6 +77,9 @@ pub struct ToolContext {
     pub control_dir: Option<PathBuf>,
     pub last_sync_hash: Mutex<Option<String>>,
     pub output_sink: Option<OutputSink>,
+    /// User-approved external data directories (the global config's target `data_dirs`):
+    /// `fs.read` may follow a repo symlink into them. Empty by default.
+    pub data_roots: Vec<String>,
 }
 
 impl ToolContext {
@@ -96,6 +101,7 @@ impl ToolContext {
             control_dir: None,
             last_sync_hash: Mutex::new(None),
             output_sink: None,
+            data_roots: vec![],
         }
     }
 
@@ -236,54 +242,88 @@ impl ToolContext {
         }
     }
 
-    /// Cap a result for the model; large results are spilled to the session artifacts dir.
+    /// Cap a result for the model. The cap applies to the final serialisation, for errors as
+    /// well as successes. Larger results are spilled to the session artifacts directory as
+    /// line-oriented text (string fields raw, everything else pretty JSON), so `fs.read` with
+    /// a line range can page through them.
     pub fn cap_result(&self, call_id: &str, result: Result<Value, ToolError>) -> ToolOutcome {
-        match result {
-            Err(e) => ToolOutcome {
-                ok: false,
-                result: json!({"error": e.message}),
+        let (ok, value) = match result {
+            Ok(v) => (true, v),
+            Err(e) => (false, json!({"error": e.message})),
+        };
+        let text = serde_json::to_string(&value).unwrap_or_default();
+        if text.len() <= TOOL_RESULT_CAP_BYTES {
+            return ToolOutcome {
+                ok,
+                result: value,
                 truncated: false,
-            },
-            Ok(v) => {
-                let text = serde_json::to_string(&v).unwrap_or_default();
-                if text.len() <= TOOL_RESULT_CAP_BYTES {
-                    return ToolOutcome {
-                        ok: true,
-                        result: v,
-                        truncated: false,
-                    };
+            };
+        }
+        let full = render_for_paging(&value);
+        let safe_id: String = call_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
                 }
-                let pretty = serde_json::to_string_pretty(&v).unwrap_or(text);
-                let name = format!("{}/{}.json", self.conv_id, call_id);
-                match self.session.spill_artifact(&name, pretty.as_bytes()) {
-                    Ok(path) => ToolOutcome {
-                        ok: true,
-                        result: json!({
-                            "head": truncate_bytes(&pretty, TOOL_RESULT_CAP_BYTES * 3 / 4),
-                            "truncated": true,
-                            "artifact": path.display().to_string(),
-                            "hint": "page the full result with fs.read on the artifact path"
-                        }),
-                        truncated: true,
-                    },
-                    Err(e) => ToolOutcome {
-                        ok: true,
-                        result: json!({
-                            "head": truncate_bytes(&pretty, TOOL_RESULT_CAP_BYTES * 3 / 4),
-                            "truncated": true,
-                            "error": format!("could not store full result: {e}")
-                        }),
-                        truncated: true,
-                    },
-                }
+            })
+            .collect();
+        let name = format!("{}/{}.txt", self.conv_id, safe_id);
+        let stored = self.session.spill_artifact(&name, full.as_bytes());
+        let total_lines = full.lines().count();
+        let mut head_len = TOOL_RESULT_CAP_BYTES * 3 / 4;
+        loop {
+            let head = truncate_bytes(&full, head_len);
+            let mut out = json!({
+                "head": head,
+                "truncated": true,
+                "total_bytes": full.len(),
+                "total_lines": total_lines,
+            });
+            if !ok {
+                out["error"] = json!(truncate_bytes(&full, head_len.min(2000)));
             }
+            match &stored {
+                Ok(path) => {
+                    out["artifact"] = json!(path.display().to_string());
+                    out["hint"] = json!(
+                        "page the full result with fs.read on the artifact path using start_line/end_line"
+                    );
+                }
+                Err(e) => out["spill_error"] = json!(format!("could not store full result: {e}")),
+            }
+            let len = serde_json::to_string(&out).map(|t| t.len()).unwrap_or(0);
+            if len <= TOOL_RESULT_CAP_BYTES || head_len < 256 {
+                return ToolOutcome {
+                    ok,
+                    result: out,
+                    truncated: true,
+                };
+            }
+            // JSON escaping can inflate the head well past its raw size.
+            head_len = head_len * 2 / 3;
         }
     }
 
     // ---- filesystem ----
 
-    /// Resolve a path argument: repo-relative, or an absolute path inside the session
-    /// artifacts directory (spilled results).
+    /// Directories outside the repo that reads may reach through a symlink: the target's
+    /// user-approved data directories (local paths only make sense on the local target).
+    fn read_roots(&self) -> Vec<PathBuf> {
+        if self.target.is_remote() {
+            return vec![];
+        }
+        self.data_roots
+            .iter()
+            .map(|d| crate::util::expand_tilde(d))
+            .filter(|d| d.is_absolute())
+            .collect()
+    }
+
+    /// Resolve a path argument: repo-relative (canonicalised, so a symlink cannot lead out of
+    /// the repo), or an absolute path inside the session artifacts directory (spilled results).
     fn resolve_read_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
         let p = Path::new(raw);
         if p.is_absolute() {
@@ -298,8 +338,7 @@ impl ToolContext {
                 "`{raw}` is outside the repo and the session artifacts directory"
             )));
         }
-        let rel = normalize_rel_path(raw).map_err(ToolError::new)?;
-        Ok(self.repo.join(rel))
+        resolve_in_roots(&self.repo, raw, true, &self.read_roots()).map_err(ToolError::new)
     }
 
     fn fs_read(&self, args: &Value) -> Result<Value, ToolError> {
@@ -324,13 +363,27 @@ impl ToolContext {
             .map(|e| e as usize)
             .unwrap_or(total)
             .min(total);
+        // A single line can be enormous (minified data); bound each one so a page of lines
+        // is a page.
+        const MAX_LINE: usize = 2000;
         let content: String = if start > end {
             String::new()
         } else {
             text.lines()
                 .enumerate()
                 .filter(|(i, _)| *i + 1 >= start && *i < end)
-                .map(|(i, l)| format!("{:>5}| {l}", i + 1))
+                .map(|(i, l)| {
+                    if l.len() > MAX_LINE {
+                        format!(
+                            "{:>5}| {}...[line truncated, {} bytes]",
+                            i + 1,
+                            truncate_bytes(l, MAX_LINE),
+                            l.len()
+                        )
+                    } else {
+                        format!("{:>5}| {l}", i + 1)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -341,17 +394,13 @@ impl ToolContext {
 
     fn fs_list(&self, args: &Value) -> Result<Value, ToolError> {
         let raw = args.get("path").and_then(Value::as_str).unwrap_or(".");
-        let rel = if raw == "." || raw.is_empty() {
-            String::new()
-        } else {
-            normalize_rel_path(raw).map_err(ToolError::new)?
-        };
+        let canon_repo = std::fs::canonicalize(&self.repo)?;
         let depth = args
             .get("depth")
             .and_then(Value::as_u64)
             .unwrap_or(2)
             .clamp(1, 6) as usize;
-        let root = self.repo.join(&rel);
+        let root = resolve_in_repo(&self.repo, raw, true).map_err(ToolError::new)?;
         if !root.is_dir() {
             return Err(ToolError::new(format!("`{raw}` is not a directory")));
         }
@@ -371,7 +420,7 @@ impl ToolContext {
             })
             .flatten()
         {
-            let p = e.path().strip_prefix(&self.repo).unwrap_or(e.path());
+            let p = e.path().strip_prefix(&canon_repo).unwrap_or(e.path());
             let mut s = p.to_string_lossy().replace('\\', "/");
             if e.file_type().is_dir() {
                 s.push('/');
@@ -385,51 +434,119 @@ impl ToolContext {
     }
 
     async fn fs_search(&self, args: &Value) -> Result<Value, ToolError> {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+        const SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        const MAX_STDOUT_BYTES: usize = 8 * 1024 * 1024;
         let pattern = str_arg(args, "pattern")?;
         let max = args
             .get("max_results")
             .and_then(Value::as_u64)
-            .unwrap_or(50) as usize;
-        let mut cmd = tokio::process::Command::new("rg");
-        cmd.args(["--json", "--no-messages", "-e", pattern])
+            .unwrap_or(50)
+            .clamp(1, 1000) as usize;
+        let rg = crate::util::find_tool("rg").ok_or_else(|| {
+            ToolError::new("ripgrep (`rg`) is not installed, so fs.search is unavailable")
+        })?;
+        let mut cmd = tokio::process::Command::new(rg);
+        cmd.args(["--json", "--max-columns", "1000", "-e", pattern])
             .arg("--glob")
             .arg("!.git")
             .arg("--glob")
             .arg("!.venv")
             .current_dir(&self.repo)
-            .stdin(std::process::Stdio::null());
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
         if let Some(g) = args.get("glob").and_then(Value::as_str) {
             cmd.arg("--glob").arg(g);
         }
-        cmd.arg(".");
-        let out = cmd
-            .output()
-            .await
-            .map_err(|e| ToolError::new(format!("running rg: {e} (is ripgrep installed?)")))?;
+        cmd.arg("--").arg(".");
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| ToolError::new(format!("running rg: {e}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| ToolError::new("rg stdout not captured"))?;
+        let mut stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| ToolError::new("rg stderr not captured"))?;
+        let err_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            let _ = (&mut stderr).take(64 * 1024).read_to_end(&mut buf).await;
+            String::from_utf8_lossy(&buf).to_string()
+        });
         let mut matches = Vec::new();
         let mut truncated = false;
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            let v: Value = match serde_json::from_str(line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if v["type"] != "match" {
-                continue;
+        let mut stopped_early = false;
+        let read = async {
+            let mut lines = tokio::io::BufReader::new(stdout).lines();
+            let mut seen = 0usize;
+            while let Ok(Some(line)) = lines.next_line().await {
+                seen += line.len();
+                if seen > MAX_STDOUT_BYTES {
+                    truncated = true;
+                    stopped_early = true;
+                    break;
+                }
+                let v: Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if v["type"] != "match" {
+                    continue;
+                }
+                if matches.len() >= max {
+                    truncated = true;
+                    stopped_early = true;
+                    break;
+                }
+                let d = &v["data"];
+                let path = d["path"]["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .trim_start_matches("./");
+                let text = d["lines"]["text"].as_str().unwrap_or("").trim_end();
+                matches.push(json!({
+                    "path": path,
+                    "line": d["line_number"],
+                    "text": truncate_bytes(text, 400),
+                }));
             }
-            if matches.len() >= max {
-                truncated = true;
-                break;
+        };
+        let timed_out = tokio::time::timeout(SEARCH_TIMEOUT, read).await.is_err();
+        if timed_out || stopped_early {
+            let _ = child.start_kill();
+        }
+        let status = child.wait().await.ok();
+        let stderr_text = err_task.await.unwrap_or_default();
+        if timed_out {
+            return Err(ToolError::new(format!(
+                "fs.search timed out after {} s; narrow the pattern or add a glob",
+                SEARCH_TIMEOUT.as_secs()
+            )));
+        }
+        // rg exits 0 with matches, 1 with none, 2 on errors (bad regex, unreadable files).
+        // Killing it after enough matches is not an error.
+        let code = status.and_then(|s| s.code());
+        if !stopped_early && code != Some(0) && code != Some(1) {
+            let msg = stderr_text.trim();
+            if matches.is_empty() {
+                return Err(ToolError::new(format!(
+                    "ripgrep failed (this is not \"no matches\"): {}",
+                    if msg.is_empty() {
+                        format!("exit status {code:?}")
+                    } else {
+                        truncate_bytes(msg, 2000).to_string()
+                    }
+                )));
             }
-            let d = &v["data"];
-            let path = d["path"]["text"]
-                .as_str()
-                .unwrap_or("")
-                .trim_start_matches("./");
-            let text = d["lines"]["text"].as_str().unwrap_or("").trim_end();
-            matches.push(json!({
-                "path": path,
-                "line": d["line_number"],
-                "text": truncate_bytes(text, 400),
+            return Ok(json!({
+                "pattern": pattern,
+                "matches": matches,
+                "truncated": truncated,
+                "warning": truncate_bytes(msg, 1000),
             }));
         }
         Ok(json!({"pattern": pattern, "matches": matches, "truncated": truncated}))
@@ -465,7 +582,7 @@ impl ToolContext {
                     if ArtifactKind::from_path(&rel) != ArtifactKind::Figure {
                         continue;
                     }
-                    let sidecar = p.with_extension("json");
+                    let sidecar = PathBuf::from(target::sync::sidecar_path(&rel));
                     let meta: Option<FigureSidecar> = std::fs::read_to_string(&sidecar)
                         .ok()
                         .and_then(|t| serde_json::from_str(&t).ok());
@@ -570,6 +687,9 @@ impl ToolContext {
             })
             .await?;
         let run_id = started.run_id.clone();
+        // If this future is dropped before the run finishes (the turn was cancelled), the
+        // guard cancels the run on the target.
+        let cancel_guard = kernel.cancel_guard(&run_id);
         self.session.append_event(
             &self.conv_id,
             &Event::Run {
@@ -604,13 +724,13 @@ impl ToolContext {
                     if let Some(s) = &self.output_sink {
                         s("stdout", &o.chunk);
                     }
-                    stdout.push_str(&o.chunk);
+                    push_bounded(&mut stdout, &o.chunk);
                 }
                 KernelNotification::Stderr(o) => {
                     if let Some(s) = &self.output_sink {
                         s("stderr", &o.chunk);
                     }
-                    stderr.push_str(&o.chunk);
+                    push_bounded(&mut stderr, &o.chunk);
                 }
                 KernelNotification::Artifact(a) => artifacts.push(a.artifact),
                 KernelNotification::Done(d) => {
@@ -624,29 +744,38 @@ impl ToolContext {
         if let Some(m) = &meta {
             let _ = self.session.append_run(m);
         }
-        // Pull rendered artifacts from a remote target.
+        // Finished, or still running past the wait deadline (the agent may poll it): either
+        // way this call no longer owns the run.
+        cancel_guard.disarm();
+        // Pull rendered artifacts (and only those) from a remote target, once: figures and
+        // other rendered files, their sidecars, and run.json. Data stays on the host.
         let mut pull_error = None;
         if let (Target::Ssh { host, .. }, Some(mirror)) =
             (&self.target, self.target.mirror_dir(&self.repo))
         {
-            if let Err(e) = target::sync::pull_run(
+            let paths = target::sync::rendered_paths(&artifacts, &started.out_dir);
+            match target::sync::pull_rendered(
                 host,
                 &mirror,
-                &started.out_dir,
+                &paths,
                 &self.repo,
                 self.control_dir.as_deref(),
             )
             .await
             {
-                pull_error = Some(e.to_string());
-            } else {
-                for a in artifacts.iter().filter(|a| a.rendered) {
-                    let src = self.repo.join(&a.path);
-                    let dst = self.session.pulled_artifact_path(&run_id, &a.path);
-                    if let Some(p) = dst.parent() {
-                        let _ = std::fs::create_dir_all(p);
+                Err(e) => pull_error = Some(e.to_string()),
+                Ok(()) => {
+                    for rel in &paths {
+                        let src = self.repo.join(rel);
+                        if !src.is_file() {
+                            continue;
+                        }
+                        let dst = self.session.pulled_artifact_path(&run_id, rel);
+                        if let Some(p) = dst.parent() {
+                            let _ = std::fs::create_dir_all(p);
+                        }
+                        let _ = std::fs::copy(&src, &dst);
                     }
-                    let _ = std::fs::copy(&src, &dst);
                 }
             }
         }
@@ -665,6 +794,7 @@ impl ToolContext {
             .map(|a| a.path.as_str())
             .collect();
         let tail = |s: &str| tail_bytes(s, 6000);
+        let run_id = run_id.clone();
         let mut result = json!({
             "run_id": run_id,
             "script": script,
@@ -698,51 +828,47 @@ impl ToolContext {
             .and_then(Value::as_array)
             .map(|a| {
                 a.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
                     .collect()
             })
             .unwrap_or_default();
         if name != "pkg.sync" && packages.is_empty() {
             return Err(ToolError::new("`packages` must list at least one package"));
         }
+        validate_package_names(&packages)?;
         let has_pyproject = self.repo.join("pyproject.toml").is_file();
-        let sub: Vec<String> = match (name, has_pyproject) {
-            ("pkg.add", true) => vec!["add".into()],
-            ("pkg.add", false) => vec!["pip".into(), "install".into()],
-            ("pkg.remove", true) => vec!["remove".into()],
-            ("pkg.remove", false) => vec!["pip".into(), "uninstall".into()],
-            ("pkg.sync", true) => vec!["sync".into()],
-            ("pkg.sync", false) => {
-                return Err(ToolError::new("pkg.sync needs a pyproject.toml / uv.lock"))
-            }
-            _ => return Err(ToolError::new(format!("unknown package tool `{name}`"))),
-        };
-        let out = match &self.target {
+        let local = local_uv_line(name, has_pyproject, self.target.is_remote(), &packages)?;
+        let (host, mirror) = match &self.target {
             Target::Local => {
-                let mut line = vec!["uv".to_string()];
-                line.extend(sub);
-                line.extend(packages.clone());
-                target::run_command(&line, Some(&self.repo)).await?
+                let out = target::run_command(&local, Some(&self.repo)).await?;
+                return Ok(json!({
+                    "ok": true,
+                    "stdout": tail_bytes(&String::from_utf8_lossy(&out.stdout), 4000),
+                    "stderr": tail_bytes(&String::from_utf8_lossy(&out.stderr), 4000),
+                }));
             }
-            Target::Ssh { host, .. } => {
-                let mirror = self.target.mirror_dir(&self.repo).unwrap_or_default();
-                let mut parts = vec!["~/.analyst/bin/uv".to_string()];
-                parts.extend(sub);
-                parts.extend(packages.iter().map(|p| crate::util::sh_quote(p)));
-                let remote = format!(
-                    "cd {} && {}",
-                    crate::util::sh_quote(&mirror),
-                    parts.join(" ")
-                );
-                let s = target::run_ssh(host, self.control_dir.as_deref(), &remote).await?;
-                return Ok(json!({"ok": true, "output": tail_bytes(&s, 4000)}));
-            }
+            Target::Ssh { host, .. } => (
+                host.clone(),
+                self.target.mirror_dir(&self.repo).unwrap_or_default(),
+            ),
         };
-        Ok(json!({
-            "ok": true,
-            "stdout": tail_bytes(&String::from_utf8_lossy(&out.stdout), 4000),
-            "stderr": tail_bytes(&String::from_utf8_lossy(&out.stderr), 4000),
-        }))
+        // Remote target: the local repo is canonical. Change pyproject.toml and the lockfile
+        // locally, push them, then make the remote environment match with `uv sync`.
+        // Editing only the mirror would be undone by the next push.
+        let mut log = String::new();
+        if has_pyproject {
+            if name != "pkg.sync" {
+                let out = target::run_command(&local, Some(&self.repo)).await?;
+                log.push_str(&String::from_utf8_lossy(&out.stderr));
+            }
+            self.sync_if_needed().await.map_err(|e| {
+                ToolError::new(format!("sync after the package change failed: {e}"))
+            })?;
+        }
+        let remote = remote_uv_command(name, has_pyproject, &mirror, &packages);
+        let s = target::run_ssh(&host, self.control_dir.as_deref(), &remote).await?;
+        log.push_str(&s);
+        Ok(json!({"ok": true, "output": tail_bytes(&log, 4000)}))
     }
 
     /// `shell.run` goes through the kernel's sandboxed REPL (`exec.snippet`) with a subprocess
@@ -785,15 +911,110 @@ fn bad_args(e: serde_json::Error) -> ToolError {
     ToolError::new(format!("invalid arguments: {e}"))
 }
 
-fn tail_bytes(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
+/// Keep at most the last 256 KiB of run output in memory; only a tail goes to the model.
+fn push_bounded(buf: &mut String, chunk: &str) {
+    const MAX: usize = 256 * 1024;
+    buf.push_str(chunk);
+    if buf.len() > MAX {
+        let mut cut = buf.len() - MAX / 2;
+        while cut < buf.len() && !buf.is_char_boundary(cut) {
+            cut += 1;
+        }
+        buf.drain(..cut);
     }
-    let mut start = s.len() - max;
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
+}
+
+/// Package arguments are requirement specifiers, never options (A9).
+pub fn validate_package_names(packages: &[String]) -> Result<(), ToolError> {
+    for p in packages {
+        if p.is_empty() {
+            return Err(ToolError::new("empty package name"));
+        }
+        if p.starts_with('-') {
+            return Err(ToolError::new(format!(
+                "`{p}` is not a package name (it starts with `-` and would be read as an option)"
+            )));
+        }
+        if p.chars().any(|c| c.is_control()) {
+            return Err(ToolError::new(format!(
+                "package name `{}` contains control characters",
+                p.escape_debug()
+            )));
+        }
     }
-    format!("...[truncated]...{}", &s[start..])
+    Ok(())
+}
+
+/// The `uv` command line run in the local repo. On a remote target with a pyproject, adds
+/// and removals only update `pyproject.toml` and `uv.lock` (`--no-sync`).
+pub fn local_uv_line(
+    tool: &str,
+    has_pyproject: bool,
+    remote_target: bool,
+    packages: &[String],
+) -> Result<Vec<String>, ToolError> {
+    let mut line = vec!["uv".to_string()];
+    match (tool, has_pyproject) {
+        ("pkg.add", true) => line.push("add".into()),
+        ("pkg.remove", true) => line.push("remove".into()),
+        ("pkg.add", false) => line.extend(["pip".into(), "install".into()]),
+        ("pkg.remove", false) => line.extend(["pip".into(), "uninstall".into()]),
+        ("pkg.sync", true) => {
+            line.push("sync".into());
+            return Ok(line);
+        }
+        ("pkg.sync", false) => {
+            return Err(ToolError::new("pkg.sync needs a pyproject.toml / uv.lock"))
+        }
+        _ => return Err(ToolError::new(format!("unknown package tool `{tool}`"))),
+    }
+    if has_pyproject && remote_target {
+        line.push("--no-sync".into());
+    }
+    line.push("--".into());
+    line.extend(packages.iter().cloned());
+    Ok(line)
+}
+
+/// The remote shell command applied in the mirror after the push.
+pub fn remote_uv_command(
+    tool: &str,
+    has_pyproject: bool,
+    mirror: &str,
+    packages: &[String],
+) -> String {
+    let cd = format!("cd {}", crate::util::sh_quote_path(mirror));
+    if has_pyproject {
+        return format!("{cd} && ~/.analyst/bin/uv sync");
+    }
+    let sub = if tool == "pkg.remove" {
+        "pip uninstall"
+    } else {
+        "pip install"
+    };
+    let pkgs: Vec<String> = packages.iter().map(|p| crate::util::sh_quote(p)).collect();
+    format!("{cd} && ~/.analyst/bin/uv {sub} -- {}", pkgs.join(" "))
+}
+
+/// Line-oriented rendering of a tool result for the spilled artifact: top-level string
+/// fields are written raw under a `## <key>` heading so their own lines can be paged.
+fn render_for_paging(v: &Value) -> String {
+    fn one(v: &Value) -> String {
+        match v {
+            Value::String(s) => s.clone(),
+            other => serde_json::to_string_pretty(other).unwrap_or_default(),
+        }
+    }
+    match v {
+        Value::Object(m) => {
+            let mut out = String::new();
+            for (k, val) in m {
+                out.push_str(&format!("## {k}\n{}\n", one(val)));
+            }
+            out
+        }
+        other => one(other),
+    }
 }
 
 #[cfg(test)]
@@ -860,22 +1081,42 @@ mod tests {
             .message
             .contains("not connected"));
 
-        let big = json!({"data": "x".repeat(40_000)});
+        // A6: a long multi-line string must be pageable by line from the artifact.
+        let long: String = (1..=3000)
+            .map(|i| format!("row {i} \"quoted\"\n"))
+            .collect();
+        let big = json!({"stdout": long, "n": 3000});
         let o = c.cap_result("big", Ok(big));
         assert!(o.truncated);
         assert_eq!(o.result["truncated"], true);
+        assert!(
+            serde_json::to_string(&o.result).unwrap().len() <= TOOL_RESULT_CAP_BYTES,
+            "the cap applies to the final serialisation"
+        );
         let art = o.result["artifact"].as_str().unwrap().to_string();
         assert!(Path::new(&art).is_file());
-        // The artifact is readable through fs.read by absolute path.
+        assert!(o.result["total_lines"].as_u64().unwrap() > 3000);
+        // The artifact is readable through fs.read by absolute path, line by line, well
+        // past the point where the head was cut.
         let page = c
             .dispatch(
                 "6",
                 "fs.read",
-                &json!({"path": art, "start_line": 1, "end_line": 1}),
+                &json!({"path": art, "start_line": 2900, "end_line": 2901}),
             )
             .await
             .unwrap();
-        assert!(page["content"].as_str().unwrap().contains("{"));
+        let content = page["content"].as_str().unwrap();
+        assert!(content.contains("row 289"), "{content}");
+        assert_eq!(content.lines().count(), 2);
+        // Error results are capped too.
+        let huge_err = c.cap_result("err", Err(ToolError::new("e".repeat(100_000))));
+        assert!(!huge_err.ok && huge_err.truncated);
+        assert!(serde_json::to_string(&huge_err.result).unwrap().len() <= TOOL_RESULT_CAP_BYTES);
+        assert!(huge_err.result["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("## error"));
         let small = c.cap_result("s", Ok(json!({"a":1})));
         assert!(!small.truncated);
         let err = c.cap_result("e", Err(ToolError::new("nope")));
@@ -918,5 +1159,171 @@ mod tests {
         assert!(!r.path().join("analysis/new.py").exists());
         let d = c.dispatch("6", "git.diff", &json!({})).await.unwrap();
         assert!(d["diff"].as_str().unwrap().contains("x = 2"));
+    }
+
+    /// A5: an invalid regex is an error, not "no matches".
+    #[tokio::test]
+    async fn search_reports_ripgrep_errors() {
+        let (_h, _r, c) = ctx();
+        let err = c
+            .dispatch("1", "fs.search", &json!({"pattern": "def main("}))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("ripgrep failed"), "{}", err.message);
+        assert!(err.message.contains("regex"), "{}", err.message);
+        let none = c
+            .dispatch(
+                "2",
+                "fs.search",
+                &json!({"pattern": "no_such_symbol_anywhere"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(none["matches"].as_array().unwrap().len(), 0);
+        assert_eq!(none["truncated"], false);
+        // Output is bounded by max_results.
+        let many: String = (0..500).map(|i| format!("needle {i}\n")).collect();
+        std::fs::write(c.repo.join("many.txt"), many).unwrap();
+        let some = c
+            .dispatch(
+                "3",
+                "fs.search",
+                &json!({"pattern": "needle", "max_results": 7}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(some["matches"].as_array().unwrap().len(), 7);
+        assert_eq!(some["truncated"], true);
+    }
+
+    /// G7: symlinks cannot take read, list, or write outside the repo.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinks_do_not_escape_the_repo() {
+        use std::os::unix::fs::symlink;
+        let (_h, r, mut c) = ctx();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "TOP SECRET\n").unwrap();
+        symlink(outside.path(), r.path().join("esc")).unwrap();
+        symlink(outside.path().join("secret.txt"), r.path().join("s.txt")).unwrap();
+        for path in ["esc/secret.txt", "s.txt"] {
+            let e = c
+                .dispatch("1", "fs.read", &json!({"path": path}))
+                .await
+                .unwrap_err();
+            assert!(
+                e.message.contains("outside the repository"),
+                "{}",
+                e.message
+            );
+        }
+        assert!(c
+            .dispatch("2", "fs.list", &json!({"path": "esc"}))
+            .await
+            .is_err());
+        assert!(c
+            .dispatch(
+                "3",
+                "fs.propose_create",
+                &json!({"path": "esc/new.txt", "content": "x"})
+            )
+            .await
+            .is_err());
+        assert!(c
+            .dispatch(
+                "4",
+                "fs.propose_edit",
+                &json!({"path": "s.txt", "content": "x"})
+            )
+            .await
+            .is_err());
+        assert!(!outside.path().join("new.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("secret.txt")).unwrap(),
+            "TOP SECRET\n"
+        );
+        // An approved data directory is readable through the link, still not writable.
+        c.data_roots = vec![outside.path().to_string_lossy().to_string()];
+        let ok = c
+            .dispatch("5", "fs.read", &json!({"path": "esc/secret.txt"}))
+            .await
+            .unwrap();
+        assert!(ok["content"].as_str().unwrap().contains("TOP SECRET"));
+        assert!(c
+            .dispatch(
+                "6",
+                "fs.propose_create",
+                &json!({"path": "esc/new.txt", "content": "x"})
+            )
+            .await
+            .is_err());
+    }
+
+    /// G4: the edit tools refuse reserved directories even when called directly.
+    #[tokio::test]
+    async fn reserved_directories_are_not_writable_through_dispatch() {
+        let (_h, r, c) = ctx();
+        let before = std::fs::read_to_string(r.path().join(".git/config")).unwrap();
+        for (tool, args) in [
+            (
+                "fs.propose_edit",
+                json!({"path": ".git/config", "content": "[diff]\n\texternal = touch pwned\n"}),
+            ),
+            (
+                "fs.propose_create",
+                json!({"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n"}),
+            ),
+            (
+                "fs.propose_create",
+                json!({"path": ".analyst/project.toml", "content": "[policy]\nedits = \"auto\"\n"}),
+            ),
+        ] {
+            let e = c.dispatch("1", tool, &args).await.unwrap_err();
+            assert!(e.message.contains("never editable"), "{}", e.message);
+        }
+        assert_eq!(
+            std::fs::read_to_string(r.path().join(".git/config")).unwrap(),
+            before
+        );
+    }
+
+    /// A9 and R5: package arguments and the remote package flow.
+    #[tokio::test]
+    async fn package_command_construction() {
+        let (_h, _r, c) = ctx();
+        for bad in ["--index-url=http://evil", "-e", ""] {
+            let e = c
+                .dispatch("1", "pkg.add", &json!({"packages": [bad]}))
+                .await
+                .unwrap_err();
+            assert!(e.message.contains("package name"), "{}", e.message);
+        }
+        let pk = vec!["numpy>=2".to_string(), "pandas".to_string()];
+        assert_eq!(
+            local_uv_line("pkg.add", true, false, &pk).unwrap(),
+            vec!["uv", "add", "--", "numpy>=2", "pandas"]
+        );
+        assert_eq!(
+            local_uv_line("pkg.add", true, true, &pk).unwrap(),
+            vec!["uv", "add", "--no-sync", "--", "numpy>=2", "pandas"]
+        );
+        assert_eq!(
+            local_uv_line("pkg.remove", false, false, &pk).unwrap(),
+            vec!["uv", "pip", "uninstall", "--", "numpy>=2", "pandas"]
+        );
+        assert_eq!(
+            local_uv_line("pkg.sync", true, true, &[]).unwrap(),
+            vec!["uv", "sync"]
+        );
+        assert!(local_uv_line("pkg.sync", false, false, &[]).is_err());
+        // With a pyproject the remote side only syncs to the pushed lockfile.
+        assert_eq!(
+            remote_uv_command("pkg.add", true, "~/analyst/my repo-1a2b3c4d", &pk),
+            "cd ~/'analyst/my repo-1a2b3c4d' && ~/.analyst/bin/uv sync"
+        );
+        assert_eq!(
+            remote_uv_command("pkg.add", false, "~/analyst/r", &pk),
+            "cd ~/analyst/r && ~/.analyst/bin/uv pip install -- 'numpy>=2' pandas"
+        );
     }
 }

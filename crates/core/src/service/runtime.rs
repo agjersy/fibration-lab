@@ -540,6 +540,7 @@ impl SessionRuntime {
                     runs_dir: runs.to_string_lossy().to_string(),
                     out_dir: Some(eff.out_dir),
                     sandbox: Some(self.opts.sandbox.clone().unwrap_or_else(|| "auto".into())),
+                    data_dirs: vec![],
                 };
                 match &self.opts.kernel_launcher {
                     Some(l) => Box::new(LocalStdio::with_launcher(l.clone(), args)),
@@ -562,6 +563,7 @@ impl SessionRuntime {
                         runs_dir: "~/.analyst/runs".into(),
                         out_dir: Some(eff.out_dir),
                         sandbox: Some(self.opts.sandbox.clone().unwrap_or_else(|| sandbox.clone())),
+                        data_dirs: target.data_dirs().to_vec(),
                     },
                 })
             }
@@ -850,10 +852,10 @@ impl SessionRuntime {
         else {
             return;
         };
-        if let Err(e) = target::sync::pull_run(
+        if let Err(e) = target::sync::pull_rendered(
             host,
             &mirror,
-            &v.meta.out_dir,
+            &target::sync::rendered_paths(&v.artifacts, &v.meta.out_dir),
             &self.repo,
             self.opts.control_dir.as_deref(),
         )

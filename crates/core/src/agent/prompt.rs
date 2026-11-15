@@ -31,12 +31,12 @@ pub fn contract_rules(project: &ProjectConfig) -> String {
 pub fn mode_instructions(mode: Mode) -> &'static str {
     match mode {
         Mode::Plan => "MODE plan: read-only. Investigate and propose a plan; you cannot edit or run anything.",
-        Mode::Build => "MODE build: before your first edit on a task, call declare_scope with the list of files you intend to create or modify and a one-paragraph plan. Edits outside the declared scope require user approval. Verify your work by running the script and reading the result before you finish.",
+        Mode::Build => "MODE build: before your first edit in each turn, call declare_scope once with every file you intend to create or modify and a one-paragraph plan. The scope lasts for this turn only. Edits outside it require user approval, and so does a later declare_scope that adds files, so declare completely the first time. Files under .git/ and .analyst/ can never be edited. Verify your work by running the script and reading the result before you finish.",
         Mode::Run => "MODE run: you may run existing scripts and snippets and inspect outputs, but you cannot edit files or install packages. Do not propose code changes; report results.",
     }
 }
 
-pub const OUTPUT_CONVENTIONS: &str = "WORKING STYLE: use tools rather than guessing; keep replies short and factual; when a run fails, read stderr, fix, and rerun; when you finish, state what changed, what ran, and what to look at. Tool results larger than 16 KiB are truncated and stored as an artifact you can page with fs.read.";
+pub const OUTPUT_CONVENTIONS: &str = "WORKING STYLE: use tools rather than guessing; keep replies short and factual; when a run fails, read stderr, fix, and rerun; when you finish, state what changed, what ran, and what to look at. Tool results larger than 16 KiB are truncated and stored as a text artifact you can page with fs.read using start_line and end_line. If a tool call is cut off by the output limit, split it into smaller calls. When the POLICY line says runs are unsandboxed, each run, snippet, and shell command waits for the user's approval; do not retry a rejected one.";
 
 /// Build the project map (directory tree, script index, library index, environment, target,
 /// git status, user-changed files).

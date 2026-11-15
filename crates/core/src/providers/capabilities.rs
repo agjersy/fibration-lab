@@ -2,8 +2,9 @@
 
 use super::{collect, ModelClient};
 use analyst_protocol::config::{ModelConfig, ToolSupport};
+use analyst_protocol::model::StopReason;
 use analyst_protocol::model::{ChatRequest, Message, ModelCapabilities, ToolDef};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -59,13 +60,38 @@ pub fn probe_tool() -> ToolDef {
     }
 }
 
+/// Apply the `[[models]]` config overrides on top of a capability record. Overrides always
+/// win, whether the record was just probed or came from the cache.
+pub fn apply_overrides(
+    mut caps: ModelCapabilities,
+    overrides: Option<&ModelConfig>,
+) -> ModelCapabilities {
+    if let Some(o) = overrides {
+        if let Some(t) = o.tools {
+            caps.tools = t;
+        }
+        if let Some(c) = o.context_window {
+            caps.context_window = c;
+        }
+        if let Some(v) = o.vision {
+            caps.vision = v;
+        }
+        if o.max_output_tokens.is_some() {
+            caps.max_output_tokens = o.max_output_tokens;
+        }
+    }
+    caps
+}
+
 /// Run the tool-calling probe against a client. `context_window` comes from the override or
-/// the model-info value when given, else the default.
+/// the model-info value when given, else the default. A probe that could not be completed
+/// (request or provider error) is an `Err`: it says nothing about the model and must not be
+/// recorded.
 pub async fn probe(
     client: &dyn ModelClient,
     overrides: Option<&ModelConfig>,
     info_context_window: Option<u32>,
-) -> ModelCapabilities {
+) -> Result<ModelCapabilities> {
     let token = format!("probe-{}", crate::util::short_rand());
     let req = ChatRequest {
         model: client.model_id().to_string(),
@@ -74,38 +100,44 @@ pub async fn probe(
             "Call the echo_probe tool with token \"{token}\". Do not reply with text."
         ))],
         tools: vec![probe_tool()],
-        max_tokens: Some(200),
-        temperature: Some(0.0),
+        max_tokens: Some(1024),
     };
     let c = collect(client.stream(req)).await;
+    if c.stop == Some(StopReason::Error) || c.stop.is_none() {
+        return Err(anyhow!(
+            "capability probe failed: {}",
+            c.stop_message.unwrap_or_else(|| "no response".into())
+        ));
+    }
     let native = c.tool_calls.iter().any(|(_, name, args)| {
         name == "echo_probe" && args.get("token").and_then(Value::as_str) == Some(token.as_str())
     });
-    let tools = match overrides.and_then(|o| o.tools) {
-        Some(t) => t,
-        None if native => ToolSupport::Native,
-        None => ToolSupport::TextProtocol,
-    };
-    let context_window = overrides
-        .and_then(|o| o.context_window)
-        .or(info_context_window)
-        .unwrap_or(DEFAULT_CONTEXT_WINDOW);
-    ModelCapabilities {
-        context_window,
-        tools,
-        vision: overrides.and_then(|o| o.vision).unwrap_or(false),
-        probed_at: crate::util::now_rfc3339(),
-    }
+    Ok(apply_overrides(
+        ModelCapabilities {
+            context_window: info_context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
+            tools: if native {
+                ToolSupport::Native
+            } else {
+                ToolSupport::TextProtocol
+            },
+            vision: false,
+            probed_at: crate::util::now_rfc3339(),
+            max_output_tokens: None,
+        },
+        overrides,
+    ))
 }
 
 /// Pull a context window out of a model-info JSON document from either provider family
-/// (`context_length`, `context_window`, `max_model_len`, Ollama `model_info.*.context_length`).
+/// (Anthropic `max_input_tokens`; `context_length`, `context_window`, `max_model_len`, Ollama
+/// `model_info.*.context_length`).
 pub fn context_window_from_info(info: &Value, model_id: &str) -> Option<u32> {
     fn scan(v: &Value) -> Option<u32> {
         match v {
             Value::Object(m) => {
                 for (k, val) in m {
                     if (k == "context_length"
+                        || k == "max_input_tokens"
                         || k == "context_window"
                         || k == "max_model_len"
                         || k == "max_context_length"
@@ -134,7 +166,10 @@ pub fn context_window_from_info(info: &Value, model_id: &str) -> Option<u32> {
     scan(info)
 }
 
-/// Capabilities for a model, from cache or by probing; the result is cached.
+/// Capabilities for a model, from cache or by probing. Config overrides are applied on top in
+/// both cases. Only a completed probe is cached; when the probe fails the error is returned
+/// (unless the config already says how the model takes tools, in which case no probe is
+/// needed at all) and the next call probes again.
 pub async fn ensure(
     home: &Path,
     key: &str,
@@ -145,19 +180,30 @@ pub async fn ensure(
 ) -> Result<ModelCapabilities> {
     if !force {
         if let Some(c) = cached(home, key) {
-            return Ok(c);
+            return Ok(apply_overrides(c, overrides));
         }
     }
-    let caps = probe(client, overrides, info_context_window).await;
+    if let Some(o) = overrides.filter(|o| o.tools.is_some()) {
+        // Nothing to learn from a probe; do not spend a request or depend on the network.
+        return Ok(apply_overrides(
+            ModelCapabilities {
+                context_window: info_context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
+                probed_at: String::new(),
+                ..Default::default()
+            },
+            Some(o),
+        ));
+    }
+    let caps = probe(client, None, info_context_window).await?;
     store(home, key, &caps)?;
-    Ok(caps)
+    Ok(apply_overrides(caps, overrides))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::ScriptedModelClient;
-    use analyst_protocol::model::{ModelEvent, StopReason};
+    use analyst_protocol::model::ModelEvent;
 
     #[tokio::test]
     async fn probe_detects_native_and_text_protocol() {
@@ -165,7 +211,7 @@ mod tests {
         // The scripted client cannot know the token in advance, so emulate by inspecting the
         // request after the fact: run once with a wrong token (text-protocol) and once with a
         // client that echoes whatever it is asked.
-        let caps = probe(&native, None, None).await;
+        let caps = probe(&native, None, None).await.unwrap();
         assert_eq!(caps.tools, ToolSupport::TextProtocol);
         assert_eq!(caps.context_window, DEFAULT_CONTEXT_WINDOW);
 
@@ -190,7 +236,7 @@ mod tests {
                 "echo"
             }
         }
-        let caps = probe(&Echo, None, Some(65536)).await;
+        let caps = probe(&Echo, None, Some(65536)).await.unwrap();
         assert_eq!(caps.tools, ToolSupport::Native);
         assert_eq!(caps.context_window, 65536);
 
@@ -211,5 +257,78 @@ mod tests {
         let listing = json!({"data": [{"id": "a", "context_length": 4096}, {"id": "b", "max_model_len": 2048}]});
         assert_eq!(context_window_from_info(&listing, "b"), Some(2048));
         assert_eq!(context_window_from_info(&listing, "zzz"), None);
+    }
+
+    struct Failing;
+    impl ModelClient for Failing {
+        fn stream(&self, req: ChatRequest) -> futures::stream::BoxStream<'static, ModelEvent> {
+            assert!(serde_json::to_value(&req)
+                .unwrap()
+                .get("temperature")
+                .is_none());
+            Box::pin(futures::stream::iter(vec![ModelEvent::Stop {
+                reason: StopReason::Error,
+                message: Some("HTTP 529: overloaded".into()),
+            }]))
+        }
+        fn model_id(&self) -> &str {
+            "failing"
+        }
+    }
+
+    /// B5: a failed probe is not remembered, and overrides beat the cache.
+    #[tokio::test]
+    async fn failed_probe_is_not_cached_and_overrides_always_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = ensure(dir.path(), "p/m", &Failing, None, None, false).await;
+        assert!(err.unwrap_err().to_string().contains("overloaded"));
+        assert!(
+            cached(dir.path(), "p/m").is_none(),
+            "failure must not be cached"
+        );
+        // The next attempt probes again and succeeds.
+        let ok = ensure(
+            dir.path(),
+            "p/m",
+            &ScriptedModelClient::new(vec![]),
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.tools, ToolSupport::TextProtocol);
+        // An override wins over the cached record without re-probing.
+        let o = ModelConfig {
+            provider: "p".into(),
+            id: "m".into(),
+            context_window: Some(200_000),
+            tools: Some(ToolSupport::Native),
+            vision: Some(true),
+            max_output_tokens: Some(8000),
+        };
+        let with = ensure(dir.path(), "p/m", &Failing, Some(&o), None, false)
+            .await
+            .unwrap();
+        assert_eq!(with.tools, ToolSupport::Native);
+        assert_eq!(with.context_window, 200_000);
+        assert!(with.vision);
+        assert_eq!(with.max_output_tokens, Some(8000));
+        assert_eq!(
+            cached(dir.path(), "p/m").unwrap().tools,
+            ToolSupport::TextProtocol
+        );
+        // With `tools` configured, an unreachable provider does not block anything.
+        let fresh = tempfile::tempdir().unwrap();
+        let caps = ensure(fresh.path(), "p/m", &Failing, Some(&o), None, false)
+            .await
+            .unwrap();
+        assert_eq!(caps.tools, ToolSupport::Native);
+    }
+
+    #[test]
+    fn anthropic_model_info_window() {
+        let info = json!({"id": "claude-x", "max_input_tokens": 200000, "max_tokens": 64000});
+        assert_eq!(context_window_from_info(&info, "claude-x"), Some(200000));
     }
 }

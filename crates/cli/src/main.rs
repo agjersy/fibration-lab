@@ -3,16 +3,14 @@
 use analyst_core::agent::{Agent, AgentConfig, ApprovalRequest, Approver, AutoApprover};
 use analyst_core::config::{self, ModelSpec};
 use analyst_core::kernel::{
-    resolve_tooling_python, KernelArgs, KernelClient, KernelTransport, LocalStdio, SshStdio,
+    resolve_tooling_python_in, KernelArgs, KernelClient, KernelTransport, LocalStdio, SshStdio,
 };
 use analyst_core::policy::Policy;
 use analyst_core::providers::{self, capabilities, ModelClient};
 use analyst_core::session::Session;
 use analyst_core::target::{self, Target};
 use analyst_core::tools::ToolContext;
-use analyst_protocol::config::{
-    EditPolicy, GlobalConfig, ProjectConfig, ProviderKind, RunPolicy, TargetKind,
-};
+use analyst_protocol::config::{EditPolicy, GlobalConfig, ProjectConfig, RunPolicy, TargetKind};
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::*;
 use analyst_protocol::model::ModelCapabilities;
@@ -43,7 +41,12 @@ struct Cli {
     verbose: u8,
     /// Sandbox kind for runs on the chosen target: auto, bwrap, sandbox-exec, limits, none.
     /// Overrides the target's setting; use `limits` to diagnose a denial from the OS sandbox.
-    #[arg(long, global = true, value_name = "KIND")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "KIND",
+        value_parser = ["auto", "bwrap", "sandbox-exec", "limits", "none"]
+    )]
     sandbox: Option<String>,
     #[command(subcommand)]
     command: Command,
@@ -111,6 +114,21 @@ enum Command {
         #[arg(long)]
         target: Option<String>,
     },
+    /// Stored provider API keys ($ANALYST_HOME/credentials.toml, mode 0600).
+    Key {
+        #[command(subcommand)]
+        cmd: KeyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeyCmd {
+    /// Store the key for a provider; the key is read from stdin (never from the command line).
+    Set { provider: String },
+    /// Remove the stored key for a provider.
+    Remove { provider: String },
+    /// Show which providers have a key and where it comes from.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -217,17 +235,23 @@ impl App {
                 let runs = self.home.join("runs");
                 let _ = std::fs::create_dir_all(&runs);
                 Box::new(LocalStdio::new(
-                    resolve_tooling_python(&self.global),
+                    resolve_tooling_python_in(&self.global, &self.home),
                     KernelArgs {
                         python: self.session_python(),
                         root: self.repo.to_string_lossy().to_string(),
                         runs_dir: runs.to_string_lossy().to_string(),
                         out_dir: Some(eff.out_dir),
                         sandbox: Some(self.sandbox.clone().unwrap_or_else(|| "auto".into())),
+                        data_dirs: vec![],
                     },
                 ))
             }
-            Target::Ssh { host, sandbox, .. } => {
+            Target::Ssh {
+                host,
+                sandbox,
+                data_dirs,
+                ..
+            } => {
                 let mirror = target.mirror_dir(&self.repo).unwrap_or_default();
                 Box::new(SshStdio {
                     host: host.clone(),
@@ -243,6 +267,8 @@ impl App {
                         runs_dir: "~/.analyst/runs".into(),
                         out_dir: Some(eff.out_dir),
                         sandbox: Some(self.sandbox.clone().unwrap_or_else(|| sandbox.clone())),
+                        // User-approved external data directories from the global config.
+                        data_dirs: data_dirs.clone(),
                     },
                 })
             }
@@ -250,11 +276,45 @@ impl App {
     }
 
     async fn connect(&self, target: &Target) -> Result<KernelClient> {
+        if !target.is_remote() {
+            self.ensure_local_tooling().await;
+        }
         let t = self.transport(target);
         tracing::info!("kernel: {}", t.describe());
         KernelClient::connect(t, analyst_core::CORE_VERSION)
             .await
             .map_err(|e| anyhow!("starting the kernel on target `{}`: {e}\n  (set ANALYST_TOOLING_PYTHON or `tooling_python` in config.toml to the interpreter that has analyst_kernel installed)", target.name()))
+    }
+
+    /// Make sure a local tooling environment exists when nothing else provides one: the
+    /// first start on a machine creates `$ANALYST_HOME/tooling/.venv` from the kernel source.
+    async fn ensure_local_tooling(&self) {
+        if std::env::var_os("ANALYST_TOOLING_PYTHON").is_some_and(|v| !v.is_empty())
+            || self
+                .global
+                .tooling_python
+                .as_deref()
+                .is_some_and(|v| !v.is_empty())
+        {
+            return;
+        }
+        let resolved = resolve_tooling_python_in(&self.global, &self.home);
+        let bootstrapped = target::bootstrap::local_tooling_python(&self.home);
+        let uses_bootstrapped = std::path::Path::new(&resolved) == bootstrapped;
+        let dev_venv = resolved.contains("python/kernel/.venv");
+        if dev_venv || (uses_bootstrapped && target::bootstrap::local_is_current(&self.home)) {
+            return;
+        }
+        let Some(src) = target::bootstrap::find_dev_kernel_source() else {
+            return;
+        };
+        eprintln!(
+            "setting up the tooling environment in {} ...",
+            self.home.join("tooling").display()
+        );
+        if let Err(e) = target::bootstrap::ensure_local(&self.home, &src).await {
+            eprintln!("warning: tooling environment setup failed: {e:#}");
+        }
     }
 
     fn session(&self, target: &Target, model: &str) -> Result<Session> {
@@ -274,10 +334,10 @@ impl App {
             None => config::default_model(&self.global)?,
         };
         let resolved = config::resolve_model(&self.global, &spec)?;
-        let client = providers::client_for(&resolved)?;
+        let client = providers::client_for_in(&self.home, &resolved)?;
         let key = spec.to_string();
         let info_window = if reprobe || capabilities::cached(&self.home, &key).is_none() {
-            model_info_window(&resolved, &spec).await
+            providers::model_info_window(&self.home, &resolved).await
         } else {
             None
         };
@@ -292,23 +352,6 @@ impl App {
         .await?;
         Ok((client, caps, key))
     }
-}
-
-async fn model_info_window(resolved: &config::ResolvedModel, spec: &ModelSpec) -> Option<u32> {
-    if resolved.provider.kind != ProviderKind::OpenAiCompatible {
-        return None;
-    }
-    let client = providers::openai_compat::OpenAiCompatClient::new(
-        resolved.provider.effective_base_url(),
-        config::api_key(&resolved.provider).ok().flatten(),
-        spec.id.clone(),
-    )
-    .ok()?;
-    let info = tokio::time::timeout(Duration::from_secs(10), client.list_models())
-        .await
-        .ok()?
-        .ok()?;
-    capabilities::context_window_from_info(&info, &spec.id)
 }
 
 struct InteractiveApprover;
@@ -385,39 +428,114 @@ fn cmd_init(path: Option<PathBuf>) -> Result<()> {
 
 async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
     let target = app.target(target.as_deref())?;
-    let (sub, pkgs): (Vec<&str>, Vec<String>) = match cmd {
-        EnvCmd::List => (vec!["pip", "list"], vec![]),
-        EnvCmd::Add { packages } => (vec!["add"], packages),
-        EnvCmd::Remove { packages } => (vec!["remove"], packages),
-        EnvCmd::Sync => (vec!["sync"], vec![]),
-    };
-    match &target {
-        Target::Local => {
-            let mut line = vec!["uv".to_string()];
-            line.extend(sub.iter().map(|s| s.to_string()));
-            if sub == ["pip", "list"] {
-                line.push("--python".into());
-                line.push(app.session_python());
+    let (tool, pkgs) = match cmd {
+        EnvCmd::List => {
+            match &target {
+                Target::Local => {
+                    let line = vec![
+                        "uv".to_string(),
+                        "pip".into(),
+                        "list".into(),
+                        "--python".into(),
+                        app.session_python(),
+                    ];
+                    let out = target::run_command(&line, Some(&app.repo)).await?;
+                    print!("{}", String::from_utf8_lossy(&out.stdout));
+                    eprint!("{}", String::from_utf8_lossy(&out.stderr));
+                }
+                Target::Ssh { host, .. } => {
+                    let mirror = target.mirror_dir(&app.repo).unwrap_or_default();
+                    let remote = format!(
+                        "cd {} && ~/.analyst/bin/uv pip list",
+                        analyst_core::util::sh_quote_path(&mirror)
+                    );
+                    print!(
+                        "{}",
+                        target::run_ssh(host, app.control_dir().as_deref(), &remote).await?
+                    );
+                }
             }
-            line.extend(pkgs);
-            let out = target::run_command(&line, Some(&app.repo)).await?;
-            print!("{}", String::from_utf8_lossy(&out.stdout));
-            eprint!("{}", String::from_utf8_lossy(&out.stderr));
+            return Ok(());
         }
-        Target::Ssh { host, .. } => {
-            let mirror = target.mirror_dir(&app.repo).unwrap_or_default();
-            let mut parts = vec!["~/.analyst/bin/uv".to_string()];
-            parts.extend(sub.iter().map(|s| s.to_string()));
-            parts.extend(pkgs.iter().map(|p| analyst_core::util::sh_quote(p)));
-            let remote = format!(
-                "cd {} && {}",
-                analyst_core::util::sh_quote(&mirror),
-                parts.join(" ")
+        EnvCmd::Add { packages } => ("pkg.add", packages),
+        EnvCmd::Remove { packages } => ("pkg.remove", packages),
+        EnvCmd::Sync => ("pkg.sync", vec![]),
+    };
+    // The same code path as the agent's package tools: names are validated, and on a remote
+    // target the change is made locally, pushed, and applied there with `uv sync`.
+    let session = app.session(&target, app.global.defaults.model.as_deref().unwrap_or("-"))?;
+    let mut ctx = ToolContext::new(&app.repo, &app.home, session, "cli", app.project.clone());
+    ctx.target = target.clone();
+    ctx.control_dir = app.control_dir();
+    let v = ctx
+        .dispatch("cli-env", tool, &serde_json::json!({"packages": pkgs}))
+        .await
+        .map_err(|e| anyhow!("{}", e.message))?;
+    for key in ["stdout", "stderr", "output"] {
+        if let Some(t) = v[key].as_str() {
+            if !t.is_empty() {
+                println!("{}", t.trim_end());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
+    let known = |provider: &str| -> Result<()> {
+        if app.global.providers.iter().any(|p| p.name == provider) {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "provider `{provider}` is not configured in config.toml (known: {})",
+            app.global
+                .providers
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    };
+    match cmd {
+        KeyCmd::Set { provider } => {
+            known(&provider)?;
+            use std::io::IsTerminal;
+            if std::io::stdin().is_terminal() {
+                eprint!("API key for `{provider}` (input is read from stdin, then press Enter): ");
+            }
+            let mut key = String::new();
+            std::io::stdin()
+                .read_line(&mut key)
+                .context("reading the key from stdin")?;
+            let key = key.trim();
+            if key.is_empty() {
+                return Err(anyhow!(
+                    "no key given on stdin (use `analyst key remove {provider}` to delete one)"
+                ));
+            }
+            config::set_api_key(&app.home, &provider, key)?;
+            println!(
+                "stored the key for `{provider}` in {}",
+                config::credentials_path(&app.home).display()
             );
-            print!(
-                "{}",
-                target::run_ssh(host, app.control_dir().as_deref(), &remote).await?
-            );
+        }
+        KeyCmd::Remove { provider } => {
+            config::set_api_key(&app.home, &provider, "")?;
+            println!("removed the stored key for `{provider}`");
+        }
+        KeyCmd::Status => {
+            for p in &app.global.providers {
+                let source = match config::api_key_lookup(&app.home, p).map(|(_, s)| s) {
+                    Some(config::KeySource::Env) => "environment",
+                    Some(config::KeySource::Stored) => "stored",
+                    None => "none",
+                };
+                println!(
+                    "{}  key={source}  env={}",
+                    p.name,
+                    p.api_key_env.as_deref().unwrap_or("-")
+                );
+            }
         }
     }
     Ok(())
@@ -567,7 +685,16 @@ async fn cmd_run(
     if network {
         a["network"] = serde_json::json!(true);
     }
-    let result = ctx.dispatch("cli-run", "run.script", &a).await;
+    let result = tokio::select! {
+        r = ctx.dispatch("cli-run", "run.script", &a) => r,
+        _ = tokio::signal::ctrl_c() => {
+            // Ctrl-C: stop the script on the target before leaving, not just this process.
+            eprintln!("\ninterrupted: cancelling the run ...");
+            cancel_active_runs(&kernel).await;
+            let _ = kernel.shutdown().await;
+            return Ok(130);
+        }
+    };
     let _ = kernel.shutdown().await;
     let v = result.map_err(|e| anyhow!("{}", e.message))?;
     println!();
@@ -589,6 +716,17 @@ async fn cmd_run(
     }
     let code = v["exit_code"].as_i64().unwrap_or(1) as i32;
     Ok(if v["status"] == "done" { code } else { 1 })
+}
+
+/// `run.cancel` for every run this client started that has not finished.
+async fn cancel_active_runs(kernel: &KernelClient) {
+    for (run_id, _) in kernel.active_runs().await {
+        match tokio::time::timeout(Duration::from_secs(10), kernel.run_cancel(&run_id)).await {
+            Ok(Ok(_)) => eprintln!("cancelled run {run_id}"),
+            Ok(Err(e)) => eprintln!("could not cancel run {run_id}: {e}"),
+            Err(_) => eprintln!("could not cancel run {run_id}: the kernel did not answer"),
+        }
+    }
 }
 
 async fn cmd_check(app: &App, paths: Vec<String>, target: Option<String>) -> Result<i32> {
@@ -791,7 +929,21 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
             eprint!("{chunk}");
         }
     }));
-    let policy = Policy::new(&app.repo, project.policy.clone(), mode)?;
+    let mut policy = Policy::for_project(&app.repo, &project, mode)?;
+    // The policy must know the sandbox before the first tool call: without a confining
+    // sandbox, runs ask even under `runs = "auto"`.
+    if let Some(k) = &kernel {
+        if let Some(h) = k.hello().await {
+            policy.set_sandbox(&h.sandbox);
+            if !policy.is_sandboxed() {
+                eprintln!(
+                    "note: sandbox is `{}` on this target, so runs are not confined; every run asks first{}",
+                    h.sandbox,
+                    if args.auto { " (auto-approved by --auto)" } else { "" }
+                );
+            }
+        }
+    }
     let approver: Arc<dyn Approver> = if args.auto {
         Arc::new(AutoApprover)
     } else {
@@ -806,7 +958,12 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
     agent.on_event = Some(event_printer());
 
     if let Some(m) = args.message {
-        run_one(&mut agent, &m).await;
+        if run_one(&mut agent, &m).await {
+            if let Some(k) = kernel {
+                let _ = k.shutdown().await;
+            }
+            std::process::exit(130);
+        }
     } else {
         println!("interactive; /mode plan|build|run, /quit");
         loop {
@@ -839,6 +996,7 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
                 }
                 continue;
             }
+            // Ctrl-C during a turn cancels the turn and its run, and returns to the prompt.
             run_one(&mut agent, line).await;
         }
     }
@@ -848,8 +1006,22 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_one(agent: &mut Agent, text: &str) {
-    match agent.run_turn(text).await {
+/// Run one turn. Returns true when it was interrupted by Ctrl-C: the turn is dropped, any run
+/// it started is cancelled on the target, and the agent is left ready for the next message.
+async fn run_one(agent: &mut Agent, text: &str) -> bool {
+    let outcome = tokio::select! {
+        r = agent.run_turn(text) => Some(r),
+        _ = tokio::signal::ctrl_c() => None,
+    };
+    let Some(result) = outcome else {
+        eprintln!("\ninterrupted: cancelling the turn ...");
+        if let Some(k) = agent.ctx.kernel.clone() {
+            cancel_active_runs(&k).await;
+        }
+        agent.recover_after_cancel();
+        return true;
+    };
+    match result {
         Ok(s) => {
             println!();
             println!(
@@ -871,6 +1043,7 @@ async fn run_one(agent: &mut Agent, text: &str) {
         }
         Err(e) => eprintln!("\nturn failed: {e:#}"),
     }
+    false
 }
 
 async fn cmd_eval(
@@ -883,8 +1056,9 @@ async fn cmd_eval(
 ) -> Result<i32> {
     let loaded = analyst_core::evals::load_tasks(&tasks, task.as_deref())?;
     let (client, caps, model_name) = app.model(Some(&model), false).await?;
+    app.ensure_local_tooling().await;
     let launcher = vec![
-        resolve_tooling_python(&app.global),
+        resolve_tooling_python_in(&app.global, &app.home),
         "-m".into(),
         "analyst_kernel".into(),
     ];
@@ -1010,5 +1184,42 @@ async fn run(cli: Cli) -> Result<i32> {
                 },
         } => cmd_eval(&app, model, tasks, task, auto, results).await,
         Command::Kernel { target } => cmd_kernel(&app, target).await,
+        Command::Key { cmd } => cmd_key(&app, cmd).map(|_| 0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn sandbox_values_are_validated() {
+        for ok in ["auto", "bwrap", "sandbox-exec", "limits", "none"] {
+            assert!(
+                Cli::try_parse_from(["analyst", "--sandbox", ok, "index"]).is_ok(),
+                "{ok}"
+            );
+        }
+        let err = Cli::try_parse_from(["analyst", "--sandbox", "nonee", "index"])
+            .err()
+            .expect("typo must be rejected");
+        assert!(err.to_string().contains("possible values"), "{err}");
+    }
+
+    #[test]
+    fn key_set_takes_the_provider_only() {
+        let cli = Cli::try_parse_from(["analyst", "key", "set", "anthropic"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Key { cmd: KeyCmd::Set { ref provider } } if provider == "anthropic"
+        ));
+        // The key itself is never accepted as an argument.
+        assert!(Cli::try_parse_from(["analyst", "key", "set", "anthropic", "sk-123"]).is_err());
     }
 }

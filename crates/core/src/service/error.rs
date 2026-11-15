@@ -106,7 +106,7 @@ impl From<KernelError> for ServiceError {
                 }
                 _ => ServiceError::internal(r.to_string()),
             },
-            KernelError::Disconnected | KernelError::Exited => {
+            KernelError::Disconnected | KernelError::Exited | KernelError::Timeout { .. } => {
                 ServiceError::kernel_offline(e.to_string())
             }
             KernelError::Io(io) => ServiceError::io(io.to_string()),

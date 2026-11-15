@@ -3,9 +3,11 @@
 //! `# analyst: lock` / `# analyst: unlock` protected regions.
 
 use crate::tools::registry::{tool_class, ToolClass};
-use analyst_protocol::config::{AskPolicy, EditPolicy, NetworkPolicy, PolicyConfig, RunPolicy};
+use analyst_protocol::config::{
+    AskPolicy, EditPolicy, NetworkPolicy, PolicyConfig, ProjectConfig, RunPolicy, UnsandboxedRuns,
+};
 use analyst_protocol::evals::Mode;
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -54,14 +56,44 @@ pub struct Policy {
     repo: PathBuf,
     protected: GlobSet,
     /// Files the agent declared it intends to touch (`declare_scope`). `None` = not declared.
+    /// Reset at the start of every turn ([`Policy::begin_turn`]).
     pub scope: Option<Vec<String>>,
+    /// Sandbox kind reported by `kernel.hello` (`bwrap`, `sandbox-exec`, `limits`, `none`);
+    /// `None` until [`Policy::set_sandbox`] is called, which is treated as unsandboxed.
+    sandbox: Option<String>,
+    /// `policy.unsandboxed_runs` from the project file.
+    pub unsandboxed_runs: UnsandboxedRuns,
+}
+
+/// What a `declare_scope` call would do to the scope in force.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeChange {
+    /// No scope yet this turn: free.
+    First,
+    /// Same files or fewer: free.
+    Narrows,
+    /// Adds these files to an existing scope: needs approval.
+    Widens(Vec<String>),
+}
+
+/// Sandbox kinds that actually confine a run. Everything else (`limits`, `none`, unknown,
+/// not yet reported) leaves the filesystem and network open.
+pub fn sandbox_confines(kind: &str) -> bool {
+    matches!(kind, "bwrap" | "sandbox-exec" | "landlock")
 }
 
 impl Policy {
     pub fn new(repo: &Path, config: PolicyConfig, mode: Mode) -> anyhow::Result<Policy> {
+        // Probe once: on a case-insensitive volume `Analysis/Core/x.py` is the protected file.
+        let case_insensitive = crate::util::fs_case_insensitive(repo);
         let mut b = GlobSetBuilder::new();
         for g in &config.protected {
-            b.add(Glob::new(g).map_err(|e| anyhow::anyhow!("protected glob `{g}`: {e}"))?);
+            b.add(
+                GlobBuilder::new(g)
+                    .case_insensitive(case_insensitive)
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("protected glob `{g}`: {e}"))?,
+            );
         }
         let protected = b.build()?;
         Ok(Policy {
@@ -70,23 +102,86 @@ impl Policy {
             repo: repo.to_path_buf(),
             protected,
             scope: None,
+            sandbox: None,
+            unsandboxed_runs: UnsandboxedRuns::Ask,
         })
     }
 
+    /// A policy from the whole project config (includes `policy.unsandboxed_runs`).
+    pub fn for_project(repo: &Path, project: &ProjectConfig, mode: Mode) -> anyhow::Result<Policy> {
+        let mut p = Policy::new(repo, project.policy.clone(), mode)?;
+        p.unsandboxed_runs = project.unsandboxed_runs;
+        Ok(p)
+    }
+
+    /// Record the sandbox kind the kernel reported in `kernel.hello`. Must be called before
+    /// the first tool call; until then runs are treated as unsandboxed.
+    pub fn set_sandbox(&mut self, kind: &str) {
+        self.sandbox = Some(kind.to_string());
+    }
+
+    pub fn set_unsandboxed_runs(&mut self, v: UnsandboxedRuns) {
+        self.unsandboxed_runs = v;
+    }
+
+    /// The sandbox kind last reported, if any.
+    pub fn sandbox(&self) -> Option<&str> {
+        self.sandbox.as_deref()
+    }
+
+    /// Whether runs are confined by an OS sandbox.
+    pub fn is_sandboxed(&self) -> bool {
+        self.sandbox
+            .as_deref()
+            .map(sandbox_confines)
+            .unwrap_or(false)
+    }
+
+    /// Start of a turn: the declared scope does not carry over.
+    pub fn begin_turn(&mut self) {
+        self.scope = None;
+    }
+
+    fn normalize_scope(files: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for f in files {
+            if let Ok(n) = crate::util::normalize_rel_path(f) {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        out
+    }
+
+    /// Classify a declaration against the scope in force, without changing anything.
+    pub fn scope_change(&self, files: &[String]) -> ScopeChange {
+        let new = Self::normalize_scope(files);
+        match &self.scope {
+            None => ScopeChange::First,
+            Some(cur) => {
+                let added: Vec<String> = new.into_iter().filter(|f| !cur.contains(f)).collect();
+                if added.is_empty() {
+                    ScopeChange::Narrows
+                } else {
+                    ScopeChange::Widens(added)
+                }
+            }
+        }
+    }
+
+    /// Replace the scope. Callers gate widening through [`Policy::scope_change`] and the
+    /// approver first; this method does not ask.
     pub fn declare_scope(&mut self, files: Vec<String>) {
-        self.scope = Some(
-            files
-                .into_iter()
-                .filter_map(|f| crate::util::normalize_rel_path(&f).ok())
-                .collect(),
-        );
+        self.scope = Some(Self::normalize_scope(&files));
     }
 
     pub fn is_protected(&self, path: &str) -> bool {
         self.protected.is_match(path)
     }
 
-    fn in_scope(&self, path: &str) -> bool {
+    /// Whether a (normalised) path is in the scope declared this turn.
+    pub fn in_scope(&self, path: &str) -> bool {
         match &self.scope {
             None => false,
             Some(s) => s.iter().any(|f| f == path),
@@ -146,12 +241,27 @@ impl Policy {
                 c.protected.join(", ")
             ));
         }
-        match &self.scope {
-            Some(files) if !files.is_empty() => {
-                s.push_str(&format!(" Declared scope: {}.", files.join(", ")))
+        s.push_str(" Paths under .git/ and .analyst/ are never editable.");
+        let kind = self.sandbox.as_deref().unwrap_or("unknown");
+        if self.is_sandboxed() {
+            s.push_str(&format!(" Sandbox: {kind} (runs are confined)."));
+        } else {
+            match self.unsandboxed_runs {
+                UnsandboxedRuns::Ask => s.push_str(&format!(
+                    " Sandbox: {kind}: runs are unsandboxed, so every run, snippet, and shell command asks the user first regardless of the runs policy."
+                )),
+                UnsandboxedRuns::Auto => s.push_str(&format!(
+                    " Sandbox: {kind}: runs are unsandboxed (the project allows this without asking)."
+                )),
             }
+        }
+        match &self.scope {
+            Some(files) if !files.is_empty() => s.push_str(&format!(
+                " Declared scope: {} (this turn only; adding files later needs approval).",
+                files.join(", ")
+            )),
             _ if self.mode == Mode::Build => s.push_str(
-                " No scope declared yet: call declare_scope before editing, or every edit will need approval.",
+                " No scope declared yet this turn (scope resets every turn): call declare_scope once with every file you intend to touch before editing, or every edit will need approval. Declaring again to add files needs user approval.",
             ),
             _ => {}
         }
@@ -172,11 +282,28 @@ impl Policy {
         match class {
             ToolClass::Read | ToolClass::Meta => Evaluation::allow("read-only"),
             ToolClass::Edit => self.evaluate_edit(tool, args),
-            ToolClass::Run => self.evaluate_run(args),
+            ToolClass::Run => self.unsandboxed_gate(tool, self.evaluate_run(args)),
             ToolClass::Package => Self::from_ask(self.config.packages, "packages"),
-            ToolClass::Shell => Self::from_ask(self.config.shell, "shell"),
+            ToolClass::Shell => {
+                self.unsandboxed_gate(tool, Self::from_ask(self.config.shell, "shell"))
+            }
             ToolClass::Git => Self::from_ask(self.config.git, "git"),
         }
+    }
+
+    /// Run- and shell-class tools ask when nothing confines them (G2), unless the project
+    /// opted out. A denial stays a denial.
+    fn unsandboxed_gate(&self, tool: &str, base: Evaluation) -> Evaluation {
+        if base.decision == Decision::Deny
+            || self.is_sandboxed()
+            || self.unsandboxed_runs == UnsandboxedRuns::Auto
+        {
+            return base;
+        }
+        let kind = self.sandbox.as_deref().unwrap_or("unknown");
+        Evaluation::ask(format!(
+            "`{tool}` would run unsandboxed (kernel sandbox: {kind}): it can read and write anything your account can, and network limits are not enforced"
+        ))
     }
 
     fn from_ask(p: AskPolicy, what: &str) -> Evaluation {
@@ -213,12 +340,34 @@ impl Policy {
             Ok(p) => p,
             Err(e) => return Evaluation::deny(e),
         };
+        if crate::util::is_reserved_path(&path) {
+            return Evaluation::deny(format!(
+                "`{path}` is under .git/ or .analyst/, which are never editable"
+            ));
+        }
         if self.is_protected(&path) {
             return Evaluation::deny(format!("`{path}` matches a protected pattern"));
         }
-        // Protected regions inside the existing file.
+        let full = match crate::util::resolve_in_repo(&self.repo, &path, false) {
+            Ok(f) => f,
+            Err(e) => return Evaluation::deny(e),
+        };
+        // The link target may be protected or reserved even when the given name is not.
+        if let Ok(canon_root) = std::fs::canonicalize(&self.repo) {
+            if let Ok(real_rel) = full.strip_prefix(&canon_root) {
+                let real = real_rel.to_string_lossy().replace('\\', "/");
+                if !real.is_empty()
+                    && (crate::util::is_reserved_path(&real) || self.is_protected(&real))
+                {
+                    return Evaluation::deny(format!(
+                        "`{path}` resolves to `{real}`, which is protected"
+                    ));
+                }
+            }
+        }
+        // Protected regions inside the existing file, checked against the edit's result.
         if tool != "fs.propose_create" {
-            if let Ok(existing) = std::fs::read_to_string(self.repo.join(&path)) {
+            if let Ok(existing) = std::fs::read_to_string(&full) {
                 if let Some(reason) = edit_touches_locked_region(tool, &existing, args) {
                     return Evaluation::deny(reason);
                 }
@@ -280,11 +429,21 @@ pub fn locked_blocks(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn line_of_offset(text: &str, offset: usize) -> usize {
-    text[..offset].matches('\n').count() + 1
+fn lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
-/// Returns a denial reason when an edit proposal would modify a locked region.
+/// Whether every locked block of `original` survives unchanged, in order, as a locked block
+/// of `result`.
+pub fn locked_blocks_preserved(original: &str, result: &str) -> bool {
+    let before = locked_blocks(&lf(original));
+    let after = locked_blocks(&lf(result));
+    let mut it = after.iter();
+    before.iter().all(|b| it.any(|a| a == b))
+}
+
+/// Returns a denial reason when an edit proposal would modify a locked region. The check is
+/// made against the text the edit produces, so no sequence of edits can get around it.
 pub fn edit_touches_locked_region(tool: &str, existing: &str, args: &Value) -> Option<String> {
     let ranges = locked_ranges(existing);
     if ranges.is_empty() {
@@ -295,36 +454,19 @@ pub fn edit_touches_locked_region(tool: &str, existing: &str, args: &Value) -> O
             "file contains a locked region (`# analyst: lock`) and cannot be deleted".into(),
         );
     }
-    if let Some(edits) = args.get("edits").and_then(Value::as_array) {
-        for e in edits {
-            let old = e.get("old").and_then(Value::as_str).unwrap_or("");
-            if old.is_empty() {
-                continue;
-            }
-            if let Some(pos) = existing.find(old) {
-                let first = line_of_offset(existing, pos);
-                let last = line_of_offset(existing, pos + old.len().saturating_sub(1));
-                for (s, en) in &ranges {
-                    if first <= *en && last >= *s {
-                        return Some(format!(
-                            "edit touches locked region lines {s}-{en} (`# analyst: lock`)"
-                        ));
-                    }
-                }
-            }
-        }
+    let result = if let Some(edits) = args.get("edits").and_then(Value::as_array) {
+        // An edit list that does not apply fails later with its own error.
+        crate::tools::proposals::apply_edits(existing, edits).ok()?
+    } else {
+        args.get("content").and_then(Value::as_str)?.to_string()
+    };
+    if locked_blocks_preserved(existing, &result) {
         return None;
     }
-    if let Some(content) = args.get("content").and_then(Value::as_str) {
-        for block in locked_blocks(existing) {
-            if !content.contains(&block) {
-                return Some(
-                    "replacement content changes a locked region (`# analyst: lock`)".to_string(),
-                );
-            }
-        }
-    }
-    None
+    let (s, e) = ranges[0];
+    Some(format!(
+        "the edit would change a locked region (`# analyst: lock`, first at lines {s}-{e}); locked regions must stay byte-for-byte identical"
+    ))
 }
 
 #[cfg(test)]
@@ -338,7 +480,9 @@ mod tests {
             protected: vec!["data/**".into()],
             ..Default::default()
         };
-        Policy::new(repo, cfg, mode).unwrap()
+        let mut p = Policy::new(repo, cfg, mode).unwrap();
+        p.set_sandbox("bwrap");
+        p
     }
 
     #[test]
@@ -470,5 +614,166 @@ mod tests {
             Decision::Deny
         );
         assert_eq!(locked_ranges("# analyst: lock\na\nb\n"), vec![(1, 3)]);
+    }
+
+    /// G6: the second edit's `old` only exists after the first edit, so a check of each
+    /// `old` against the original file never saw it.
+    #[test]
+    fn two_step_edit_cannot_rewrite_a_locked_region() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = "x = 1\n# analyst: lock\nSECRET = 1\n# analyst: unlock\ny = 2\n";
+        std::fs::write(dir.path().join("core.py"), file).unwrap();
+        let mut p = policy(EditPolicy::Auto, Mode::Build, dir.path());
+        p.declare_scope(vec!["core.py".into()]);
+        let two_step = json!({"path":"core.py","edits":[
+            {"old":"x = 1\n# analyst: lock\nSECRET","new":"x = 1\n# analyst: lock\nMARK"},
+            {"old":"MARK = 1","new":"SECRET = 999"}
+        ]});
+        let ev = p.evaluate("fs.propose_edit", &two_step);
+        assert_eq!(ev.decision, Decision::Deny, "{}", ev.reason);
+        // Removing the markers, or moving the unlock marker, is also a change.
+        let unlock = json!({"path":"core.py","edits":[{"old":"# analyst: lock\n","new":""}]});
+        assert_eq!(
+            p.evaluate("fs.propose_edit", &unlock).decision,
+            Decision::Deny
+        );
+        // CRLF line endings do not defeat or trip the check.
+        let crlf = file.replace('\n', "\r\n");
+        std::fs::write(dir.path().join("core.py"), &crlf).unwrap();
+        let outside = json!({"path":"core.py","edits":[{"old":"y = 2","new":"y = 3"}]});
+        assert_eq!(
+            p.evaluate("fs.propose_edit", &outside).decision,
+            Decision::Allow
+        );
+        let inside = json!({"path":"core.py","edits":[{"old":"SECRET = 1","new":"SECRET = 2"}]});
+        assert_eq!(
+            p.evaluate("fs.propose_edit", &inside).decision,
+            Decision::Deny
+        );
+    }
+
+    /// G2: without a confining sandbox, run- and shell-class tools ask.
+    #[test]
+    fn unsandboxed_runs_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = PolicyConfig {
+            shell: AskPolicy::Auto,
+            ..Default::default()
+        };
+        let mut p = Policy::new(dir.path(), cfg, Mode::Build).unwrap();
+        for tool in ["run.script", "exec.snippet", "shell.run"] {
+            let ev = p.evaluate(tool, &json!({}));
+            assert_eq!(ev.decision, Decision::Ask, "{tool} before set_sandbox");
+            assert!(ev.reason.contains("unsandboxed"), "{}", ev.reason);
+        }
+        for kind in ["limits", "none", "something-new"] {
+            p.set_sandbox(kind);
+            let ev = p.evaluate("exec.snippet", &json!({}));
+            assert_eq!(ev.decision, Decision::Ask, "{kind}");
+            assert!(ev.reason.contains("unsandboxed") && ev.reason.contains(kind));
+            assert!(p.summary().contains("unsandboxed"));
+        }
+        // A denial is not softened into a question.
+        assert_eq!(
+            p.evaluate("run.script", &json!({"network": true})).decision,
+            Decision::Deny
+        );
+        for kind in ["bwrap", "sandbox-exec"] {
+            p.set_sandbox(kind);
+            assert_eq!(
+                p.evaluate("run.script", &json!({})).decision,
+                Decision::Allow
+            );
+            assert_eq!(
+                p.evaluate("shell.run", &json!({})).decision,
+                Decision::Allow
+            );
+            assert!(!p.summary().contains("unsandboxed"));
+        }
+        p.set_sandbox("none");
+        p.set_unsandboxed_runs(UnsandboxedRuns::Auto);
+        assert_eq!(
+            p.evaluate("run.script", &json!({})).decision,
+            Decision::Allow
+        );
+        // Other classes are unaffected.
+        assert_eq!(p.evaluate("pkg.add", &json!({})).decision, Decision::Ask);
+        assert_eq!(p.evaluate("fs.read", &json!({})).decision, Decision::Allow);
+    }
+
+    /// G4: reserved directories are denied under every edit policy, in any case.
+    #[test]
+    fn reserved_paths_are_never_editable() {
+        let dir = tempfile::tempdir().unwrap();
+        for edits in [
+            EditPolicy::Auto,
+            EditPolicy::AutoNewFiles,
+            EditPolicy::Review,
+        ] {
+            let mut p = policy(edits, Mode::Build, dir.path());
+            p.declare_scope(vec![
+                ".git/config".into(),
+                ".analyst/project.toml".into(),
+                ".GIT/hooks/pre-commit".into(),
+            ]);
+            for (tool, path) in [
+                ("fs.propose_edit", ".git/config"),
+                ("fs.propose_create", ".GIT/hooks/pre-commit"),
+                ("fs.propose_create", ".git/hooks/post-checkout"),
+                ("fs.propose_edit", ".analyst/project.toml"),
+                ("fs.propose_delete", ".Analyst/project.toml"),
+                ("fs.propose_create", "sub/.git/config"),
+            ] {
+                let ev = p.evaluate(tool, &json!({"path": path, "content": "x"}));
+                assert_eq!(ev.decision, Decision::Deny, "{tool} {path} under {edits:?}");
+            }
+        }
+    }
+
+    /// G5: scope bookkeeping.
+    #[test]
+    fn scope_changes_are_classified_and_reset_per_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = policy(EditPolicy::Auto, Mode::Build, dir.path());
+        assert_eq!(p.scope_change(&["a.py".into()]), ScopeChange::First);
+        p.declare_scope(vec!["a.py".into(), "./b.py".into()]);
+        assert_eq!(p.scope_change(&["b.py".into()]), ScopeChange::Narrows);
+        assert_eq!(
+            p.scope_change(&["a.py".into(), "c.py".into()]),
+            ScopeChange::Widens(vec!["c.py".into()])
+        );
+        p.begin_turn();
+        assert!(p.scope.is_none());
+        assert_eq!(p.scope_change(&["z.py".into()]), ScopeChange::First);
+        assert_eq!(
+            p.evaluate("fs.propose_edit", &json!({"path":"a.py","content":"x"}))
+                .decision,
+            Decision::Ask
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edits_through_symlinks_are_denied() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("data")).unwrap();
+        std::fs::write(dir.path().join("data/x.csv"), "1").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("out_link")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("data"), dir.path().join("alias")).unwrap();
+        let mut p = policy(EditPolicy::Auto, Mode::Build, dir.path());
+        p.declare_scope(vec!["out_link/evil.py".into(), "alias/x.csv".into()]);
+        let ev = p.evaluate(
+            "fs.propose_create",
+            &json!({"path":"out_link/evil.py","content":"x"}),
+        );
+        assert_eq!(ev.decision, Decision::Deny);
+        assert!(ev.reason.contains("outside the repository"));
+        // `alias/x.csv` is really `data/x.csv`, which is protected.
+        let ev = p.evaluate(
+            "fs.propose_edit",
+            &json!({"path":"alias/x.csv","content":"2"}),
+        );
+        assert_eq!(ev.decision, Decision::Deny, "{}", ev.reason);
     }
 }
