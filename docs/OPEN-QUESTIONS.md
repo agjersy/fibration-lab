@@ -23,16 +23,9 @@
 | OQ-P3 Deck source of truth | Two project modes. Structured (default): typed deck document on template layouts, deterministic renderer, native `process`, `timeline`, `matrix`, and `hierarchy` primitives, plus per-slide script-generated slides as an escape hatch. Code generation (switchable per project): the deck is a sandboxed `python-pptx` build script using the shared deck SDK, checked on its output. Structured → code is a lossless eject; code → structured is a revert to the pre-eject snapshot or a best-effort import. Code execution is therefore required (sandbox details in OQ-P7). | ARCHITECTURE.md P3, P11, sections 5, 5.1, 7.3 |
 | OQ-P4 In-app editing | Content-level editing in structured mode: text in place, layout change, reorder/duplicate/delete, locks on slides and elements, chart and table data, speaker notes, diagram primitive content. No free move/resize or styling; final pixel polish happens in PowerPoint after export. In code mode, editing is editing the build script. | ARCHITECTURE.md sections 5.1, 14 |
 | OQ-P5 Round-trip and import | Phase 1 is one-way: export is final, but every export carries stable element ids. Structured-mode re-import of PowerPoint edits (text, order, layout, chart data on known elements; unknown changes kept as locked foreign elements) in phase 2. Code-mode re-import later, best-effort, as a reviewable script patch. Existing decks not made by the app are references only; a best-effort 'convert to project' importer comes later (it also serves code → structured switching). | ARCHITECTURE.md sections 5, 5.1, 10 |
+| OQ-P6 Rendering engine | Fidelity render chain: PowerPoint automation when installed (COM on Windows, AppleScript on macOS), else a bundled LibreOffice shipped as a separately installable component, else a system LibreOffice. Structured mode keeps the live HTML preview for editing. Without any engine: no PDF/PNG export and no code-mode previews, stated in the UI. CI uses LibreOffice; a Windows runner with PowerPoint is used where available. | ARCHITECTURE.md P5, sections 3, 10 |
 
 ## 3. Open
-
-### OQ-P6. Rendering engine for previews, PDF, and images
-
-**Options.** (a) Bundle LibreOffice headless as an optional component (~300 MB, MPL-2.0 as an unmodified separate program; good but imperfect fidelity). (b) Use PowerPoint automation when installed (perfect fidelity; Windows COM is robust, macOS AppleScript is slower and needs automation permission; never in CI without a licensed runner). (c) Live HTML preview only, no fidelity render; PDF only through PowerPoint. (d) Both (a) and (b), PowerPoint first.
-
-**Recommendation.** (d), with the live HTML preview for editing and the fidelity render for thumbnails and exports. Keep the LibreOffice component separately installable so locked-down environments can omit it.
-
-**Decide.** Is a ~300 MB optional component acceptable? Will PowerPoint be installed on every machine that runs the app (then PowerPoint-first is nearly free)?
 
 ### OQ-P7. Skills and code execution
 
