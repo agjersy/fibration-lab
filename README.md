@@ -6,10 +6,10 @@ Model agnostic (Claude through the Anthropic API or an internal gateway; open-we
 
 ## Status
 
-**Design workshop.** No code yet. The documents below are drafts to settle before writing the build spec.
+**Design decided.** All workshop questions are closed (see the decision record). No code yet; the build spec for a coding agent is the next step.
 
 ## Documents
 
 - [docs/VISION.md](docs/VISION.md): product vision, principles, core experiences, roadmap
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): application design and architecture (draft)
-- [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md): decisions to make before the build spec
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): application design and architecture 
+- [docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md): decision record and evidence to gather in phase 0

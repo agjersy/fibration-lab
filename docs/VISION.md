@@ -1,6 +1,6 @@
 # Personal Present — Product Vision
 
-*Working name. Status: draft for workshop (2026-11-15). Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Sister product: Personal Analyst (`agjersy/personal-analyst`), whose architecture, conventions, and visual style this product follows.*
+*Status: workshop decisions closed (2026-11-15). Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Sister product: Personal Analyst (`agjersy/personal-analyst`), whose architecture, conventions, and visual style this product follows.*
 
 ## 1. One line
 
@@ -47,7 +47,7 @@ Common pain points underneath:
 - **Also:** you, as a Personal Analyst user turning analysis results into a talk or report-out.
 - **Not for:** freeform graphic design, animation-heavy keynote production, or real-time multi-user co-editing.
 
-> This is a deliberate widening relative to Personal Analyst, whose user is a single programmer. It is the main source of new requirements (Windows, managed deployment, non-technical UI). See OQ-P1 and OQ-P2.
+> This is a deliberate widening relative to Personal Analyst, whose user is a single programmer. It is the main source of new requirements (Windows, enterprise readiness, a non-technical UI); see OQ-P1 and OQ-P2 in the decision record.
 
 ## 5. What it is and is not
 
@@ -63,7 +63,7 @@ These walkthroughs are the acceptance bar for the first usable version.
 
 **Brief and storyline.** "A 12-slide quarterly review for the leadership team from the Q3 report and the pipeline spreadsheet; lead with the margin recovery." In Outline mode the agent proposes a storyline: one row per slide with an action title (the sentence the slide proves), the key evidence, the intended layout, and the sources. You reorder two rows, cut one, and rewrite a title inline. Nothing has been rendered yet; the storyline is the cheapest place to steer.
 
-**Build.** You approve the outline and switch to Build. The agent produces slides one at a time on the template's layouts, filling real placeholders. The revenue table from the spreadsheet becomes a native chart with its data embedded. Each slide appears in the grid as it is proposed, with a diff card in chat. Checks run as each slide lands: one slide has text that overflows its placeholder at the template's font, and the agent shortens it before you see it as done. The agent looks at the rendered image of its own slides (on vision-capable models) and fixes a cramped layout.
+**Build.** You approve the outline and switch to Build. The agent produces slides one at a time on the template's layouts, filling real placeholders. The revenue table from the spreadsheet becomes a native chart with its data embedded. Each slide appears in the grid as it is proposed, with a diff card in chat. Checks run as each slide lands: one slide has text that overflows its placeholder at the template's font, and the agent shortens it before you see it as done. The agent looks at the rendered image of each of its slides and fixes a cramped layout.
 
 **Verify.** You click a number on slide 4. The Sources panel opens the Q3 report at page 11 with the passage highlighted; the number badge is green because the value appears in the cited passage. One bullet on slide 9 has a grey "unsourced" badge; you ask the agent to source it or cut it. The Checks panel is clean: template fonts and colors only, no overflow, alt text on every image, contrast passes.
 
@@ -77,7 +77,7 @@ These walkthroughs are the acceptance bar for the first usable version.
 
 | Pillar | First version | Later |
 |---|---|---|
-| Agent loop for decks | Outline, build, polish cycle. Slide-level proposals with review gating. Scope declaration. Deck contract enforcement. Self-review on rendered slides for vision-capable models. No model-specific code paths. | Multi-model roles (writer, reviewer). Parallel slide generation. |
+| Agent loop for decks | Outline, build, polish cycle. Slide-level proposals with review gating. Scope declaration. Deck contract enforcement. Self-review on rendered slides (vision is part of the model baseline). No model-specific code paths. | Multi-model roles (writer, reviewer). Parallel slide generation. |
 | Template engine | Import `.potx`/`.pptx` templates; inspect layouts, placeholders, theme fonts and colors; layout catalog given to the agent. Organization template library. | Template authoring helpers. Multiple masters per deck. |
 | Deck model and rendering | Two project modes. Structured (default): a deck document rendered deterministically to native `.pptx` (placeholders, text, images, native charts and tables, native process, timeline, matrix, and hierarchy diagrams, notes, sections, alt text), with script-generated slides where the schema runs out. Code generation (switchable): the deck is a sandboxed build script for maximum expressiveness, held to the same checker. | Native equations (OMML), animations and transitions. |
 | References | Copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown and text, email (`.eml`, `.msg`), HTML, Personal Analyst figures and tables. Hybrid full-text and semantic search with a bundled offline embedding model, built for large sets. Citations stored per text element. | OCR for scanned PDFs. Web pages, SharePoint and Drive through MCP connectors. |

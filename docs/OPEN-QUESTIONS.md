@@ -1,8 +1,8 @@
 # Decisions and Open Questions
 
-*Status: workshop draft (2026-11-15). Everything below blocks the build spec unless marked otherwise. Each question has options, a recommendation, and what is needed to decide. Numbering uses a `P` prefix so it does not collide with Personal Analyst's OQ numbers. Companion documents: [VISION.md](VISION.md), [ARCHITECTURE.md](ARCHITECTURE.md).*
+*Status: all workshop questions decided (2026-11-15). Nothing blocks the build spec. Numbering uses a `P` prefix so it does not collide with Personal Analyst's OQ numbers. Companion documents: [VISION.md](VISION.md), [ARCHITECTURE.md](ARCHITECTURE.md).*
 
-## 1. Inherited from Personal Analyst (proposed as settled)
+## 1. Inherited from Personal Analyst (settled)
 
 | Item | Proposed resolution | Why it carries over |
 |---|---|---|
@@ -29,26 +29,15 @@
 | OQ-P9 Chart data | Native charts take their data from reference ranges or extracted tables through a declarative, closed set of transforms (filter, sort, top-N, group aggregates, pivot, percent change, share, cumulative, scaling, rounding) run deterministically by the kernel and stored with the chart as provenance; a checker rule recomputes them. Real analysis happens in Personal Analyst; code mode and generated slides remain available for anything else. | ARCHITECTURE.md sections 5, 9 |
 | OQ-P10 Checkpoints | App-owned, append-only, content-addressed snapshot store in `.present/history/` (per turn, per mode switch, per export); no git dependency or integration. | ARCHITECTURE.md P10, section 13 |
 | OQ-P11 Code sharing and skill format | A third repository of shared Rust crates (`wb-providers`, `wb-policy`, `wb-transcript`, `wb-skills`, `wb-mcp`, `wb-sandbox`) and a UI package (`@wb/ui`), consumed by both apps as tag-pinned git dependencies and extracted gradually, provider layer and policy engine first. Both apps use the Agent Skills `SKILL.md` format; Analyst keeps reading its legacy front matter during a transition. | ARCHITECTURE.md P14, section 18 |
+| OQ-P12 Name | "Personal Present": binary `present`, config `~/.present` (`%APPDATA%\Present` on Windows), bundle id `dev.personal-present.app`. | ARCHITECTURE.md P15 |
+| OQ-P13 Model baseline | Native tool calling, streaming, at least 128k context, and vision required. Models below it run as a flagged degraded tier the evaluation suite does not certify. Certification targets: Claude through the Anthropic API or the internal gateway, and at least one baseline-meeting open-weight model on internal servers. | ARCHITECTURE.md P16, sections 7.4, 11 |
 
-## 3. Open
-
-### OQ-P12. Name
-
-**Options.** "Personal Present" (binary `present`, config `~/.present`), following "Personal Analyst". Alternatives if the product is aimed at organizations: a name without "Personal".
-
-**Decide.** Keep the parallel name?
-
-### OQ-P13. Model baseline — Does not block phase 0
-
-**Recommendation.** Native tool calling, streaming, at least 128k context, vision recommended. Evaluation suite run against at least one Claude deployment on a cloud platform and one open-weight model.
-
-**Decide.** Which concrete endpoints should the evaluation suite target first?
-
-## 4. Evidence to gather in phase 0
+## 3. Evidence to gather in phase 0
 
 - Template coverage: run the template inspector over several real corporate templates you use; count layouts whose placeholders map cleanly.
 - Overflow measurement accuracy: compare the checker's verdicts with PowerPoint and LibreOffice renders on a corpus of slides.
 - LibreOffice versus PowerPoint render differences on the same templates.
 - How often the agent needs generated slides on real briefs, and how often code mode output stays on-template when the build script uses the SDK.
 - Retrieval quality of the bundled embedding model on your real reference sets, versus FTS alone and versus an endpoint model if one becomes available.
+- Which open-weight models available on your internal servers meet the 128k + vision baseline, and how they score on the suite.
 - Gateway and open-weight server behavior on the same tasks (tool calling, document citations, caching, unknown-field handling) through the shared provider layer.

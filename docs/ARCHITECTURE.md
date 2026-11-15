@@ -1,26 +1,27 @@
 # Personal Present — Application Design and Architecture
 
-*Status: draft for workshop (2026-11-15). Not yet a build spec: decisions marked "Proposed" or "Open" are to be settled in [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) first. Companion documents: [VISION.md](VISION.md). Reference architecture: Personal Analyst `docs/ARCHITECTURE.md`; sections marked **(shared)** reuse its design and are only summarized here.*
+*Status: workshop decisions closed (2026-11-15); every item in the decision summary is decided. Next step: the build spec. Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Reference architecture: Personal Analyst `docs/ARCHITECTURE.md`; sections marked **(shared)** reuse its design and are only summarized here.*
 
 ## 1. Decision summary
 
 | # | Decision | Resolution | Status |
 |---|---|---|---|
-| P1 | Desktop shell | Tauri 2, Rust core, React renderer in the OS webview, as in Analyst (D1) | Proposed (shared) |
+| P1 | Desktop shell | Tauri 2, Rust core, React renderer in the OS webview, as in Analyst (D1) | Decided (shared) |
 | P2 | Platforms | Windows and macOS first-class from phase 1 (that is where PowerPoint users are); Linux built from the same code and supported in phase 4 | Decided (OQ-P1) |
 | P3 | Source of truth for a deck | Two project modes. Structured (default): a typed deck document (JSON, one file per slide) bound to the template's layouts, with native process, timeline, matrix, and hierarchy primitives and optional script-generated slides, rendered deterministically to `.pptx`. Code generation (switchable): the deck is a sandboxed `python-pptx` build script using a shared deck SDK. Structured → code is a lossless eject; code → structured is a revert or a best-effort import | Decided (OQ-P3) |
-| P4 | `.pptx` writer | `python-pptx` in an app-owned, bundled Python runtime (the "deck kernel"), driven over JSON-RPC like Analyst's kernel | Proposed |
+| P4 | `.pptx` writer | `python-pptx` in an app-owned, bundled Python runtime (the "deck kernel"), driven over JSON-RPC like Analyst's kernel | Decided |
 | P5 | Preview and PDF/PNG export | Live HTML/SVG preview from the deck document (structured mode), plus a fidelity render of the actual `.pptx` by PowerPoint automation when installed, else a separately installable bundled LibreOffice, else a system LibreOffice | Decided (OQ-P6) |
 | P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
 | P7 | Skills | Full Anthropic Agent Skills (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every endpoint; scripts in the code sandbox, ask by default | Decided (OQ-P7) |
 | P8 | References | Always copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML, and Personal Analyst outputs. Hybrid search: SQLite FTS5 plus a bundled offline embedding model (endpoint optional). No OCR and no web access in v1. Per-element citations | Decided (OQ-P8) |
-| P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Proposed (shared) |
+| P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Decided (shared) |
 | P10 | Checkpoints | App-owned content-addressed snapshot store in `.present/history/`; no git dependency or integration (a user may still version the folder with git) | Decided (OQ-P10) |
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
 | P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, system proxy and trust store, local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
-| P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Proposed (shared) |
+| P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Decided (shared) |
 | P14 | Code sharing with Analyst | A third repository of shared Rust crates and a UI package, consumed by both apps as pinned git dependencies, extracted gradually starting with the provider layer and policy engine. One skill format (Agent Skills `SKILL.md`) across both apps | Decided (OQ-P11) |
-| P15 | Name | "Personal Present": binary `present`, config `~/.present`, bundle id `dev.personal-present.app` | Proposed, OQ-P12 |
+| P15 | Name | "Personal Present": binary `present`, config `~/.present` (`%APPDATA%\Present` on Windows), bundle id `dev.personal-present.app` | Decided (OQ-P12) |
+| P16 | Model baseline | Tool calling, streaming, >=128k context, vision; models below it run as a flagged degraded tier | Decided (OQ-P13) |
 
 ## 2. System overview
 
@@ -122,7 +123,7 @@ Licensing rule from Analyst kept: permissive dependencies only (no GPL or AGPL).
 
 This is the central design choice; OQ-P3 sets out the alternatives.
 
-**Proposed:** a JSON document, validated against a published JSON Schema, in which a slide is *a layout from the template plus content for its placeholders*. The renderer turns it into `.pptx` deterministically: the same document and template always produce the same file.
+**Decided (structured mode, OQ-P3):** a JSON document, validated against a published JSON Schema, in which a slide is *a layout from the template plus content for its placeholders*. The renderer turns it into `.pptx` deterministically: the same document and template always produce the same file.
 
 ```json
 {
@@ -233,7 +234,7 @@ A project is in one of two modes, chosen at creation and switchable later.
 | `deck.outline`, `deck.read_slide`, `deck.search` | read |
 | `template.layouts`, `template.layout_detail` | read |
 | `refs.list`, `refs.search` (FTS), `refs.read` (bounded passage by location), `refs.table` (sheet range or extracted table), `refs.image` | read |
-| `slide.render` (returns a PNG of a slide for vision-capable models) | read |
+| `slide.render` (returns a PNG of a slide's fidelity render) | read |
 | `check.run` (deck checker, all or some slides) | read |
 | `outline.propose` | edit |
 | `slide.propose_create`, `slide.propose_update`, `slide.propose_delete`, `slide.propose_move` (structured mode) | edit |
@@ -251,7 +252,7 @@ No shell tool, no general code REPL, no file write outside the deck store, no ne
 ### 7.4 Verification built into the loop
 
 - After every accepted slide edit: the checker runs on that slide (overflow measured with the real fonts, contract rules, citation coverage, number check). Errors go back to the model before the user sees "done", at most N automatic fix iterations.
-- On vision-capable models, the agent is prompted to call `slide.render` on new slides and review them against a short visual checklist (alignment, density, legibility). This is a quality step, not a gate.
+- The agent is required (system prompt, and a turn-summary check that every new or changed slide was rendered and viewed) to call `slide.render` on new slides and review them against a short visual checklist (alignment, density, legibility). Vision is part of the capability baseline, so this step is always on; it is a quality step, not a hard gate, and it needs a fidelity engine (section 10); without one, the live HTML preview is rasterized instead and the card says so.
 - Scope declaration: in Build mode the first action on a new task lists the slide ids it will create or change; changes outside it need approval even in auto mode.
 
 ## 8. References and source tracing
@@ -333,9 +334,9 @@ Gateway realities the adapters must handle: private CA certificates and system p
 Features that differ by platform are probed or configured, not assumed. Relevant here:
 
 - **Provider-hosted skills and code execution are not used.** Anthropic's server-side Agent Skills, code execution, Files API, and web tools exist only on Anthropic's own API (and not on Bedrock, Vertex, or Azure-hosted Foundry); gateways and open-weight servers have none of them. Running skills in the app (section 12) is what makes the same behavior possible on every endpoint.
-- **Document blocks with citations, prompt caching, vision, and structured outputs** are used when the endpoint supports them, as probed; the loop works without them.
+- **Document blocks with citations, prompt caching, and structured outputs** are used when the endpoint supports them, as probed; the loop works without them.
 
-**Capability baseline:** native tool calling, streaming, a context window of at least 128k tokens (references and the layout catalog are large), and vision recommended (self-review and image references degrade gracefully without it).
+**Capability baseline (decided, OQ-P13):** native tool calling, streaming, a context window of at least 128k tokens, and vision (image input). Checked by the capability probe on first use. A model below the baseline can still be selected but runs as a flagged, degraded tier (no self-review without vision, aggressive compaction below 128k, the text-protocol fallback without native tools), which the evaluation suite does not certify; a managed configuration can forbid it. Certification targets for the evaluation suite: Claude through the Anthropic API or your internal gateway, and at least one open-weight model on your internal servers that meets the baseline.
 
 **Locality and audit.** The chat header names the provider, region, and whether the endpoint is internal or external. Every request writes an audit record locally: time, provider, model, token counts, and the list of reference excerpts and images included (by reference id and location, not content). The audit log can be exported for compliance review.
 
