@@ -22,16 +22,9 @@
 | OQ-P2 Endpoints and first user | First-version endpoints: the Anthropic API, internal API gateways (Anthropic Messages or OpenAI-compatible), and open-weight models on internal GPU servers; Bedrock, Vertex, and Foundry are later auth back ends on the same adapter. The app is always a desktop app calling a server. First user is you, but enterprise-ready from phase 0 (offline bundling, proxy and CA, audit log); managed configuration and organization libraries in phase 3. | ARCHITECTURE.md P6, P12, section 11 |
 | OQ-P3 Deck source of truth | Two project modes. Structured (default): typed deck document on template layouts, deterministic renderer, native `process`, `timeline`, `matrix`, and `hierarchy` primitives, plus per-slide script-generated slides as an escape hatch. Code generation (switchable per project): the deck is a sandboxed `python-pptx` build script using the shared deck SDK, checked on its output. Structured → code is a lossless eject; code → structured is a revert to the pre-eject snapshot or a best-effort import. Code execution is therefore required (sandbox details in OQ-P7). | ARCHITECTURE.md P3, P11, sections 5, 5.1, 7.3 |
 | OQ-P4 In-app editing | Content-level editing in structured mode: text in place, layout change, reorder/duplicate/delete, locks on slides and elements, chart and table data, speaker notes, diagram primitive content. No free move/resize or styling; final pixel polish happens in PowerPoint after export. In code mode, editing is editing the build script. | ARCHITECTURE.md sections 5.1, 14 |
+| OQ-P5 Round-trip and import | Phase 1 is one-way: export is final, but every export carries stable element ids. Structured-mode re-import of PowerPoint edits (text, order, layout, chart data on known elements; unknown changes kept as locked foreign elements) in phase 2. Code-mode re-import later, best-effort, as a reviewable script patch. Existing decks not made by the app are references only; a best-effort 'convert to project' importer comes later (it also serves code → structured switching). | ARCHITECTURE.md sections 5, 5.1, 10 |
 
 ## 3. Open
-
-### OQ-P5. Round-trip: bringing PowerPoint edits back
-
-**Options.** (a) One-way: export is final; further agent work starts from the deck document and loses PowerPoint edits. (b) Re-import: stable ids embedded in the export let the app read a `.pptx` edited in PowerPoint back into the deck document, mapping text, order, layout, and chart data changes on known elements, and keeping unknown changes as locked "foreign" elements. (c) Import any `.pptx` (not only ones the app exported) as a starting deck.
-
-**Recommendation.** (a) in phase 1 with stable ids written from day one, (b) in phase 2. (c) as a best-effort "convert to project" later; arbitrary decks rarely map cleanly onto a template's layouts.
-
-**Decide.** How often would you go back to the agent after editing in PowerPoint? Do you want to bring existing decks in as a starting point, or only as references?
 
 ### OQ-P6. Rendering engine for previews, PDF, and images
 

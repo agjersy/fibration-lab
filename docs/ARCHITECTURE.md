@@ -150,7 +150,7 @@ Rules:
 - **Tables** are rows and cells of text, with header row and banding flags; rendered as native tables using the template's table style.
 - **Images** reference a file in the project's `assets/` (or an Analyst figure) by hash, with alt text required and a crop and fit mode into the placeholder.
 - **Free elements** (outside placeholders) carry an explicit position and size in EMU and are only allowed where the deck contract allows them.
-- **Stable ids** are written into the exported `.pptx` (shape names and `p:custDataLst` tags) so a later re-import can map shapes back (OQ-P5).
+- **Stable ids** are written into every exported `.pptx` from phase 1 (shape names and `p:custDataLst` tags, plus the deck snapshot id in custom document properties) so the phase 2 re-import can map shapes back (decided, OQ-P5). Phase 1 export is one-way.
 - **One file per slide** keeps agent proposals, diffs, and snapshots small and readable.
 
 Agent-facing tools operate on this document (section 7.3). The model never sees OOXML.
@@ -188,7 +188,7 @@ A project is in one of two modes, chosen at creation and switchable later.
 **Switching.**
 
 - **Structured → code ("eject").** The renderer has a code back end that emits an equivalent `build.py` written against the SDK: one function per slide, readable, with citations preserved. Running it reproduces the same `.pptx` (verified at switch time by comparing output). Generated slides are inlined. Lossless.
-- **Code → structured.** Not generally possible: arbitrary code has no structured equivalent. The app offers (1) reverting to the structured snapshot taken before the eject, discarding code-mode changes, or (2) importing the current output `.pptx` as a new structured deck on a best-effort basis (the same importer as OQ-P5), with unmapped shapes kept as locked foreign elements. Both are explicit, previewed actions.
+- **Code → structured.** Not generally possible: arbitrary code has no structured equivalent. The app offers (1) reverting to the structured snapshot taken before the eject, discarding code-mode changes, or (2) importing the current output `.pptx` as a new structured deck on a best-effort basis (the later 'convert to project' importer, OQ-P5), with unmapped shapes kept as locked foreign elements. Both are explicit, previewed actions.
 - Every switch is a snapshot boundary and is recorded in the transcript; the agent is told the mode in its context.
 
 **Policy.** Code generation mode needs the sandbox (OQ-P7) and can be disabled by configuration (`policy.code_mode = "allow" | "deny"`), as an enterprise managed setting would. Builds have a time limit and no network.
