@@ -146,7 +146,11 @@ This is the central design choice; OQ-P3 sets out the alternatives.
 Rules:
 
 - **Text** is a list of paragraphs with a level and a list of runs. Run formatting is limited to emphasis (bold, italic, underline), hyperlinks, and theme color references (`accent1`, never a hex value unless the contract allows). Font, size, and spacing come from the layout's placeholder styles; the agent cannot set them unless the contract allows overrides.
-- **Charts** are a type (bar, column, line, pie, scatter, area, combo, and their stacked variants) plus a data table plus a small set of options (axis titles, labels, legend). Rendered as native PowerPoint charts with an embedded workbook, styled from theme colors.
+- **Charts** are a type (bar, column, line, pie, scatter, area, combo, and their stacked variants), a data source, an optional transform pipeline, and a small set of options (axis titles, labels, legend). Rendered as native PowerPoint charts with an embedded workbook holding the final values, styled from theme colors. Decided (OQ-P9):
+  - **Source:** a cell range or named range in a reference spreadsheet, an extracted table from a PDF, DOCX, or PPTX reference, or an imported Personal Analyst table, always with its reference version. Inline literal data is allowed only with a citation per value.
+  - **Transforms:** a declarative list of steps from a closed set: `filter`, `select`, `rename`, `sort`, `top_n`, `group_sum` / `group_mean` / `group_count`, `pivot`, `unpivot`, `pct_change`, `share_of_total`, `cumulative`, `scale` (units: thousands, millions, percent), `round`. Executed by the kernel with pandas, deterministic, no user code.
+  - **Provenance:** the chart stores source, steps, and the computed values. The source lens on a chart shows the source range, each step, and the resulting table; the checker recomputes the pipeline from the current reference version and flags a chart whose stored values no longer match (`src.chart-stale`).
+  - Anything beyond the closed set belongs in Personal Analyst, which returns a table or figure with run provenance, or in a generated slide or code mode, where the computation is reviewed code.
 - **Tables** are rows and cells of text, with header row and banding flags; rendered as native tables using the template's table style.
 - **Images** reference a file in the project's `assets/` (or an Analyst figure) by hash, with alt text required and a crop and fit mode into the placeholder.
 - **Free elements** (outside placeholders) carry an explicit position and size in EMU and are only allowed where the deck contract allows them.
@@ -284,6 +288,7 @@ Analogue of Analyst's script contract: rules the agent is told and the kernel ch
 | `density.bullets`, `density.words` | Maximum bullets per slide and words per slide (template sidecar or project config). |
 | `src.coverage` | Every factual paragraph and every chart has at least one citation (factual is decided by a simple heuristic plus the agent's own tagging). |
 | `src.numbers` | Number check (section 8). |
+| `src.chart-stale` | A chart's stored values match its transform pipeline recomputed from the cited reference version. |
 | `a11y.alt-text`, `a11y.contrast`, `a11y.reading-order` | Images have alt text, text meets WCAG AA contrast against its fill, reading order is set. |
 | `struct.titles` | Every slide has a unique, non-empty title. |
 | `struct.mandatory` | Mandatory slides from the template sidecar are present. |

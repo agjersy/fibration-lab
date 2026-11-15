@@ -26,16 +26,9 @@
 | OQ-P6 Rendering engine | Fidelity render chain: PowerPoint automation when installed (COM on Windows, AppleScript on macOS), else a bundled LibreOffice shipped as a separately installable component, else a system LibreOffice. Structured mode keeps the live HTML preview for editing. Without any engine: no PDF/PNG export and no code-mode previews, stated in the UI. CI uses LibreOffice; a Windows runner with PowerPoint is used where available. | ARCHITECTURE.md P5, sections 3, 10 |
 | OQ-P7 Skills and code sandbox | Full Agent Skills including scripts, run by the app (ask by default, deniable by config). One OS-native sandbox for all code (builds, generated slides, skill scripts): macOS `sandbox-exec`, Windows AppContainer + job object, Linux `bubblewrap` in phase 4; no network, writes only to scratch and output; badged fallback to resource limits. Code uses a fixed, pinned package set bundled offline in the installer. | ARCHITECTURE.md P7, P11, sections 12, 12.1 |
 | OQ-P8 References | Always copied into the project (content-addressed, versioned). v1 formats: PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML and saved pages, Personal Analyst figures and tables (only imported items are copied). No OCR in v1. No web access in v1; later through MCP. Reference sets are large, so hybrid search (FTS5 + bundled offline embedding model, endpoint optional) is in v1. | ARCHITECTURE.md P8, section 8 |
+| OQ-P9 Chart data | Native charts take their data from reference ranges or extracted tables through a declarative, closed set of transforms (filter, sort, top-N, group aggregates, pivot, percent change, share, cumulative, scaling, rounding) run deterministically by the kernel and stored with the chart as provenance; a checker rule recomputes them. Real analysis happens in Personal Analyst; code mode and generated slides remain available for anything else. | ARCHITECTURE.md sections 5, 9 |
 
 ## 3. Open
-
-### OQ-P9. Charts and data
-
-**Options.** (a) Native PowerPoint charts from tables in references (spreadsheets, extracted tables) only. (b) Plus images of figures from Personal Analyst or skill scripts. (c) Plus in-app computation (the agent aggregates data with code before charting).
-
-**Recommendation.** (a) + (b). Computation belongs in Personal Analyst, which is built for verified analysis; Present consumes its outputs with provenance. Simple transforms (filter, sort, top-N, sum by group) can be declarative operations in the chart spec so no code is needed.
-
-**Decide.** Is that division of labor right for you, or do you expect to build decks from raw data without going through Analyst?
 
 ### OQ-P10. Checkpoints without git
 
