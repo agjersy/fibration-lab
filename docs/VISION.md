@@ -23,7 +23,7 @@ Common pain points underneath:
 | Unverifiable content | A number on slide 7 cannot be traced to the report it came from. Reviewing a generated deck means re-reading every source. |
 | Template non-compliance | Brand teams reject decks; users spend the time saved on reformatting. |
 | Not really editable | Final edits always happen in PowerPoint. Output that is not built from native placeholders, charts, and tables is a dead end. |
-| Enterprise constraints | Models must be the ones the organization hosts or contracts (often Claude on Amazon Bedrock, Google Vertex AI, Microsoft Foundry, or an internal gateway). Materials may not leave approved boundaries. Software must install and run without internet access. |
+| Enterprise constraints | Models must be the ones the organization hosts or contracts (often Claude behind an internal API gateway, or open-weight models on internal servers). Materials may not leave approved boundaries. Software must install and run without internet access. |
 | Fragmented surfaces | Source documents, the chat, the deck, the template, and the export tool are separate windows. |
 
 ## 3. Vision
@@ -36,14 +36,14 @@ Common pain points underneath:
 2. **You own the deck.** Agent changes are proposals until accepted, at a strictness configured per project. Slides and elements can be locked. Every agent turn is checkpointed so any change is one click from undone. The agent declares which slides it will touch before touching them. *(Analyst: "you own the code".)*
 3. **Native, not pictures.** The product of a session is a `.pptx` that a PowerPoint user cannot tell from a hand-built one: real slide layouts and placeholders from the template, native charts with editable data, native tables, speaker notes, alt text, sections. Images are used only for what is genuinely an image. *(Analyst: "tools, not transcripts".)*
 4. **The template is the contract.** The organization's template defines what layouts, fonts, colors, and sizes are allowed. The agent is held to it and a checker enforces it automatically, in the same way Personal Analyst enforces its script contract.
-5. **Model agnostic, enterprise ready.** Claude through the Anthropic API, Amazon Bedrock, Google Vertex AI, Microsoft Foundry, or an internal gateway; open-weight models through any OpenAI-compatible server. No model-specific code paths. No telemetry, no cloud dependency of the application itself, installable and usable offline. The app always tells you which provider your materials are sent to.
+5. **Model agnostic, enterprise ready.** Claude through the Anthropic API or an internal gateway; open-weight models on internal servers through any OpenAI-compatible API; cloud platforms (Bedrock, Vertex, Foundry) later through the same interface. No model-specific code paths. No telemetry, no cloud dependency of the application itself, installable and usable offline. The app always tells you which provider your materials are sent to.
 6. **Materials stay put.** Reference files are read where they are. Only the excerpts the agent needs are sent to the model, and the app keeps a local record of what was sent where.
 7. **One family with Personal Analyst.** Same shell, same layout logic, same look, same agent controls, same skill format. Analysis results (figures with provenance, tables, equations) flow from Analyst into Present without losing their provenance.
 
 ## 4. Who it is for
 
 - **Primary:** a professional who regularly turns material (reports, analyses, spreadsheets, earlier decks) into presentations on a mandated corporate template, and finishes them in PowerPoint. Comfortable with PowerPoint; not necessarily a programmer.
-- **Secondary:** the same user's organization: IT deploys the app with a managed configuration (approved model endpoints, locked policies, shared skills and templates).
+- **Secondary (phase 3):** the same user's organization: IT deploys the app with a managed configuration (approved model endpoints, locked policies, shared skills and templates). The app is enterprise-ready from the start (offline install, proxy and CA, audit log) so this needs no rework.
 - **Also:** you, as a Personal Analyst user turning analysis results into a talk or report-out.
 - **Not for:** freeform graphic design, animation-heavy keynote production, or real-time multi-user co-editing.
 
@@ -59,7 +59,7 @@ Common pain points underneath:
 
 These walkthroughs are the acceptance bar for the first usable version.
 
-**Start a project.** Create a project, choose a template (`.potx` or `.pptx`) from the organization library or a file, and add references: drop in PDFs, Word documents, spreadsheets, earlier decks, images, or a Personal Analyst repo. The app indexes them locally and shows each with its page count and extraction status. Choose a model from the configured providers; the header shows "Claude Opus 5.5 · Bedrock (eu-central-1)".
+**Start a project.** Create a project, choose a template (`.potx` or `.pptx`) from the organization library or a file, and add references: drop in PDFs, Word documents, spreadsheets, earlier decks, images, or a Personal Analyst repo. The app indexes them locally and shows each with its page count and extraction status. Choose a model from the configured providers; the header shows "Claude Opus 5.5 · corporate gateway (internal)".
 
 **Brief and storyline.** "A 12-slide quarterly review for the leadership team from the Q3 report and the pipeline spreadsheet; lead with the margin recovery." In Outline mode the agent proposes a storyline: one row per slide with an action title (the sentence the slide proves), the key evidence, the intended layout, and the sources. You reorder two rows, cut one, and rewrite a title inline. Nothing has been rendered yet; the storyline is the cheapest place to steer.
 
@@ -84,9 +84,9 @@ These walkthroughs are the acceptance bar for the first usable version.
 | Verification | Slide diffs. Source lens (click a claim, see the passage). Number check. Deck checker (overflow, fonts, colors, contrast, alt text, density). | Fidelity check against a real PowerPoint render. Reviewer-model pass. |
 | Editing | Reorder, duplicate, delete slides. Edit text in place. Change layout. Lock slides and elements. Edit chart data. Speaker notes editor. | Freeform shape editing. Re-import edits made in PowerPoint. |
 | Export | `.pptx` (primary), PDF, PNG per slide, Markdown outline, speaker notes as `.docx`. | `.odp`, self-contained HTML, `.potx` from a deck, handouts. |
-| Skills | Agent Skills (`SKILL.md`) loaded and executed by the app itself, so they work with every provider including Bedrock and Vertex. Organization skill library (read-only, managed). | Skill authoring helpers. Skill evaluation. |
-| Models | Anthropic Messages (direct, Bedrock, Vertex, Foundry, gateways) and OpenAI-compatible endpoints. Keys and cloud credentials from the OS keychain or the platform's standard credential chain. Per-conversation model choice. Capabilities probed. | Cost and token budgets per project. |
-| Enterprise | Offline installers (MSI, PKG, DEB/RPM). Managed configuration with locked keys. Proxy and custom CA support. Local audit log of what was sent to which provider. No telemetry. | Sensitivity labels. Central skill and template distribution over a file share or MCP. |
+| Skills | Agent Skills (`SKILL.md`) loaded and executed by the app itself, so they work identically with every endpoint, including gateways and open-weight servers. Organization skill library (read-only, managed). | Skill authoring helpers. Skill evaluation. |
+| Models | Anthropic API, internal gateways (Anthropic Messages or OpenAI-compatible), open-weight models on internal servers. Keys and tokens in the OS keychain. Per-conversation model choice. Capabilities probed. | Amazon Bedrock, Google Vertex AI, Microsoft Foundry. Cost and token budgets per project. |
+| Enterprise | Offline installers (MSI, PKG/DMG) with no runtime downloads. Proxy and custom CA support. Local audit log of what was sent to which provider. No telemetry. | Managed configuration with locked keys and organization template and skill libraries (phase 3). Sensitivity labels. Distribution over a file share or MCP. |
 | Analyst interop | Import figures, tables, and equations from a Personal Analyst repo with their run provenance. | Live links: re-run in Analyst, refresh in Present. |
 
 ## 8. Success criteria
@@ -96,7 +96,7 @@ These walkthroughs are the acceptance bar for the first usable version.
 - **Time to verify.** For any number or factual claim, its source passage is one click away, and a number that does not appear in its cited source is flagged automatically.
 - **No unwanted edits.** No slide changes without consent at the configured level, and every agent turn is revertible in one action.
 - **Editable in PowerPoint.** Charts are native charts with editable data, tables are native tables, and a user can restyle the deck by switching the template theme in PowerPoint.
-- **Model freedom.** The full loop works with any model meeting the capability baseline, verified by a model-agnostic evaluation suite against at least one Claude deployment on a cloud platform (for example Bedrock) and one open-weight model, with no model-specific code.
+- **Model freedom.** The full loop works with any model meeting the capability baseline, verified by a model-agnostic evaluation suite against Claude (directly or through a gateway) and at least one open-weight model on an internal server, with no model-specific code.
 - **Enterprise deployable.** Installs and runs on a machine with no internet access and only an internal model endpoint reachable.
 
 ## 9. Non-goals for the first version
@@ -107,7 +107,7 @@ Animations and transitions. Embedded video and audio. Real-time collaboration. C
 
 | Phase | Goal | Exit criterion |
 |---|---|---|
-| 0. Headless core | Deck schema, template ingestion, deterministic `.pptx` renderer, deck checker, reference ingestion and search, agent loop as a CLI, provider adapters including Bedrock and Vertex, evaluation suite. | Three representative deck tasks complete end to end with two models from different providers on two templates; every output opens without repair in PowerPoint and passes the checker. |
+| 0. Headless core | Deck schema, template ingestion, deterministic `.pptx` renderer, deck checker, reference ingestion and search, agent loop as a CLI, provider adapters for the Anthropic API, gateways, and OpenAI-compatible servers (shared with Analyst), evaluation suite. | Three representative deck tasks complete end to end with two models from different providers on two templates; every output opens without repair in PowerPoint and passes the checker. |
 | 1. Workbench | Tauri shell: project tabs, slide grid and canvas, outline view, chat with cards, references panel, checks panel, exports. Windows and macOS. | You can build and export a real deck for work without leaving the app until the final PowerPoint polish. |
 | 2. Verification and editing | Source lens and number check, in-place editing, locks, re-import of PowerPoint edits (if OQ-P5 says so), fidelity check. | The walkthroughs in section 6 pass. |
 | 3. Enterprise and extension | Managed configuration, organization libraries for templates and skills, MCP connectors, Analyst interop, more export formats. | IT can deploy a locked configuration offline; an Analyst figure travels into a deck with provenance. |

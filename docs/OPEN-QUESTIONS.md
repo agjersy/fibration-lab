@@ -14,23 +14,14 @@
 | UI conventions | Analyst theme tokens, density, dockview layout, Zed-style palette and keymap | Seamless switching between the two apps |
 | MCP | Client for stdio and streamable HTTP via `rmcp`, built-in tools on the same schema | Connectors to enterprise systems later |
 
-## 2. Open
+## 2. Decided in the workshop
 
-### OQ-P1. Platforms
+| Item | Decision | Where it landed |
+|---|---|---|
+| OQ-P1 Platforms | Windows and macOS are first-class from phase 1 (MSI and PKG/DMG installers, Windows and macOS CI runners). Linux builds from the same code and is supported in phase 4. Skill-script isolation on Windows is weaker and badged. | ARCHITECTURE.md P2, sections 3, 12 |
+| OQ-P2 Endpoints and first user | First-version endpoints: the Anthropic API, internal API gateways (Anthropic Messages or OpenAI-compatible), and open-weight models on internal GPU servers; Bedrock, Vertex, and Foundry are later auth back ends on the same adapter. The app is always a desktop app calling a server. First user is you, but enterprise-ready from phase 0 (offline bundling, proxy and CA, audit log); managed configuration and organization libraries in phase 3. | ARCHITECTURE.md P6, P12, section 11 |
 
-**Options.** (a) macOS and Linux first, like Analyst; Windows later. (b) Windows and macOS first-class from phase 1; Linux later. (c) All three from phase 1.
-
-**Recommendation.** (b). PowerPoint users, and nearly all enterprise desktops, are on Windows and macOS; Linux has no PowerPoint. Tauri builds Windows from the same code with WebView2. This is the biggest divergence from Analyst and it has knock-on effects: Windows sandboxing for skill scripts is weaker (OQ-P7), installers must be MSI, and CI needs a Windows runner.
-
-**Decide.** Is Windows a must for the first version? Do you yourself work on macOS, Windows, or both?
-
-### OQ-P2. Who is the first user, and how much enterprise in v1
-
-**Options.** (a) You alone, like Analyst; enterprise features later. (b) You first, but designed for managed deployment (managed config, offline installer, audit log) from phase 0, shipped in phase 3. (c) Organizational deployment is the phase 1 target.
-
-**Recommendation.** (b). The phrase "closed enterprise servers" points at endpoints you do not control and machines without internet access. Those shape the provider layer, the bundling (no runtime downloads), and TLS/proxy handling, which are expensive to retrofit; managed configuration and libraries can follow.
-
-**Decide.** What does "closed enterprise servers" mean in your setting: Claude through a cloud platform account (Bedrock, Vertex, Foundry), an internal gateway in front of those, open-weight models on internal GPUs, or all of these? Is the app itself ever hosted on a server, or is it always a desktop app that calls a server?
+## 3. Open
 
 ### OQ-P3. Source of truth for a deck
 
@@ -71,7 +62,7 @@
 
 **Options.** (a) Instruction-only skills (`SKILL.md` and resources, no scripts). (b) Full Agent Skills including scripts, run locally in a sandbox, approved per policy. (c) Full skills plus a general sandboxed Python tool, as in Analyst.
 
-**Recommendation.** (b). Provider-hosted skills are not an option on Bedrock, Vertex, or Azure-hosted Foundry, so the app has to run them; scripts are what make skills useful for charts and diagrams. A general code tool (c) is not needed for decks and is the hardest thing to justify to an enterprise security review. On Windows, scripts run with a restricted token and a job object and are badged as weaker isolation; a managed config can disable scripts entirely.
+**Recommendation.** (b). Provider-hosted skills do not exist on gateways or open-weight servers (and not on Bedrock or Vertex later), so the app has to run them; scripts are what make skills useful for charts and diagrams. A general code tool (c) is not needed for decks and is the hardest thing to justify to an enterprise security review. On Windows, scripts run with a restricted token and a job object and are badged as weaker isolation; a managed config can disable scripts entirely.
 
 **Decide.** Do you already have skills (yours or your organization's) you want to run? Do they include scripts?
 
@@ -104,7 +95,7 @@
 
 **Options.** (a) Copy what is needed and let the two diverge. (b) Extract shared crates (`protocol` patterns, providers, policy, transcript, skills, MCP, UI theme and chat components) into a shared workspace or repository that both apps depend on. (c) One monorepo with two apps.
 
-**Recommendation.** (b), done gradually: Present's phase 0 starts by extracting the provider layer (it needs Bedrock and Vertex, which Analyst would also benefit from) and the policy engine. Adopting the Agent Skills `SKILL.md` format in Analyst as well keeps one skill format across both apps.
+**Recommendation.** (b), done gradually: Present's phase 0 starts by extracting the provider layer (the two adapters are identical in both apps; proxy and private-CA handling added for Present benefits Analyst too) and the policy engine. Adopting the Agent Skills `SKILL.md` format in Analyst as well keeps one skill format across both apps.
 
 **Decide.** Are you willing to change Analyst's skill format and move shared code out of its repository? Monorepo or separate repositories?
 
@@ -120,10 +111,10 @@
 
 **Decide.** Which concrete endpoints should the evaluation suite target first?
 
-## 3. Evidence to gather in phase 0
+## 4. Evidence to gather in phase 0
 
 - Template coverage: run the template inspector over several real corporate templates you use; count layouts whose placeholders map cleanly.
 - Overflow measurement accuracy: compare the checker's verdicts with PowerPoint and LibreOffice renders on a corpus of slides.
 - LibreOffice versus PowerPoint render differences on the same templates.
 - How often the agent needs something outside the deck schema on real briefs (sizes OQ-P3's escape hatch).
-- Bedrock, Vertex, and gateway behavior on the same tasks (tool calling, document citations, caching) through the shared provider layer.
+- Gateway and open-weight server behavior on the same tasks (tool calling, document citations, caching, unknown-field handling) through the shared provider layer.

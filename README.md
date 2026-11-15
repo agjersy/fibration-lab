@@ -2,7 +2,7 @@
 
 A desktop workbench in which an AI agent builds presentations from your brief and reference materials, on your organization's template, under your supervision, and exports native, fully editable PowerPoint files (plus PDF, images, and outlines) whose every claim traces back to a source.
 
-Model agnostic (Claude through the Anthropic API, Amazon Bedrock, Google Vertex AI, Microsoft Foundry, or an internal gateway; open-weight models through OpenAI-compatible servers), local first, enterprise deployable. Sister application to Personal Analyst, sharing its architecture and look.
+Model agnostic (Claude through the Anthropic API or an internal gateway; open-weight models on internal servers through OpenAI-compatible APIs), local first, enterprise deployable. Sister application to Personal Analyst, sharing its architecture and look.
 
 ## Status
 

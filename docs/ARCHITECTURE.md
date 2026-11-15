@@ -7,17 +7,17 @@
 | # | Decision | Resolution | Status |
 |---|---|---|---|
 | P1 | Desktop shell | Tauri 2, Rust core, React renderer in the OS webview, as in Analyst (D1) | Proposed (shared) |
-| P2 | Platforms | Windows and macOS first-class from phase 1 (that is where PowerPoint users are); Linux built from the same code and supported later | Open, OQ-P1 |
+| P2 | Platforms | Windows and macOS first-class from phase 1 (that is where PowerPoint users are); Linux built from the same code and supported in phase 4 | Decided (OQ-P1) |
 | P3 | Source of truth for a deck | A typed deck document (JSON, one file per slide) bound to the template's layouts, rendered deterministically to `.pptx`. The agent edits the document through typed tools; it does not write `.pptx`-generating code | Open, OQ-P3 |
 | P4 | `.pptx` writer | `python-pptx` in an app-owned, bundled Python runtime (the "deck kernel"), driven over JSON-RPC like Analyst's kernel | Proposed |
 | P5 | Preview and PDF/PNG export | Two paths: a live HTML/SVG preview drawn from the deck document in the renderer, and a fidelity render of the actual `.pptx` through LibreOffice headless (bundled or system) or PowerPoint itself when installed | Open, OQ-P6 |
-| P6 | Model access | Analyst's `ModelClient` with two wire formats (Anthropic Messages, OpenAI-compatible) plus authentication back ends for Bedrock (SigV4), Vertex (Google ADC), Foundry (key or Entra ID), and custom gateways | Proposed, extends Analyst D4 |
+| P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
 | P7 | Skills | Anthropic Agent Skills format (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every provider | Proposed, OQ-P7 |
 | P8 | References | Local extraction and SQLite FTS5 index; search/read tools for the agent; per-element citations in the deck document. Native PDF document blocks with citations used when the provider supports them and the set is small | Proposed |
 | P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Proposed (shared) |
 | P10 | Checkpoints | Content-addressed snapshot store inside the project (no dependency on a system `git`) | Proposed, OQ-P10 |
 | P11 | Arbitrary code execution | None in the core loop. Skill scripts only, sandboxed where the OS allows, approved per policy | Open, OQ-P7 |
-| P12 | Enterprise deployment | Offline installers, managed configuration with locked keys, system proxy and trust store, local audit log, no telemetry | Proposed, OQ-P2 |
+| P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, system proxy and trust store, local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Proposed (shared) |
 | P14 | Code sharing with Analyst | Common crates (`protocol` patterns, providers, policy, transcript, skills, MCP) extracted into a shared workspace | Open, OQ-P11 |
 | P15 | Name | "Personal Present": binary `present`, config `~/.present`, bundle id `dev.personal-present.app` | Proposed, OQ-P12 |
@@ -39,7 +39,7 @@ flowchart LR
     PM[Project manager]
     AL[Agent loop]
     PE[Policy engine + slide gating]
-    MP[Model providers\nAnthropic | Bedrock | Vertex | Foundry | OpenAI-compat]
+    MP[Model providers\nAnthropic Messages | OpenAI-compat]
     TR[Tool registry + MCP client]
     SK[Skill loader + runner]
     DS[Deck store + snapshots]
@@ -215,7 +215,7 @@ No shell tool, no file write outside the deck store, no network tool in the firs
 
 **Index.** SQLite FTS5 over chunks that keep their location (file, page, character range, sheet range, slide and shape). Embeddings are optional, only through an approved endpoint configured by the user or the organization, because many enterprise deployments have no embedding model.
 
-**Two ways into the model.** For a small reference set on a provider with native document support, PDFs can be sent as document blocks with citations enabled (supported on the Anthropic API, Bedrock, Vertex, and Foundry), and the model's citations are mapped onto the deck's citation format. Otherwise, and always for large sets, the agent uses `refs.search` and `refs.read`. In both cases the citation lands on the text run or chart series it supports.
+**Two ways into the model.** For a small reference set on a provider with native document support, PDFs can be sent as document blocks with citations enabled (supported by the Anthropic Messages API; a gateway or open-weight server may not support it, so this is probed), and the model's citations are mapped onto the deck's citation format. Otherwise, and always for large sets, the agent uses `refs.search` and `refs.read`. In both cases the citation lands on the text run or chart series it supports.
 
 **Linked or copied.** References are linked by absolute path with a content hash by default, with an option to copy into `references/` for a self-contained project (OQ-P8).
 
@@ -270,16 +270,17 @@ Export presets (format, options, file naming) live in project config. Each expor
 
 | Provider kind | Wire format | Authentication |
 |---|---|---|
-| `anthropic` | Anthropic Messages | API key from the keychain; optional `base_url` for an internal gateway that speaks Messages |
-| `bedrock` | Anthropic Messages through Bedrock | AWS credential chain (profiles, SSO, environment, instance role) and SigV4 signing (`aws-sigv4`, `aws-config` crates); region required; `anthropic.`-prefixed model ids |
-| `vertex` | Anthropic Messages through Vertex AI | Google Application Default Credentials; project and region |
-| `foundry` | Anthropic Messages through Microsoft Foundry | API key or Entra ID token |
-| `openai-compatible` | Chat completions | API key or none; covers vLLM, Ollama, LM Studio, LiteLLM gateways, Azure OpenAI |
+| `anthropic` | Anthropic Messages | API key or bearer token from the keychain; `base_url` for an internal gateway that speaks Messages; optional extra headers the gateway requires |
+| `openai-compatible` | Chat completions | API key, bearer token, or none; covers vLLM, Ollama, TGI, LM Studio, LiteLLM and other gateways |
+
+**Decided (OQ-P2): first-version endpoints** are the Anthropic API directly, internal API gateways (Anthropic Messages or OpenAI-compatible, typically behind a corporate proxy with a private CA), and open-weight models on internal GPU servers. These are exactly Analyst's two wire adapters, so the provider layer can be shared as is. Amazon Bedrock (SigV4 and the AWS credential chain), Google Vertex AI (Application Default Credentials), and Microsoft Foundry (key or Entra ID) are later additions: they are authentication back ends on the Anthropic Messages adapter and change nothing above it.
+
+Gateway realities the adapters must handle: private CA certificates and system proxy settings (section 3); extra required headers; model ids that are gateway aliases rather than vendor ids (capabilities are probed, not inferred from the name); gateways that strip or reject newer request fields (unknown-field errors trigger a capability downgrade rather than a failure); and missing model-listing endpoints (manual model entry).
 
 Features that differ by platform are probed or configured, not assumed. Relevant here:
 
-- **Provider-hosted skills and code execution are not used.** Anthropic's server-side Agent Skills, code execution, Files API, and web tools are not available on Bedrock and Vertex (and not on Azure-hosted Foundry deployments). Running skills in the app (section 12) is what makes the same behavior possible everywhere.
-- **Document blocks with citations, prompt caching, tool use, vision, and structured outputs** are available across the Anthropic Messages platforms and are used when present.
+- **Provider-hosted skills and code execution are not used.** Anthropic's server-side Agent Skills, code execution, Files API, and web tools exist only on Anthropic's own API (and not on Bedrock, Vertex, or Azure-hosted Foundry); gateways and open-weight servers have none of them. Running skills in the app (section 12) is what makes the same behavior possible on every endpoint.
+- **Document blocks with citations, prompt caching, vision, and structured outputs** are used when the endpoint supports them, as probed; the loop works without them.
 
 **Capability baseline:** native tool calling, streaming, a context window of at least 128k tokens (references and the layout catalog are large), and vision recommended (self-review and image references degrade gracefully without it).
 
@@ -318,7 +319,7 @@ The layout keeps Analyst's shape (project tabs on top, sidebar left, work area c
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ [Q3 review · Corp 2026 ●] [Board pre-read] [+]    Opus 5.5 · Bedrock ▾ ⚙ │
+│ [Q3 review · Corp 2026 ●] [Board pre-read] [+]    Opus 5.5 · Gateway ▾ ⚙ │
 ├──────────┬───────────────────────────────────────┬───────────────────────┤
 │ Slides   │  ┌─────────────────────────────────┐  │ Agent chat            │
 │  1 ▣ ✓   │  │ Margin recovered to 18% on      │  │ mode: Build ▾         │
@@ -385,7 +386,7 @@ Managed configuration (read-only, admin-owned):
 ## 16. Security and privacy
 
 - No telemetry. Network calls only to configured model providers, configured MCP servers, and (if enabled) the update server. Updates can be disabled by managed config.
-- Credentials in the OS keychain or the platform credential chain (AWS, Google, Entra). Never logged, never given to skill scripts or MCP servers unless configured.
+- Credentials (API keys, gateway tokens) in the OS keychain. Never logged, never given to skill scripts or MCP servers unless configured.
 - Reference content leaves the machine only as excerpts in model requests; each request is recorded in the audit log.
 - Managed configuration can lock: allowed providers and models, disabled features (skill scripts, MCP, specific export formats), checker severities, required templates, the data-classification footer.
 - Skill scripts run sandboxed without network; MCP servers go through the policy engine.
