@@ -1,0 +1,1 @@
+//! Personal Present core crate.

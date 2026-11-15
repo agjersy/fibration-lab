@@ -1,0 +1,13 @@
+target/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+node_modules/
+dist/
+evals/results/
+tools/.cache/
+vendor/ooxml-schemas/
+vendor/models/
+.DS_Store
