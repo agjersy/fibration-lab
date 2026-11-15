@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, lineNumbers } from "@codemirror/view";
 import { syntaxHighlighting } from "@codemirror/language";
 import { useEffect, useRef } from "react";
+import { detectLineSeparator } from "../../state/files";
 import { highlightStyle, languageFor } from "./codemirror";
 
 export interface MergeEditorHandle {
@@ -31,6 +32,8 @@ export default function MergeEditor({ path, original, proposed, readOnly, onHand
       state: EditorState.create({
         doc: proposed,
         extensions: [
+          // Keep the proposal's own line endings so an untouched review reads back identical.
+          proposed.includes("\r") ? EditorState.lineSeparator.of(detectLineSeparator(proposed)) : [],
           lineNumbers(),
           languageFor(path),
           syntaxHighlighting(highlightStyle, { fallback: true }),
@@ -49,7 +52,7 @@ export default function MergeEditor({ path, original, proposed, readOnly, onHand
     });
     onChunksChange(getChunks(view.state)?.chunks.length ?? 0);
     onHandle({
-      getDoc: () => view.state.doc.toString(),
+      getDoc: () => view.state.sliceDoc(),
       rejectAll: () => {
         // Reject from the end so earlier positions stay valid.
         for (;;) {
@@ -60,8 +63,7 @@ export default function MergeEditor({ path, original, proposed, readOnly, onHand
         }
       },
       acceptAll: () => {
-        const current = view.state.doc.toString();
-        if (current !== proposed) view.dispatch({ changes: { from: 0, to: current.length, insert: proposed } });
+        if (view.state.sliceDoc() !== proposed) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: proposed } });
       },
       chunkCount: () => getChunks(view.state)?.chunks.length ?? 0,
     });

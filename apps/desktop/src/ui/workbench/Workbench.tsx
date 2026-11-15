@@ -18,29 +18,50 @@ import { LibraryView } from "../sidebar/LibraryView";
 import { ProjectView } from "../sidebar/ProjectView";
 import { RunsView } from "../sidebar/RunsView";
 import { ScriptsView } from "../sidebar/ScriptsView";
-import { GROUPS, setWorkbench } from "./controller";
+import { ErrorBoundary } from "../common/ErrorBoundary";
+import { GROUPS, clearWorkbench, requestClosePanel, setWorkbench } from "./controller";
 
-const components: Record<string, React.FunctionComponent<IDockviewPanelProps>> = {
-  project: ProjectView,
-  scripts: ScriptsView,
-  library: LibraryView,
-  runs: RunsView,
-  editor: EditorPanel,
-  proposal: ProposalReviewPanel,
-  chat: ChatPanel,
-  terminal: TerminalPanel,
-  runoutput: RunOutputPanel,
-  diagnostics: DiagnosticsPanel,
-  figures: FiguresPanel,
-  equations: EquationsPanel,
-  packages: PackagesPanel,
+type PanelComponent = React.FunctionComponent<IDockviewPanelProps>;
+
+/** A render error in one dock panel stays in that panel. */
+function guarded(label: string, Panel: React.ComponentType<IDockviewPanelProps>): PanelComponent {
+  const Guarded: PanelComponent = (props) => (
+    <ErrorBoundary label={label}>
+      <Panel {...props} />
+    </ErrorBoundary>
+  );
+  Guarded.displayName = `Guarded(${label})`;
+  return Guarded;
+}
+
+const components: Record<string, PanelComponent> = {
+  project: guarded("Project", ProjectView),
+  scripts: guarded("Scripts", ScriptsView),
+  library: guarded("Library", LibraryView),
+  runs: guarded("Runs", RunsView),
+  editor: guarded("Editor", EditorPanel as React.ComponentType<IDockviewPanelProps>),
+  proposal: guarded("Proposal review", ProposalReviewPanel as React.ComponentType<IDockviewPanelProps>),
+  chat: guarded("Agent", ChatPanel),
+  terminal: guarded("Terminal", TerminalPanel),
+  runoutput: guarded("Run output", RunOutputPanel),
+  diagnostics: guarded("Diagnostics", DiagnosticsPanel),
+  figures: guarded("Figures", FiguresPanel),
+  equations: guarded("Equations", EquationsPanel),
+  packages: guarded("Packages", PackagesPanel),
 };
 
 function FixedTab(props: IDockviewPanelHeaderProps) {
   return <DockviewDefaultTab {...props} hideClose />;
 }
 
-const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = { fixed: FixedTab };
+/** Editor and review tabs: the close button and middle click go through the unsaved-changes guard. */
+function ClosableTab(props: IDockviewPanelHeaderProps) {
+  const id = props.api.id;
+  const close = useCallback(() => void requestClosePanel(id), [id]);
+  return <DockviewDefaultTab {...props} closeActionOverride={close} />;
+}
+
+const tabComponents: Record<string, React.FunctionComponent<IDockviewPanelHeaderProps>> = { fixed: FixedTab, closable: ClosableTab };
 
 function Watermark() {
   return (
@@ -80,6 +101,7 @@ export function Workbench({ session }: { session: SessionId }) {
   const apiRef = useRef<DockviewApi | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoring = useRef(false);
+  const mounted = useRef(false);
 
   const onReady = useCallback(
     (event: DockviewReadyEvent) => {
@@ -112,6 +134,19 @@ export function Workbench({ session }: { session: SessionId }) {
             .catch(() => undefined);
         }, 600);
       });
+      // Closing an editor tab releases its buffer. Removals that are part of
+      // tearing the workbench down (session switch) must not: the check is
+      // deferred, and by then `mounted` is false or the api was replaced.
+      api.onDidRemovePanel((panel) => {
+        if (panel.api.component !== "editor") return;
+        const path = (panel.params as { path?: string } | undefined)?.path;
+        if (!path) return;
+        setTimeout(() => {
+          if (!mounted.current || apiRef.current !== api || restoring.current) return;
+          if (api.getPanel(panel.id)) return;
+          useFiles.getState().closeBuffer(session, path);
+        }, 0);
+      });
       api.onDidActivePanelChange((e) => {
         const panel = e.panel;
         if (panel && panel.api.component === "editor") {
@@ -123,19 +158,25 @@ export function Workbench({ session }: { session: SessionId }) {
     [session],
   );
 
-  useEffect(
-    () => () => {
-      setWorkbench(null, null);
+  // StrictMode-safe registration: the effect runs setup, cleanup, setup on a
+  // development mount while dockview's onReady fires once, so the setup
+  // re-registers the api the cleanup just cleared.
+  useEffect(() => {
+    mounted.current = true;
+    if (apiRef.current) setWorkbench(apiRef.current, session);
+    return () => {
+      mounted.current = false;
+      clearWorkbench(apiRef.current);
       if (saveTimer.current) clearTimeout(saveTimer.current);
-    },
-    [],
-  );
+    };
+  }, [session]);
 
   return (
     <div className="workbench" data-testid="workbench">
       <DockviewReact
         components={components}
         tabComponents={tabComponents}
+        defaultTabComponent={ClosableTab}
         watermarkComponent={Watermark}
         onReady={onReady}
         theme={theme === "dark" ? themeDark : themeLight}

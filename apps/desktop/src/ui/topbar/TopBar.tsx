@@ -3,6 +3,11 @@ import { closeSession, openSession } from "../../state/actions";
 import { useSessions } from "../../state/sessions";
 import { notifyError, useUi } from "../../state/ui";
 
+/** `limits` (resource limits only) and `none` do not confine what a run can touch. */
+export function isUnsandboxed(sandbox: string | null): boolean {
+  return sandbox === "limits" || sandbox === "none";
+}
+
 export function TopBar() {
   const sessions = useSessions((s) => s.sessions);
   const infos = useSessions((s) => s.infos);
@@ -31,7 +36,9 @@ export function TopBar() {
               role="tab"
               aria-selected={isActive}
               className={`session-tab${isActive ? " active" : ""}`}
-              onClick={() => (s.open && infos[s.id] ? useSessions.getState().setActive(s.id) : void openSession(s.id).catch(notifyError))}
+              // openSession is idempotent: it only activates a session that is open and subscribed,
+              // and otherwise (re)opens it and attaches the event channel.
+              onClick={() => void openSession(s.id).catch(notifyError)}
               title={`${s.repo_abs} · ${s.target} · kernel ${k}`}
               data-testid="session-tab"
             >
@@ -66,6 +73,16 @@ export function TopBar() {
         </button>
       </div>
       <div className="topbar-right">
+        {info && isUnsandboxed(info.sandbox) ? (
+          <span
+            className="badge warning unsandboxed"
+            role="status"
+            data-testid="unsandboxed-badge"
+            title={`Sandbox: ${info.sandbox ?? "none"}. Scripts and snippets on ${info.target} run without an OS sandbox, so they could change files outside the repo's output directory or use the network. Because of that, every run the agent wants to start asks for your approval first.`}
+          >
+            unsandboxed
+          </span>
+        ) : null}
         {info ? (
           <select aria-label="Model" value={info.model ?? ""} onChange={(e) => setModel(e.target.value)} data-testid="model-picker">
             {models.map((m) => (

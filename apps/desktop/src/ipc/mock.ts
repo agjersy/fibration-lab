@@ -1,11 +1,20 @@
 // MockBackend: the renderer-only backend described in docs/IPC.md section 6.
 // Everything lives in memory; latency and streaming are simulated so loading
 // states are visible. Selected automatically when the Tauri API is absent.
+//
+// The mock enforces the lifecycle rules of IPC.md section 7 as strictly as the
+// real service so tests cannot pass against a forgiving backend:
+//   - `subscribe` on a session that is not open rejects with `not_found`;
+//   - session-scoped data commands reject with `not_found` while the session is closed;
+//   - `session_open` / `session_create` return before the kernel is up, and
+//     kernel-backed commands (`index_get`, `check_run`, `run_start`, `eq_*`)
+//     reject with `kernel_offline` until `kernel_state: ready` (about 300 ms later);
+//   - closing a session drops its subscriptions.
 import type { Backend } from "./backend";
 import type { Commands } from "./commands";
 import { unifiedDiff } from "./mock/diff";
 import { decaySvg, residualsSvg, simParamsFromArgs, type SimParams } from "./mock/figure";
-import { DOUBLE_EXP_SNIPPET, fixtureFiles } from "./mock/fixtures";
+import { DOUBLE_EXP_SNIPPET, RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED, fixtureFiles } from "./mock/fixtures";
 import { extractEquations, indexLibrary, parseScript } from "./mock/indexer";
 import type {
   Artifact,
@@ -23,6 +32,7 @@ import type {
   ProposalDecision,
   ProposalId,
   ProposalView,
+  ProviderKeyStatus,
   RunId,
   RunView,
   SessionEvent,
@@ -41,7 +51,7 @@ export interface MockOptions {
   latency?: [number, number];
   /** Scale applied to streaming delays (1 = real time, 0 = as fast as possible). */
   timeScale?: number;
-  /** Start with one existing (closed) session. Default true. */
+  /** Start with one existing (closed) session that has a past run and a transcript. Default true. */
   seedSession?: boolean;
 }
 
@@ -58,6 +68,8 @@ interface MockConversation {
   summary: ConversationSummary;
   transcript: TranscriptEvent[];
   cancelled: boolean;
+  /** Run started by the turn in progress, cancelled together with the turn. */
+  activeRun: MockRun | null;
 }
 
 interface PendingProposal {
@@ -75,6 +87,7 @@ interface MockSession {
   layout: string | null;
   packages: PackageInfo[];
   usage: { input: number; output: number };
+  kernelEpoch: number;
   counters: { turn: number; run: number; conv: number; proposal: number; tool: number };
 }
 
@@ -110,7 +123,8 @@ const TARGETS: TargetInfo[] = [
     kind: "ssh",
     host: "lab-gpu.example.edu",
     remote_root: "~/analyst/mirrors",
-    sandbox: "bwrap",
+    // A host without unprivileged user namespaces: runs are not sandboxed there.
+    sandbox: "limits",
     data_dirs: ["/data/lab/run3"],
     bootstrapped: false,
   },
@@ -126,6 +140,22 @@ const DEFAULT_POLICY: PolicyView = {
   protected: ["data/**", ".analyst/**"],
   max_steps: 40,
 };
+
+interface MockProvider {
+  provider: string;
+  api_key_env: string | null;
+  /** The environment variable is set in the (pretend) app environment. */
+  env_set: boolean;
+  stored: string | null;
+}
+
+function defaultProviders(): MockProvider[] {
+  return [
+    { provider: "ollama", api_key_env: null, env_set: false, stored: null },
+    { provider: "anthropic", api_key_env: "ANTHROPIC_API_KEY", env_set: false, stored: null },
+    { provider: "openai", api_key_env: "OPENAI_API_KEY", env_set: true, stored: null },
+  ];
+}
 
 const DEFAULT_PACKAGES: PackageInfo[] = [
   { name: "numpy", version: "2.1.2", locked: true },
@@ -237,6 +267,7 @@ export class MockBackend implements Backend {
   private readonly subscribers = new Map<SessionId, Set<(e: SessionEvent) => void>>();
   private readonly terminals = new Map<TerminalId, MockTerminal>();
   private readonly layouts = new Map<SessionId, string>();
+  private readonly providers = defaultProviders();
   private seq = 0;
 
   constructor(opts: MockOptions = {}) {
@@ -248,7 +279,13 @@ export class MockBackend implements Backend {
       s.info.kernel = "stopped";
       s.info.created_at = new Date(Date.now() - 86400_000).toISOString();
       s.info.last_opened_at = s.info.created_at;
+      this.seedHistory(s);
     }
+  }
+
+  /** Test hook: push an event to a session's subscribers as the service would. */
+  debugEmit(session: SessionId, event: SessionEvent): void {
+    this.emit(session, event);
   }
 
   // ---- Backend ----
@@ -268,7 +305,8 @@ export class MockBackend implements Backend {
 
   async subscribe(session: SessionId, onEvent: (e: SessionEvent) => void): Promise<() => void> {
     await this.delay();
-    this.requireSession(session);
+    // IPC.md section 7: subscribing to a session that is not open is `not_found`.
+    this.requireOpen(session);
     let set = this.subscribers.get(session);
     if (!set) {
       set = new Set();
@@ -307,7 +345,7 @@ export class MockBackend implements Backend {
 
   private requireOpen(id: SessionId): MockSession {
     const s = this.requireSession(id);
-    if (!s.info.open) throw ipcError("invalid", `session ${id} is not open`);
+    if (!s.info.open) throw ipcError("not_found", `session ${id} is not open`);
     return s;
   }
 
@@ -329,6 +367,7 @@ export class MockBackend implements Backend {
       summary: { id: convId, title: "Conversation 1", model, mode: "build", created_at: nowIso(), turns: 0, busy: false },
       transcript: [],
       cancelled: false,
+      activeRun: null,
     };
     const t = TARGETS.find((x) => x.name === target) ?? TARGETS[0]!;
     const session: MockSession = {
@@ -349,6 +388,7 @@ export class MockBackend implements Backend {
         active_conversation: convId,
         target_kind: t.kind,
         target_host: t.host,
+        pending_proposals: [],
       },
       files: fixtureFiles(),
       hashes: new Map(),
@@ -358,27 +398,110 @@ export class MockBackend implements Backend {
       layout: null,
       packages: DEFAULT_PACKAGES.map((p) => ({ ...p })),
       usage: { input: 0, output: 0 },
+      kernelEpoch: 0,
       counters: { turn: 0, run: 0, conv: 0, proposal: 0, tool: 0 },
     };
     this.sessions.set(id, session);
     return session;
   }
 
-  private syncConversations(s: MockSession): void {
+  /** Snapshot of the session info with the derived fields brought up to date. */
+  private infoOf(s: MockSession): SessionInfo {
     s.info.conversations = [...s.conversations.values()].map((c) => ({ ...c.summary }));
-    this.emit(s.info.id, { type: "session_changed", info: structuredClone(s.info) });
+    s.info.pending_proposals = [...s.pending.values()].map((p) => p.proposal);
+    return structuredClone(s.info);
   }
 
+  private syncConversations(s: MockSession): void {
+    this.emit(s.info.id, { type: "session_changed", info: this.infoOf(s) });
+  }
+
+  // The kernel comes up about 300 ms after open/create returned; nothing waits for it.
   private startKernel(s: MockSession): void {
     s.info.kernel = "starting";
+    const epoch = ++s.kernelEpoch;
     void (async () => {
-      await this.stream(120);
+      await this.stream(20);
+      if (!s.info.open || s.kernelEpoch !== epoch) return;
       this.emit(s.info.id, { type: "kernel_state", state: "starting", message: null });
-      await this.stream(400);
-      if (!s.info.open) return;
+      await this.stream(280);
+      if (!s.info.open || s.kernelEpoch !== epoch) return;
       s.info.kernel = "ready";
       this.emit(s.info.id, { type: "kernel_state", state: "ready", message: null });
     })();
+  }
+
+  /** Gives the seeded session a finished agent run and a stored transcript. */
+  private seedHistory(s: MockSession): void {
+    const conv = [...s.conversations.values()][0];
+    if (!conv) return;
+    const script = "scripts/decay_sim.py";
+    const args = ["--tau", "2.0"];
+    const run_id: RunId = "20261101-090000-5eed01";
+    const out_dir = `out/decay_sim/${run_id}`;
+    const started = new Date(Date.now() - 86000_000).toISOString();
+    const finished = new Date(Date.now() - 85998_000).toISOString();
+    const p = simParamsFromArgs(args);
+    const fig = decaySvg(p);
+    const figPath = `${out_dir}/figures/decay-simulation.svg`;
+    const size = encoder.encode(fig.svg).length;
+    const sidecar = {
+      run_id,
+      script,
+      args,
+      title: "Decay simulation",
+      axes: [{ title: "Decay simulation", xlabel: "t", ylabel: "y" }],
+      created_at: finished,
+      width_in: 6.4,
+      height_in: 4.4,
+      dpi: 100,
+    };
+    const stdout =
+      `Simulating n=${p.n} samples with tau=${p.tau}, amplitude=${p.amplitude}, noise=${p.noise} (seed ${p.seed})\n` +
+      `Fitting single_exp with curve_fit...\ntau_fit = ${fig.tauFit.toFixed(3)}\nresidual rms = ${fig.rms.toFixed(4)}\n`;
+    s.files.set(figPath, fig.svg);
+    s.files.set(`${figPath}.meta.json`, JSON.stringify(sidecar, null, 2));
+    s.files.set(`${out_dir}/run.json`, JSON.stringify({ run_id, script, args, started_at: started, host: "localhost", tree_hash: null }, null, 2));
+    s.runs.unshift({
+      view: {
+        meta: {
+          run_id,
+          script,
+          args,
+          status: "done",
+          exit_code: 0,
+          started_at: started,
+          finished_at: finished,
+          out_dir,
+          sandbox: s.info.sandbox ?? "none",
+          tree_hash: null,
+          pid: null,
+          host: "localhost",
+        },
+        target: s.info.target,
+        artifacts: [{ kind: "figure", path: figPath, size, created_at: finished, rendered: true, sidecar }],
+        stdout_tail: stdout,
+        stderr_tail: "",
+        conversation: conv.summary.id,
+      },
+      stdout,
+      stderr: "",
+      figures: [{ run_id, script, path: figPath, name: "decay-simulation", format: "svg", sidecar, created_at: finished, size }],
+      cancelled: false,
+      timers: [],
+    });
+    conv.summary.mode = "run";
+    conv.summary.turns = 1;
+    conv.transcript.push(
+      { ts: started, type: "user", text: "Run the decay simulation at tau = 2 and tell me whether the fit recovers it." },
+      { ts: started, type: "assistant", text: "Running the simulation with tau = 2.0. " },
+      { ts: started, type: "tool_call", id: "seed-t1", name: "run.script", arguments: { script, args } },
+      { ts: started, type: "run", run_id, script, args, target: s.info.target },
+      { ts: finished, type: "tool_result", id: "seed-t1", ok: true, result: { run_id, exit_code: 0 } },
+      { ts: finished, type: "assistant", text: `The fit recovers tau = ${fig.tauFit.toFixed(3)}, within the noise of the input value.` },
+      { ts: finished, type: "summary", text: "Ran decay_sim.py once (tau 2.0); the fit agrees with the input.", files_changed: [], runs: [run_id], figures: [figPath] },
+      { ts: finished, type: "usage", input_tokens: 2100, output_tokens: 380, model: s.info.model ?? "" },
+    );
   }
 
   private async hashOf(s: MockSession, path: string): Promise<string> {
@@ -445,7 +568,12 @@ export class MockBackend implements Backend {
     s: MockSession,
     script: string,
     args: string[],
-    opts: { residuals?: boolean; sink?: (stream: "stdout" | "stderr", chunk: string) => void; terminal?: boolean } = {},
+    opts: {
+      residuals?: boolean;
+      sink?: (stream: "stdout" | "stderr", chunk: string) => void;
+      terminal?: boolean;
+      conversation?: MockConversation;
+    } = {},
   ): { run: MockRun; done: Promise<RunView> } {
     const seq = ++s.counters.run;
     const run_id: RunId = runIdNow(seq + this.seq * 100);
@@ -471,6 +599,7 @@ export class MockBackend implements Backend {
         artifacts: [],
         stdout_tail: "",
         stderr_tail: "",
+        conversation: opts.conversation?.summary.id ?? null,
       },
       stdout: "",
       stderr: "",
@@ -479,6 +608,7 @@ export class MockBackend implements Backend {
       timers: [],
     };
     s.runs.unshift(run);
+    if (opts.conversation) opts.conversation.activeRun = run;
     s.files.set(
       `${out_dir}/run.json`,
       JSON.stringify({ run_id, script, args, started_at: run.view.meta.started_at, host: run.view.meta.host, tree_hash: null }, null, 2),
@@ -522,7 +652,8 @@ export class MockBackend implements Backend {
         height_in: 4.4,
         dpi: 100,
       };
-      s.files.set(`${out_dir}/figures/${name}.json`, JSON.stringify({ ...sidecar, seed: p.seed }, null, 2));
+      // The sidecar sits next to the figure as `<file>.meta.json`.
+      s.files.set(`${path}.meta.json`, JSON.stringify({ ...sidecar, seed: p.seed }, null, 2));
       return { run_id, script, path, name, format: "svg", sidecar, created_at: nowIso(), size: encoder.encode(svg).length };
     };
 
@@ -556,10 +687,28 @@ export class MockBackend implements Backend {
           exit = 1;
         } else {
           const p = simParamsFromArgs(args);
+          if (stem !== "decay_sim") output("stdout", `argv: ${JSON.stringify(args)}\n`);
           output("stdout", `Simulating n=${p.n} samples with tau=${p.tau}, amplitude=${p.amplitude}, noise=${p.noise} (seed ${p.seed})\n`);
           await step(220);
+          // `--flood N` (through the form's extra arguments) prints N MiB first, to exercise large outputs.
+          const flood = args.indexOf("--flood");
+          if (flood >= 0) {
+            const mib = Math.min(64, Math.max(1, Number(args[flood + 1]) || 1));
+            const line = `${"step 000000 loss=0.123456789 ".repeat(4).trimEnd()}\n`;
+            const block = line.repeat(Math.ceil((64 * 1024) / line.length));
+            for (let i = 0; i < mib * 16; i++) {
+              output("stdout", block);
+              if (i % 8 === 7) await step(1);
+            }
+          }
           output("stdout", "Fitting single_exp with curve_fit...\n");
-          await step(260);
+          // A carriage-return progress bar, as tqdm would print it.
+          for (const pct of [25, 50, 75, 100]) {
+            output("stderr", `\rfit ${String(pct).padStart(3)}%`);
+            await step(60);
+          }
+          output("stderr", "\n");
+          await step(20);
           const fig = decaySvg(p);
           output("stdout", `tau_fit = ${fig.tauFit.toFixed(3)}\n`);
           await step(180);
@@ -583,12 +732,14 @@ export class MockBackend implements Backend {
         run.view.meta.status = "cancelled";
         run.view.meta.exit_code = null;
         run.view.meta.finished_at = nowIso();
+        if (opts.conversation?.activeRun === run) opts.conversation.activeRun = null;
         this.emit(sid, { type: "run_done", run: structuredClone(run.view) });
         return structuredClone(run.view);
       }
       run.view.meta.status = "done";
       run.view.meta.exit_code = exit;
       run.view.meta.finished_at = nowIso();
+      if (opts.conversation?.activeRun === run) opts.conversation.activeRun = null;
       if (!live) this.emit(sid, { type: "run_started", run: structuredClone(run.view) });
       this.emit(sid, { type: "run_done", run: structuredClone(run.view) });
       return structuredClone(run.view);
@@ -683,15 +834,17 @@ export class MockBackend implements Backend {
       for (const tau of ["1.0", "3.0"]) {
         if (conv.cancelled) break;
         await this.toolCall(s, conv, turn, "run.script", { script: "scripts/decay_sim.py", args: ["--tau", tau] }, `started run for --tau ${tau}`);
-        const { run, done } = this.startRun(s, "scripts/decay_sim.py", ["--tau", tau]);
+        const { run, done } = this.startRun(s, "scripts/decay_sim.py", ["--tau", tau], { conversation: conv });
         conv.transcript.push({ ts: nowIso(), type: "run", run_id: run.view.meta.run_id, script: "scripts/decay_sim.py", args: ["--tau", tau], target: s.info.target });
         const view = await done;
         runs.push(view.meta.run_id);
         figures.push(...run.figures.map((f) => f.path));
+        if (conv.cancelled) break;
         await this.streamText(s, conv, turn, `Run with tau=${tau} finished with exit ${view.meta.exit_code}. `);
       }
-      await this.streamText(s, conv, turn, "\n\nBoth fits recover the input decay constant to within 2%; the residual rms tracks the noise sigma as expected.");
-      return this.finishTurn(s, conv, turn, conv.cancelled ? "Cancelled by user." : "Ran decay_sim.py twice (tau 1.0 and 3.0); fits agree with inputs.", [], runs, figures);
+      if (!conv.cancelled) await this.streamText(s, conv, turn, "\n\nBoth fits recover the input decay constant to within 2%; the residual rms tracks the noise sigma as expected.");
+      if (conv.cancelled) return this.finishTurn(s, conv, turn, "Cancelled by user.", [], runs, figures);
+      return this.finishTurn(s, conv, turn, "Ran decay_sim.py twice (tau 1.0 and 3.0); fits agree with inputs.", [], runs, figures);
     }
 
     // build mode
@@ -701,14 +854,16 @@ export class MockBackend implements Backend {
     const path = "analysis/models.py";
     const original = s.files.get(path) ?? "";
     const insertAt = original.indexOf("\n\ndef residuals(");
-    const proposed =
+    // Two separate hunks so per-chunk review has something to choose between.
+    const withModel =
       insertAt >= 0 ? original.slice(0, insertAt) + DOUBLE_EXP_SNIPPET + original.slice(insertAt) : original.trimEnd() + "\n" + DOUBLE_EXP_SNIPPET;
+    const proposed = withModel.replace(RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED);
     const proposal: ProposalView = {
       id: `p${++s.counters.proposal}`,
       conversation: cid,
       kind: "edit",
       path,
-      summary: "Add double_exp(t, A, tau1, B, tau2, C) to analysis/models.py",
+      summary: "Add double_exp(t, A, tau1, B, tau2, C) to analysis/models.py and clarify the residuals docstring",
       original,
       proposed,
       diff: unifiedDiff(path, original, proposed),
@@ -730,9 +885,10 @@ export class MockBackend implements Backend {
     await this.streamText(s, conv, turn, modified ? "Applied your edited version of the change. " : "Applied the change. ");
     await this.streamText(s, conv, turn, "Running the simulation to check the fit and the residuals. ");
     await this.toolCall(s, conv, turn, "run.script", { script: "scripts/decay_sim.py", args: ["--tau", "1.2"] }, "started run");
-    const { run, done } = this.startRun(s, "scripts/decay_sim.py", ["--tau", "1.2"], { residuals: true });
+    const { run, done } = this.startRun(s, "scripts/decay_sim.py", ["--tau", "1.2"], { residuals: true, conversation: conv });
     conv.transcript.push({ ts: nowIso(), type: "run", run_id: run.view.meta.run_id, script: "scripts/decay_sim.py", args: ["--tau", "1.2"], target: s.info.target });
     const view = await done;
+    if (conv.cancelled) return this.finishTurn(s, conv, turn, "Cancelled by user.", [path], [view.meta.run_id], []);
     await this.streamText(
       s,
       conv,
@@ -841,6 +997,9 @@ export class MockBackend implements Backend {
         t.line = "";
         this.termWrite(id, "^C\r\n");
         this.prompt(id);
+      } else if (ch === "\x12") {
+        // Ctrl+R: readline's reverse history search.
+        this.termWrite(id, "\r\n(reverse-i-search)`': ");
       } else if (ch === "\x0c") {
         this.termWrite(id, "\x1b[2J\x1b[H");
         this.prompt(id);
@@ -883,7 +1042,7 @@ export class MockBackend implements Backend {
       if (target && !TARGETS.some((t) => t.name === target)) throw ipcError("not_found", `target ${target} not configured`);
       const s = this.makeSession(repo_abs, target ?? "local", model ?? `${MODELS[0]!.provider}/${MODELS[0]!.id}`);
       this.startKernel(s);
-      return structuredClone(s.info);
+      return this.infoOf(s);
     },
 
     session_open: ({ session }) => {
@@ -893,7 +1052,7 @@ export class MockBackend implements Backend {
         s.info.last_opened_at = nowIso();
         this.startKernel(s);
       }
-      return structuredClone(s.info);
+      return this.infoOf(s);
     },
 
     session_close: ({ session }) => {
@@ -907,15 +1066,17 @@ export class MockBackend implements Backend {
         }
       }
       this.emit(session, { type: "kernel_state", state: "stopped", message: null });
+      // Subscriptions end with the session; a later unsubscribe finds nothing.
+      this.subscribers.delete(session);
       return null;
     },
 
-    session_info: ({ session }) => structuredClone(this.requireSession(session).info),
+    session_info: ({ session }) => this.infoOf(this.requireSession(session)),
 
     session_rename: ({ session, name }) => {
       const s = this.requireSession(session);
       s.info.name = name;
-      this.emit(session, { type: "session_changed", info: structuredClone(s.info) });
+      this.emit(session, { type: "session_changed", info: this.infoOf(s) });
       return this.summary(s);
     },
 
@@ -940,15 +1101,15 @@ export class MockBackend implements Backend {
           s.info.sandbox = t.sandbox;
           s.info.kernel = "ready";
           this.emit(session, { type: "kernel_state", state: "ready", message: null });
-          this.emit(session, { type: "session_changed", info: structuredClone(s.info) });
+          this.emit(session, { type: "session_changed", info: this.infoOf(s) });
         },
       );
     },
 
     session_set_policy: ({ session, policy }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       s.info.policy = { ...s.info.policy, ...policy };
-      this.emit(session, { type: "session_changed", info: structuredClone(s.info) });
+      this.emit(session, { type: "session_changed", info: this.infoOf(s) });
       return { ...s.info.policy };
     },
 
@@ -958,10 +1119,10 @@ export class MockBackend implements Backend {
       return null;
     },
 
-    fs_tree: ({ session, path, depth }) => this.tree(this.requireSession(session), path ?? "", depth ?? 1),
+    fs_tree: ({ session, path, depth }) => this.tree(this.requireOpen(session), path ?? "", depth ?? 1),
 
     fs_read: async ({ session, path }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const content = s.files.get(path);
       if (content === undefined) throw ipcError("not_found", `${path} not found`);
       if (/\.(png|pdf|npy|npz|parquet)$/.test(path)) throw ipcError("invalid", `${path} is binary`);
@@ -969,7 +1130,7 @@ export class MockBackend implements Backend {
     },
 
     fs_read_binary: ({ session, path }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const content = s.files.get(path);
       if (content === undefined) throw ipcError("not_found", `${path} not found`);
       const mime = path.endsWith(".svg") ? "image/svg+xml" : path.endsWith(".json") ? "application/json" : "text/plain";
@@ -977,7 +1138,7 @@ export class MockBackend implements Backend {
     },
 
     fs_write: async ({ session, path, content, expected_hash }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       if (expected_hash !== undefined && s.files.has(path)) {
         const current = await this.hashOf(s, path);
         if (current !== expected_hash) throw ipcError("conflict", `${path} changed on disk`, { hash: current });
@@ -986,7 +1147,7 @@ export class MockBackend implements Backend {
     },
 
     fs_create: ({ session, path, is_dir }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       if (is_dir) {
         const keep = `${path.replace(/\/$/, "")}/.gitkeep`;
         if (![...s.files.keys()].some((k) => k.startsWith(`${path}/`))) s.files.set(keep, "");
@@ -999,7 +1160,7 @@ export class MockBackend implements Backend {
     },
 
     fs_delete: ({ session, path }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const removed: string[] = [];
       for (const key of [...s.files.keys()]) {
         if (key === path || key.startsWith(`${path}/`)) {
@@ -1015,7 +1176,7 @@ export class MockBackend implements Backend {
     },
 
     fs_rename: ({ session, from, to }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const moved: string[] = [];
       for (const key of [...s.files.keys()]) {
         if (key === from || key.startsWith(`${from}/`)) {
@@ -1034,7 +1195,7 @@ export class MockBackend implements Backend {
     },
 
     fs_search: ({ session, pattern, glob, max_results }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       let re: RegExp;
       try {
         re = new RegExp(pattern, "i");
@@ -1054,8 +1215,9 @@ export class MockBackend implements Backend {
       return hits.slice(0, max_results ?? 200);
     },
 
+    // The index comes from the kernel: `kernel_offline` until it is ready.
     index_get: ({ session }) => {
-      const s = this.requireSession(session);
+      const s = this.requireKernel(session);
       const scripts = [...s.files.entries()].filter(([p]) => p.startsWith("scripts/") && p.endsWith(".py")).map(([p, c]) => parseScript(p, c));
       return { scripts, library: indexLibrary(s.files) };
     },
@@ -1075,23 +1237,23 @@ export class MockBackend implements Backend {
     },
 
     run_cancel: ({ session, run_id }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const run = s.runs.find((r) => r.view.meta.run_id === run_id);
       if (!run) throw ipcError("not_found", `run ${run_id} not found`);
       if (run.view.meta.status === "running") run.cancelled = true;
       return null;
     },
 
-    runs_list: ({ session, limit }) => this.requireSession(session).runs.slice(0, limit ?? 100).map((r) => structuredClone(r.view)),
+    runs_list: ({ session, limit }) => this.requireOpen(session).runs.slice(0, limit ?? 100).map((r) => structuredClone(r.view)),
 
     run_get: ({ session, run_id }) => {
-      const run = this.requireSession(session).runs.find((r) => r.view.meta.run_id === run_id);
+      const run = this.requireOpen(session).runs.find((r) => r.view.meta.run_id === run_id);
       if (!run) throw ipcError("not_found", `run ${run_id} not found`);
       return { ...structuredClone(run.view), stdout: run.stdout, stderr: run.stderr };
     },
 
     out_list: ({ session, path, run_id }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const run = run_id ? s.runs.find((r) => r.view.meta.run_id === run_id) : undefined;
       const prefix = run ? run.view.meta.out_dir : (path ?? "out");
       const entries = [...s.files.entries()]
@@ -1106,7 +1268,7 @@ export class MockBackend implements Backend {
     },
 
     out_read: ({ session, path, max_bytes }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const content = s.files.get(path);
       if (content === undefined) throw ipcError("not_found", `${path} not found`);
       const max = max_bytes ?? 16384;
@@ -1114,10 +1276,10 @@ export class MockBackend implements Backend {
       return { kind, preview: content.slice(0, max), truncated: content.length > max, summary: null };
     },
 
-    figures_list: ({ session, limit }) => this.figureGroups(this.requireSession(session), limit),
+    figures_list: ({ session, limit }) => this.figureGroups(this.requireOpen(session), limit),
 
     figure_data: ({ session, path }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const content = s.files.get(path);
       if (content === undefined) throw ipcError("not_found", `${path} not found`);
       return { mime: path.endsWith(".svg") ? "image/svg+xml" : "application/octet-stream", base64: base64Utf8(content) };
@@ -1142,7 +1304,7 @@ export class MockBackend implements Backend {
       return { status: "agree", trials: 32, max_abs_err: 3.1e-12, max_rel_err: 8.4e-13, counterexample: null, reason: null };
     },
 
-    env_packages: ({ session }) => this.requireSession(session).packages.map((p) => ({ ...p })),
+    env_packages: ({ session }) => this.requireOpen(session).packages.map((p) => ({ ...p })),
 
     env_add: ({ session, packages }) => {
       const s = this.requireOpen(session);
@@ -1170,12 +1332,13 @@ export class MockBackend implements Backend {
     },
 
     conversation_new: ({ session, title }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const id = `${session}-c${s.conversations.size + 1 + s.counters.conv++}`;
       const conv: MockConversation = {
         summary: { id, title: title ?? `Conversation ${s.conversations.size + 1}`, model: s.info.model, mode: "build", created_at: nowIso(), turns: 0, busy: false },
         transcript: [],
         cancelled: false,
+        activeRun: null,
       };
       s.conversations.set(id, conv);
       s.info.active_conversation = id;
@@ -1184,7 +1347,7 @@ export class MockBackend implements Backend {
     },
 
     conversation_select: ({ session, conversation }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       if (!s.conversations.has(conversation)) throw ipcError("not_found", `conversation ${conversation} not found`);
       s.info.active_conversation = conversation;
       this.syncConversations(s);
@@ -1192,7 +1355,7 @@ export class MockBackend implements Backend {
     },
 
     conversation_transcript: ({ session, conversation }) => {
-      const conv = this.requireSession(session).conversations.get(conversation);
+      const conv = this.requireOpen(session).conversations.get(conversation);
       if (!conv) throw ipcError("not_found", `conversation ${conversation} not found`);
       return structuredClone(conv.transcript);
     },
@@ -1214,10 +1377,12 @@ export class MockBackend implements Backend {
     },
 
     chat_cancel: ({ session, conversation }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const conv = s.conversations.get(conversation);
       if (!conv) throw ipcError("not_found", `conversation ${conversation} not found`);
       conv.cancelled = true;
+      // IPC.md section 7: cancelling a turn also cancels the run it started.
+      if (conv.activeRun && conv.activeRun.view.meta.status === "running") conv.activeRun.cancelled = true;
       for (const [id, pending] of s.pending) {
         if (pending.proposal.conversation !== conversation) continue;
         s.pending.delete(id);
@@ -1228,7 +1393,7 @@ export class MockBackend implements Backend {
     },
 
     chat_set_mode: ({ session, conversation, mode }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const conv = s.conversations.get(conversation);
       if (!conv) throw ipcError("not_found", `conversation ${conversation} not found`);
       conv.summary.mode = mode;
@@ -1237,7 +1402,7 @@ export class MockBackend implements Backend {
     },
 
     chat_set_model: ({ session, conversation, model }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const conv = s.conversations.get(conversation);
       if (!conv) throw ipcError("not_found", `conversation ${conversation} not found`);
       if (!MODELS.some((m) => `${m.provider}/${m.id}` === model)) throw ipcError("not_found", `model ${model} not configured`);
@@ -1248,7 +1413,7 @@ export class MockBackend implements Backend {
     },
 
     proposal_respond: ({ session, proposal_id, decision }) => {
-      const s = this.requireSession(session);
+      const s = this.requireOpen(session);
       const pending = s.pending.get(proposal_id);
       if (!pending) throw ipcError("not_found", `proposal ${proposal_id} already resolved`);
       s.pending.delete(proposal_id);
@@ -1309,6 +1474,24 @@ export class MockBackend implements Backend {
         this.terminals.delete(terminal_id);
         this.emit(t.session, { type: "terminal_exit", terminal_id, code: 0 });
       }
+      return null;
+    },
+
+    provider_keys_status: (): ProviderKeyStatus[] =>
+      this.providers.map((p) => {
+        const env = p.api_key_env !== null && p.env_set;
+        return {
+          provider: p.provider,
+          has_key: env || p.stored !== null,
+          source: env ? "env" : p.stored !== null ? "stored" : null,
+          api_key_env: p.api_key_env,
+        };
+      }),
+
+    provider_key_set: ({ provider, key }) => {
+      const p = this.providers.find((x) => x.provider === provider);
+      if (!p) throw ipcError("not_found", `provider ${provider} not configured`);
+      p.stored = key === "" ? null : key;
       return null;
     },
 

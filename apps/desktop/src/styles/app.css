@@ -783,6 +783,10 @@ a {
 .terminal-host .xterm {
   height: 100%;
 }
+/* xterm paints its viewport black by default; the strip below the last full row should match the theme. */
+.terminal-host .xterm-viewport {
+  background-color: transparent !important;
+}
 
 /* ---- run output ---- */
 .run-output {
@@ -804,13 +808,68 @@ a {
   color: var(--fg-muted);
   border-bottom: 1px solid var(--border);
 }
-.run-stream pre {
+.output-view {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
 }
-.run-stream.stderr pre {
+.output-sizer {
+  position: relative;
+  min-width: max-content;
+}
+.output-window {
+  will-change: transform;
+}
+/* The height must match ROW_HEIGHT in OutputView.tsx. */
+.output-row {
+  height: 18px;
+  line-height: 18px;
+  white-space: pre;
+}
+.run-stream.stderr .output-view {
   color: var(--error);
+}
+.error-boundary pre {
+  white-space: pre-wrap;
+  color: var(--error);
+}
+.badge.unsandboxed {
+  cursor: help;
+}
+.provider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.command-line {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  background: var(--bg-active);
+  border-radius: 3px;
+  padding: 4px 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.form-error {
+  color: var(--error);
+  font-size: var(--font-size-small);
+}
+.terminal-stack {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+}
+.terminal-stack > .terminal-host {
+  position: absolute;
+  inset: 0;
+}
+.terminal-stack > .terminal-host.hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* ---- tables ---- */

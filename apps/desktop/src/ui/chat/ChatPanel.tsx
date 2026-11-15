@@ -3,6 +3,7 @@ import { backend } from "../../ipc";
 import type { Mode } from "../../ipc";
 import { newConversation, selectConversation } from "../../state/actions";
 import { useChat, useConversation } from "../../state/chat";
+import { loadTranscript } from "../../state/loaders";
 import { useActiveSession, useSessionInfo, useSessions } from "../../state/sessions";
 import { notifyError } from "../../state/ui";
 import { MessageText } from "./MessageText";
@@ -24,9 +25,12 @@ export function ChatPanel() {
   const summary = info?.conversations.find((c) => c.id === conversationId) ?? null;
   const listRef = useRef<HTMLDivElement>(null);
 
+  // First display of a conversation: map its stored transcript into chat items.
   useEffect(() => {
-    if (conversationId) useChat.getState().ensure(conversationId);
-  }, [conversationId]);
+    if (!session || !conversationId) return;
+    useChat.getState().ensure(conversationId);
+    if (!conv.loaded) void loadTranscript(session, conversationId).catch(notifyError);
+  }, [session, conversationId, conv.loaded]);
 
   useEffect(() => {
     const el = listRef.current;

@@ -1,4 +1,4 @@
-import { Compartment, EditorState } from "@codemirror/state";
+import { EditorState } from "@codemirror/state";
 import { setDiagnostics } from "@codemirror/lint";
 import { EditorView } from "@codemirror/view";
 import type { IDockviewPanelProps } from "dockview-react";
@@ -10,7 +10,8 @@ import { useActiveSession } from "../../state/sessions";
 import { notifyError } from "../../state/ui";
 import { fileName } from "../workbench/controller";
 import { registerEditorView } from "./registry";
-import { baseExtensions, languageFor, toCmDiagnostics } from "./codemirror";
+import { toCmDiagnostics } from "./codemirror";
+import { createEditorState } from "./editorState";
 
 export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string }>) {
   const path = params.path;
@@ -20,7 +21,6 @@ export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string 
   const reveal = useFiles((s) => (session ? s.reveal[session] : null));
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const languageRef = useRef(new Compartment());
   const appliedRevision = useRef(-1);
 
   useEffect(() => {
@@ -31,20 +31,10 @@ export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string 
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !session) return;
-    const view = new EditorView({
-      state: EditorState.create({
-        doc: "",
-        extensions: [
-          baseExtensions(),
-          languageRef.current.of(languageFor(path)),
-          EditorView.updateListener.of((u) => {
-            if (u.docChanged) useFiles.getState().updateContent(session, path, u.state.doc.toString());
-          }),
-        ],
-      }),
-      parent: host,
-    });
+    // Empty and read-only until the buffer arrives; the real state replaces it below.
+    const view = new EditorView({ state: EditorState.create({ doc: "", extensions: [EditorState.readOnly.of(true)] }), parent: host });
     viewRef.current = view;
+    appliedRevision.current = -1;
     const unregister = registerEditorView(path, view);
     return () => {
       unregister();
@@ -59,11 +49,10 @@ export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string 
     if (!view || !buffer || buffer.loading) return;
     if (buffer.revision === appliedRevision.current) return;
     appliedRevision.current = buffer.revision;
-    const current = view.state.doc.toString();
-    if (current !== buffer.content) {
-      view.dispatch({ changes: { from: 0, to: current.length, insert: buffer.content } });
-    }
-  }, [buffer]);
+    if (!session) return;
+    // A fresh state, not a transaction: the load must not be on the undo stack.
+    view.setState(createEditorState(path, buffer.content, buffer.lineSeparator, (text) => useFiles.getState().updateContent(session, path, text)));
+  }, [buffer, session, path]);
 
   useEffect(() => {
     const view = viewRef.current;

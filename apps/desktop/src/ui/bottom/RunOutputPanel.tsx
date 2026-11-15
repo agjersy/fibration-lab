@@ -1,12 +1,21 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { backend } from "../../ipc";
 import type { RunView } from "../../ipc";
 import { loadRunOutput } from "../../state/actions";
 import { useRuns } from "../../state/runs";
 import { useActiveSession } from "../../state/sessions";
+import { MAX_OUTPUT_CHARS, outputFromText } from "../../state/outputText";
 import { notifyError } from "../../state/ui";
 import { formatBytes, formatDuration, shortArgs } from "../common/format";
 import { openFile, showPanel } from "../workbench/controller";
+import { OutputView } from "./OutputView";
+
+/** Complete output fetched on request; kept in the panel, not in the store. */
+interface FullOutput {
+  run_id: string;
+  stdout: string;
+  stderr: string;
+}
 
 const NO_RUNS: RunView[] = [];
 
@@ -16,6 +25,8 @@ export function RunOutputPanel() {
   const selected = useRuns((s) => (session ? (s.selectedRun[session] ?? null) : null));
   const run = runs.find((r) => r.meta.run_id === selected) ?? runs[0];
   const output = useRuns((s) => (run ? s.output[run.meta.run_id] : undefined));
+  const [full, setFull] = useState<FullOutput | null>(null);
+  const [loadingFull, setLoadingFull] = useState(false);
 
   useEffect(() => {
     if (session && run && !output && run.meta.status !== "running") void loadRunOutput(session, run.meta.run_id).catch(() => undefined);
@@ -24,8 +35,25 @@ export function RunOutputPanel() {
   if (!session) return <div className="empty">No session</div>;
   if (!run) return <div className="empty">No runs yet. Start one from the Scripts view or the chat.</div>;
   const status = run.meta.status === "done" && run.meta.exit_code !== 0 ? "exit" : run.meta.status;
-  const stdout = output?.stdout ?? run.stdout_tail;
-  const stderr = output?.stderr ?? run.stderr_tail;
+  const showingFull = full !== null && full.run_id === run.meta.run_id;
+  const stdout = showingFull ? full.stdout : (output?.stdout.text ?? run.stdout_tail);
+  const stderr = showingFull ? full.stderr : (output?.stderr.text ?? run.stderr_tail);
+  const dropped = showingFull ? 0 : (output?.stdout.dropped ?? 0) + (output?.stderr.dropped ?? 0);
+
+  const showFull = () => {
+    setLoadingFull(true);
+    backend()
+      .invoke("run_get", { session, run_id: run.meta.run_id })
+      .then((r) =>
+        setFull({
+          run_id: r.meta.run_id,
+          stdout: outputFromText(r.stdout, Number.MAX_SAFE_INTEGER).text,
+          stderr: outputFromText(r.stderr, Number.MAX_SAFE_INTEGER).text,
+        }),
+      )
+      .catch(notifyError)
+      .finally(() => setLoadingFull(false));
+  };
 
   const openArtifact = (path: string, kind: string) => {
     if (kind === "figure") {
@@ -73,15 +101,33 @@ export function RunOutputPanel() {
           </button>
         ))}
       </div>
+      {dropped > 0 ? (
+        <div className="editor-banner" role="status" data-testid="output-truncated">
+          <span className="grow">
+            Showing the last {formatBytes(MAX_OUTPUT_CHARS)} per stream; {formatBytes(dropped)} of earlier output is not shown.
+          </span>
+          <button type="button" className="small" onClick={showFull} disabled={loadingFull}>
+            {loadingFull ? "Loading…" : "Show full output"}
+          </button>
+        </div>
+      ) : null}
+      {showingFull ? (
+        <div className="editor-banner" role="status">
+          <span className="grow">Showing the full output as of when it was loaded.</span>
+          <button type="button" className="small" onClick={() => setFull(null)}>
+            Back to live tail
+          </button>
+        </div>
+      ) : null}
       <div className="panel-body">
         <div className="run-output">
           <div className="run-stream stdout">
             <div className="run-stream-title">stdout</div>
-            <pre data-testid="run-stdout">{stdout || " "}</pre>
+            <OutputView text={stdout} testId="run-stdout" />
           </div>
           <div className="run-stream stderr">
             <div className="run-stream-title">stderr</div>
-            <pre data-testid="run-stderr">{stderr || " "}</pre>
+            <OutputView text={stderr} testId="run-stderr" />
           </div>
         </div>
       </div>

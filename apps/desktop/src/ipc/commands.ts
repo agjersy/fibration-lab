@@ -1,4 +1,4 @@
-// Command table from docs/IPC.md section 4. Argument names are exact (snake_case).
+// Command table from docs/IPC.md sections 4 and 7. Argument names are exact (snake_case).
 import type {
   AppInfo,
   Attachment,
@@ -20,6 +20,8 @@ import type {
   PolicyView,
   ProposalDecision,
   ProposalId,
+  ProviderKeyStatus,
+  RunDetail,
   RunId,
   RunView,
   SearchHit,
@@ -63,7 +65,7 @@ export interface Commands {
   run_start: { args: S & { script: string; args: string[]; network?: boolean }; result: RunView };
   run_cancel: { args: S & { run_id: RunId }; result: null };
   runs_list: { args: S & { limit?: number }; result: RunView[] };
-  run_get: { args: S & { run_id: RunId }; result: RunView & { stdout: string; stderr: string } };
+  run_get: { args: S & { run_id: RunId }; result: RunDetail };
   out_list: { args: S & { path?: string; run_id?: RunId }; result: OutListResult };
   out_read: { args: S & { path: string; max_bytes?: number }; result: OutReadResult };
   figures_list: { args: S & { limit?: number }; result: FigureGroup[] };
@@ -90,6 +92,8 @@ export interface Commands {
   terminal_write: { args: { terminal_id: TerminalId; data: string }; result: null };
   terminal_resize: { args: { terminal_id: TerminalId; cols: number; rows: number }; result: null };
   terminal_close: { args: { terminal_id: TerminalId }; result: null };
+  provider_keys_status: { args: Record<string, never>; result: ProviderKeyStatus[] };
+  provider_key_set: { args: { provider: string; key: string }; result: null };
   dialog_pick_directory: { args: { title?: string }; result: string | null };
 }
 

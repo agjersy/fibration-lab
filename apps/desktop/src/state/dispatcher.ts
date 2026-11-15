@@ -1,18 +1,27 @@
-// Applies SessionEvents (IPC.md section 3) to the stores. One subscription per
-// open session; events for sessions that are not active still update state.
+// Applies SessionEvents (IPC.md section 3 and 7) to the stores. One
+// subscription per open session; events for sessions that are not active
+// still update state.
 import { backend } from "../ipc";
 import type { SessionEvent, SessionId } from "../ipc";
 import { useChat } from "./chat";
 import { useDiagnostics } from "./diagnostics";
+import { noteEvent } from "./eventSeq";
 import { useFiles } from "./files";
 import { checkExternalChanges } from "./fileWatch";
-import { useRuns } from "./runs";
+import { applySessionInfo, reconcileRun, refreshIndex, reloadDirsSoon, resyncSession } from "./loaders";
+import { flushRunOutput, queueRunOutput, useRuns } from "./runs";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
-import { deliverTerminalData, dropTerminalBuffers, useTerminals } from "./terminals";
+import { deliverTerminalData, dropTerminal, useTerminals } from "./terminals";
 import { useUi } from "./ui";
 
+/** Background refetches must never surface as unhandled rejections. */
+function quietly(p: Promise<unknown>): void {
+  p.catch(() => undefined);
+}
+
 export function applyEvent(session: SessionId, e: SessionEvent): void {
+  noteEvent(session, e.type);
   switch (e.type) {
     case "agent_text":
       useChat.getState().appendText(e.conversation, e.turn, e.delta);
@@ -46,48 +55,59 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
         context_used: e.context_used,
       });
       break;
-    case "run_started": {
+    case "run_started":
       useRuns.getState().upsertRun(session, e.run);
-      // Runs have no conversation id; a run that starts while a conversation
-      // of this session is busy is shown as a card in that conversation.
-      const info = useSessions.getState().infos[session];
-      const chat = useChat.getState();
-      const busy = info?.conversations.map((c) => c.id).find((id) => chat.conversations[id]?.busy);
-      if (busy) chat.addRun(busy, e.run.meta.run_id);
+      // The run names the conversation whose turn started it; manual and
+      // terminal runs (null) get no chat card.
+      if (e.run.conversation) useChat.getState().addRun(e.run.conversation, e.run.meta.run_id);
       break;
-    }
     case "run_output":
-      useRuns.getState().appendOutput(e.run_id, e.stream, e.chunk);
+      queueRunOutput(e.run_id, e.stream, e.chunk);
       break;
     case "run_artifact":
       useRuns.getState().addArtifact(session, e.run_id, e.artifact, e.figure);
       break;
     case "run_done":
+      flushRunOutput();
       useRuns.getState().upsertRun(session, e.run);
+      if (e.run.conversation) useChat.getState().addRun(e.run.conversation, e.run.meta.run_id);
+      // Output chunks may have been coalesced or dropped on the way; the
+      // finished run is read once more so status, artifacts and output agree
+      // with what the backend recorded.
+      quietly(reconcileRun(session, e.run.meta.run_id));
       break;
     case "diagnostics":
       useDiagnostics.getState().replace(session, e.paths, e.diagnostics);
       break;
     case "files_changed": {
-      const files = useFiles.getState();
-      files.invalidateDirs(session, e.paths);
+      reloadDirsSoon(session, useFiles.getState().invalidateDirs(session, e.paths));
       void checkExternalChanges(session, e.paths);
-      if (e.paths.some((p) => p.endsWith(".py"))) files.markIndexStale(session);
+      if (e.paths.some((p) => p.endsWith(".py"))) {
+        useFiles.getState().markIndexStale(session);
+        quietly(refreshIndex(session));
+      }
       break;
     }
     case "index_changed":
       useFiles.getState().markIndexStale(session);
+      quietly(refreshIndex(session));
       break;
     case "terminal_data":
       deliverTerminalData(e.terminal_id, e.data);
       break;
-    case "terminal_exit":
-      useTerminals.getState().exited(e.terminal_id, e.code);
-      dropTerminalBuffers(e.terminal_id);
+    case "terminal_exit": {
+      const known = Object.values(useTerminals.getState().terminals).some((list) => list.some((t) => t.id === e.terminal_id));
+      // A terminal whose tab is still open keeps its screen so the scrollback
+      // stays readable; one that was already closed is released.
+      if (known) useTerminals.getState().exited(e.terminal_id, e.code);
+      else dropTerminal(e.terminal_id);
       break;
+    }
     case "kernel_state":
       useSessions.getState().setKernel(session, e.state, e.message);
       if (e.state === "error" && e.message) useUi.getState().toast("error", `Kernel error: ${e.message}`);
+      // The index needs the kernel: fetch it as soon as the kernel is up.
+      if (e.state === "ready") quietly(refreshIndex(session));
       break;
     case "packages_changed":
       bumpPackages(session);
@@ -99,7 +119,10 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
       useTasks.getState().done(e.task_id, e.ok, e.message);
       break;
     case "session_changed":
-      useSessions.getState().setInfo(e.info);
+      applySessionInfo(e.info, false);
+      break;
+    case "resync":
+      quietly(resyncSession(session));
       break;
   }
 }
@@ -116,19 +139,63 @@ function bumpPackages(session: SessionId): void {
   for (const fn of packageListeners) fn(session);
 }
 
-const subscriptions = new Map<SessionId, () => void>();
+interface Subscription {
+  ready: Promise<void>;
+  unsubscribe: (() => void) | null;
+  cancelled: boolean;
+}
 
-export async function subscribeSession(session: SessionId): Promise<void> {
-  if (subscriptions.has(session)) return;
-  subscriptions.set(session, () => undefined);
-  const unsubscribe = await backend().subscribe(session, (e) => applyEvent(session, e));
-  subscriptions.set(session, unsubscribe);
+const subscriptions = new Map<SessionId, Subscription>();
+
+/**
+ * Opens the event channel of an open session (call `session_open` first:
+ * subscribing to a session that is not open is `not_found`). Concurrent calls
+ * share one subscription; a failed attempt leaves nothing behind, so the next
+ * call tries again.
+ */
+export function subscribeSession(session: SessionId): Promise<void> {
+  const existing = subscriptions.get(session);
+  if (existing) return existing.ready;
+  const sub: Subscription = { ready: Promise.resolve(), unsubscribe: null, cancelled: false };
+  sub.ready = backend()
+    .subscribe(session, (e) => {
+      if (!sub.cancelled) applyEvent(session, e);
+    })
+    .then(
+      (unsubscribe) => {
+        if (sub.cancelled) callUnsubscribe(unsubscribe);
+        else sub.unsubscribe = unsubscribe;
+      },
+      (e: unknown) => {
+        if (subscriptions.get(session) === sub) subscriptions.delete(session);
+        throw e;
+      },
+    );
+  subscriptions.set(session, sub);
+  return sub.ready;
+}
+
+function callUnsubscribe(unsubscribe: () => void): void {
+  try {
+    unsubscribe();
+  } catch {
+    // The backend drops subscriptions when a session closes; a redundant unsubscribe is harmless.
+  }
 }
 
 export function unsubscribeSession(session: SessionId): void {
-  const un = subscriptions.get(session);
-  if (un) {
-    un();
-    subscriptions.delete(session);
-  }
+  const sub = subscriptions.get(session);
+  if (!sub) return;
+  subscriptions.delete(session);
+  sub.cancelled = true;
+  if (sub.unsubscribe) callUnsubscribe(sub.unsubscribe);
+}
+
+export function isSubscribed(session: SessionId): boolean {
+  return subscriptions.has(session);
+}
+
+/** Drops every subscription (tests, and a full renderer reset). */
+export function unsubscribeAll(): void {
+  for (const session of [...subscriptions.keys()]) unsubscribeSession(session);
 }

@@ -4,7 +4,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 import { backend } from "../../ipc";
 import type { TerminalId } from "../../ipc";
-import { attachTerminalSink } from "../../state/terminals";
+import { attachTerminalSink, registerTerminalDisposer } from "../../state/terminals";
 import { useResolvedTheme } from "../theme";
 
 function themeFor(dark: boolean) {
@@ -13,56 +13,97 @@ function themeFor(dark: boolean) {
     : { background: "#ffffff", foreground: "#2b2b2b", cursor: "#2b2b2b", selectionBackground: "#cfe0fa" };
 }
 
-export default function XtermView({ terminalId, exited }: { terminalId: TerminalId; exited: number | null | undefined }) {
+// One xterm per terminal id, alive from first display until the terminal is
+// closed. React components only attach its element to their host; switching
+// tabs, docks or sessions never recreates the screen, so scrollback and
+// output that arrives while hidden are kept.
+interface Entry {
+  term: Terminal;
+  fit: FitAddon;
+  element: HTMLDivElement;
+  exitShown: boolean;
+}
+
+const entries = new Map<TerminalId, Entry>();
+
+function entryFor(id: TerminalId, dark: boolean): Entry {
+  const existing = entries.get(id);
+  if (existing) return existing;
+  const element = document.createElement("div");
+  element.className = "xterm-holder";
+  element.style.height = "100%";
+  const term = new Terminal({
+    cursorBlink: true,
+    convertEol: false,
+    fontFamily: '"SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: 12.5,
+    scrollback: 5000,
+    theme: themeFor(dark),
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(element);
+  const detach = attachTerminalSink(id, (data) => term.write(data));
+  // Writes are serialised and coalesced so keystrokes cannot overtake each
+  // other on the way to the pty.
+  let pending = "";
+  let inflight = false;
+  const flush = () => {
+    if (inflight || pending === "") return;
+    const data = pending;
+    pending = "";
+    inflight = true;
+    backend()
+      .invoke("terminal_write", { terminal_id: id, data })
+      .catch(() => undefined)
+      .finally(() => {
+        inflight = false;
+        flush();
+      });
+  };
+  const onData = term.onData((data) => {
+    pending += data;
+    flush();
+  });
+  const onResize = term.onResize(({ cols, rows }) => {
+    backend()
+      .invoke("terminal_resize", { terminal_id: id, cols, rows })
+      .catch(() => undefined);
+  });
+  const entry: Entry = { term, fit, element, exitShown: false };
+  entries.set(id, entry);
+  registerTerminalDisposer(id, () => {
+    entries.delete(id);
+    onData.dispose();
+    onResize.dispose();
+    detach();
+    term.dispose();
+    element.remove();
+  });
+  return entry;
+}
+
+interface XtermViewProps {
+  terminalId: TerminalId;
+  exited: number | null | undefined;
+  /** Hidden terminals stay mounted (and keep receiving output) but are not fitted or focused. */
+  visible: boolean;
+}
+
+export default function XtermView({ terminalId, exited, visible }: XtermViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<Terminal | null>(null);
   const theme = useResolvedTheme();
+  const dark = theme === "dark";
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const term = new Terminal({
-      cursorBlink: true,
-      convertEol: false,
-      fontFamily: '"SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      fontSize: 12.5,
-      scrollback: 5000,
-      theme: themeFor(theme === "dark"),
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-    termRef.current = term;
-    const detach = attachTerminalSink(terminalId, (data) => term.write(data));
-    // Writes are serialised and coalesced so keystrokes cannot overtake each
-    // other on the way to the pty.
-    let pending = "";
-    let inflight = false;
-    const flush = () => {
-      if (inflight || pending === "") return;
-      const data = pending;
-      pending = "";
-      inflight = true;
-      backend()
-        .invoke("terminal_write", { terminal_id: terminalId, data })
-        .catch(() => undefined)
-        .finally(() => {
-          inflight = false;
-          flush();
-        });
-    };
-    const onData = term.onData((data) => {
-      pending += data;
-      flush();
-    });
-    const onResize = term.onResize(({ cols, rows }) => {
-      backend()
-        .invoke("terminal_resize", { terminal_id: terminalId, cols, rows })
-        .catch(() => undefined);
-    });
+    const entry = entryFor(terminalId, dark);
+    host.appendChild(entry.element);
     const doFit = () => {
+      if (host.clientWidth === 0 || host.clientHeight === 0) return;
       try {
-        fit.fit();
+        entry.fit.fit();
       } catch {
         // host not laid out yet
       }
@@ -70,27 +111,38 @@ export default function XtermView({ terminalId, exited }: { terminalId: Terminal
     const observer = new ResizeObserver(doFit);
     observer.observe(host);
     doFit();
-    term.focus();
     return () => {
       observer.disconnect();
-      onData.dispose();
-      onResize.dispose();
-      detach();
-      term.dispose();
-      termRef.current = null;
+      // Detach the screen but keep the instance; the registry disposes it when the terminal closes.
+      if (entry.element.parentElement === host) host.removeChild(entry.element);
     };
-    // The terminal is created once; theme changes are applied below.
+    // The theme is applied by the effect below; it must not re-attach the screen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terminalId]);
 
   useEffect(() => {
-    const term = termRef.current;
-    if (term) term.options.theme = themeFor(theme === "dark");
-  }, [theme]);
+    const entry = entries.get(terminalId);
+    if (entry) entry.term.options.theme = themeFor(dark);
+  }, [terminalId, dark]);
 
   useEffect(() => {
-    if (exited !== undefined) termRef.current?.write(`\r\n\x1b[90m[process exited${exited === null ? "" : ` with code ${exited}`}]\x1b[0m\r\n`);
-  }, [exited]);
+    if (!visible) return;
+    const entry = entries.get(terminalId);
+    if (!entry) return;
+    try {
+      entry.fit.fit();
+    } catch {
+      // not laid out
+    }
+    entry.term.focus();
+  }, [terminalId, visible]);
 
-  return <div className="terminal-host" ref={hostRef} data-testid="xterm" />;
+  useEffect(() => {
+    const entry = entries.get(terminalId);
+    if (exited === undefined || !entry || entry.exitShown) return;
+    entry.exitShown = true;
+    entry.term.write(`\r\n\x1b[90m[process exited${exited === null ? "" : ` with code ${exited}`}]\x1b[0m\r\n`);
+  }, [terminalId, exited]);
+
+  return <div className={`terminal-host${visible ? "" : " hidden"}`} ref={hostRef} data-testid={visible ? "xterm" : "xterm-hidden"} />;
 }

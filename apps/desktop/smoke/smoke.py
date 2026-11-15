@@ -77,8 +77,12 @@ def main() -> int:
         assert "decay_sim.py" in caption and "--tau" not in caption, f"latest figure is not from this run: {caption!r}"
         print(f"[{time.time()-t0:5.1f}s] figure from this run rendered: {caption.strip()}")
         d.screenshot(os.path.join(a.out, "smoke-workbench.png"))
-        errors = d.execute("return (window.__analystErrors || []).length")
-        print(f"[{time.time()-t0:5.1f}s] screenshot saved; page errors: {errors}")
+        # main.tsx installs the collector (uncaught errors and unhandled rejections). A missing
+        # collector is a failure too: "no errors" must not be vacuous.
+        errors = d.execute("return Array.isArray(window.__analystErrors) ? window.__analystErrors : null")
+        assert errors is not None, "window.__analystErrors is not defined: the app's error collector did not load"
+        print(f"[{time.time()-t0:5.1f}s] screenshot saved; page errors: {len(errors)}")
+        assert errors == [], "page errors:\n" + "\n".join(str(e) for e in errors)
         return 0
     except Exception as e:  # noqa: BLE001
         try:

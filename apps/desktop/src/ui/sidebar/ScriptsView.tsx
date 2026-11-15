@@ -1,90 +1,146 @@
-import { useEffect, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type { OptionInfo, ScriptInfo } from "../../ipc";
 import { refreshIndex, runScript } from "../../state/actions";
-import { useFiles, useIndex } from "../../state/files";
+import { useIndex } from "../../state/files";
 import { useRuns } from "../../state/runs";
 import { useActiveSession, useKernel } from "../../state/sessions";
 import { notifyError } from "../../state/ui";
 import { formatDuration } from "../common/format";
 import { openFile, showPanel } from "../workbench/controller";
+import { boolFlags, buildArgs, commandLine, defaultText, isPositional, optionKind, primaryFlag, pruneOverrides } from "./runForm";
+import type { Overrides } from "./runForm";
 
-type FormValues = Record<string, string | boolean>;
+type Value = string | boolean | number | undefined;
 
-function defaultsFor(script: ScriptInfo): FormValues {
-  const v: FormValues = {};
-  for (const o of script.options) {
-    if (o.action === "store_true") v[o.dest] = o.default === true;
-    else if (o.action === "store_false") v[o.dest] = o.default !== false;
-    else v[o.dest] = o.default === null || o.default === undefined ? "" : String(o.default);
-  }
-  return v;
+interface FieldProps {
+  id: string;
+  option: OptionInfo;
+  value: Value;
+  error: string | undefined;
+  /** `undefined` removes the override, so the script's default applies. */
+  onChange: (v: Value) => void;
 }
 
-/** Builds argv from form values, omitting options left at their defaults. */
-export function buildArgs(script: ScriptInfo, values: FormValues): string[] {
-  const args: string[] = [];
-  for (const o of script.options) {
-    const flag = o.flags.find((f) => f.startsWith("--")) ?? o.flags[0];
-    if (!flag) continue;
-    const v = values[o.dest];
-    if (o.action === "store_true" || o.action === "store_false") {
-      const defaultValue = o.action === "store_true" ? o.default === true : o.default !== false;
-      if (v === true && !defaultValue) args.push(flag);
-      continue;
-    }
-    const text = typeof v === "string" ? v.trim() : "";
-    const def = o.default === null || o.default === undefined ? "" : String(o.default);
-    if (text === "" || text === def) {
-      if (o.required && text !== "") args.push(flag, text);
-      continue;
-    }
-    args.push(flag, text);
-  }
-  return args;
+function Help({ option, error, note }: { option: OptionInfo; error: string | undefined; note?: string }) {
+  return (
+    <>
+      {option.help || note ? (
+        <div className="help">
+          {option.help}
+          {option.help && note ? " · " : ""}
+          {note}
+        </div>
+      ) : null}
+      {error ? (
+        <div className="help form-error" role="alert">
+          {error}
+        </div>
+      ) : null}
+    </>
+  );
 }
 
-function OptionField({ option, value, onChange }: { option: OptionInfo; value: string | boolean; onChange: (v: string | boolean) => void }) {
-  const id = `opt-${option.dest}`;
-  if (option.action === "store_true" || option.action === "store_false") {
+function OptionField({ id, option, value, error, onChange }: FieldProps) {
+  const kind = optionKind(option);
+  const positional = isPositional(option);
+  const name = positional ? (option.flags[0] ?? option.dest) : primaryFlag(option);
+  const def = defaultText(option);
+
+  if (kind === "skip") return null;
+  if (kind === "unsupported") {
     return (
       <>
-        <label htmlFor={id}>{option.flags[0]}</label>
-        <input id={id} type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} />
-        {option.help ? <div className="help">{option.help}</div> : null}
+        <span className="mono">{name}</span>
+        <span className="small muted">action {option.action}: pass it through “extra arguments”</span>
       </>
     );
   }
-  if (option.choices) {
+  if (kind === "flag") {
+    const effect =
+      option.action === "store_true"
+        ? `sets ${option.dest} = True`
+        : option.action === "store_false"
+          ? `sets ${option.dest} = False`
+          : `sets ${option.dest} = ${JSON.stringify(option.const)}`;
     return (
       <>
-        <label htmlFor={id}>{option.flags[0]}</label>
-        <select id={id} value={String(value)} onChange={(e) => onChange(e.target.value)}>
+        <label htmlFor={id}>{name}</label>
+        <input id={id} type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked ? true : undefined)} />
+        <Help option={option} error={error} note={`pass the flag: ${effect}`} />
+      </>
+    );
+  }
+  if (kind === "bool") {
+    const flags = boolFlags(option);
+    return (
+      <>
+        <label htmlFor={id}>{name}</label>
+        <select
+          id={id}
+          value={value === true ? "yes" : value === false ? "no" : ""}
+          onChange={(e) => onChange(e.target.value === "yes" ? true : e.target.value === "no" ? false : undefined)}
+        >
+          <option value="">(default{def ? `: ${def}` : ""})</option>
+          <option value="yes">{flags.yes}</option>
+          <option value="no">{flags.no}</option>
+        </select>
+        <Help option={option} error={error} />
+      </>
+    );
+  }
+  if (kind === "count") {
+    const n = typeof value === "number" ? value : 0;
+    return (
+      <>
+        <label htmlFor={id}>
+          {name} <span className="subtle">count</span>
+        </label>
+        <input id={id} type="number" min={0} max={20} step={1} value={n} onChange={(e) => onChange(Number(e.target.value) > 0 ? Math.floor(Number(e.target.value)) : undefined)} />
+        <Help option={option} error={error} note="times the flag is repeated" />
+      </>
+    );
+  }
+  const required = positional ? option.nargs !== "?" && option.nargs !== "*" : option.required;
+  if (kind === "value" && option.choices) {
+    return (
+      <>
+        <label htmlFor={id}>{name}</label>
+        <select id={id} value={typeof value === "string" ? value : ""} onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)} aria-invalid={error ? true : undefined}>
+          <option value="">{required && !def ? "(choose…)" : `(default${def ? `: ${def}` : ""})`}</option>
           {option.choices.map((c) => (
             <option key={String(c)} value={String(c)}>
               {String(c)}
             </option>
           ))}
         </select>
-        {option.help ? <div className="help">{option.help}</div> : null}
+        <Help option={option} error={error} />
       </>
     );
   }
-  const numeric = option.type === "int" || option.type === "float";
+  const list = kind === "list" || kind === "append";
+  const numeric = !list && (option.type === "int" || option.type === "float");
+  const shown = typeof value === "string" ? value : def;
+  const note = list
+    ? `${typeof option.nargs === "number" ? `${option.nargs} values` : kind === "append" ? "one entry per value" : "values"}, separated by spaces (quote a value that contains spaces)`
+    : undefined;
   return (
     <>
       <label htmlFor={id}>
-        {option.flags[0]}
+        {name}
+        {positional ? <span className="subtle"> positional</span> : null}
         {option.type ? <span className="subtle"> {option.type}</span> : null}
       </label>
       <input
         id={id}
         type={numeric ? "number" : "text"}
         step={option.type === "float" ? "any" : undefined}
-        value={String(value)}
-        placeholder={option.required ? "required" : ""}
-        onChange={(e) => onChange(e.target.value)}
+        value={shown}
+        placeholder={required && !def ? "required" : def}
+        aria-invalid={error ? true : undefined}
+        // Typing the default back removes the override.
+        onChange={(e) => onChange(e.target.value === def ? undefined : e.target.value)}
       />
-      {option.help ? <div className="help">{option.help}</div> : null}
+      <Help option={option} error={error} note={note} />
     </>
   );
 }
@@ -92,14 +148,30 @@ function OptionField({ option, value, onChange }: { option: OptionInfo; value: s
 function ScriptCard({ script }: { script: ScriptInfo }) {
   const session = useActiveSession();
   const kernel = useKernel(session);
+  const formId = useId();
   const [open, setOpen] = useState(false);
-  const [values, setValues] = useState<FormValues>(() => defaultsFor(script));
+  // Only what the user changed is kept; everything else follows the script's current defaults.
+  const [stored, setOverrides] = useState<Overrides>({});
+  const [extra, setExtra] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const lastRun = useRuns((s) => (session ? s.runs[session]?.find((r) => r.meta.script === script.path) : undefined));
   const ready = kernel.state === "ready";
 
+  const overrides = useMemo(() => pruneOverrides(script, stored), [script, stored]);
+  const built = useMemo(() => buildArgs(script, overrides, extra), [script, overrides, extra]);
+  const invalid = Object.keys(built.errors).length > 0;
+
+  const setValue = (dest: string, v: Value) => {
+    const next = { ...overrides };
+    if (v === undefined) delete next[dest];
+    else next[dest] = v;
+    setOverrides(next);
+  };
+
   const run = async () => {
-    if (!session) return;
-    const id = await runScript(session, script.path, buildArgs(script, values));
+    setSubmitted(true);
+    if (!session || invalid) return;
+    const id = await runScript(session, script.path, built.args);
     if (id) showPanel("runoutput");
   };
 
@@ -125,23 +197,49 @@ function ScriptCard({ script }: { script: ScriptInfo }) {
             {!script.has_main_guard ? <span className="badge warning">no main guard</span> : null}
           </div>
           <div className="form-grid">
-            {script.options.map((o) => (
-              <OptionField key={o.dest} option={o} value={values[o.dest] ?? ""} onChange={(v) => setValues({ ...values, [o.dest]: v })} />
+            {script.options.map((o, i) => (
+              <OptionField
+                key={`${o.dest}:${i}`}
+                id={`${formId}-${i}`}
+                option={o}
+                value={overrides[o.dest]}
+                error={submitted || overrides[o.dest] !== undefined ? built.errors[o.dest] : undefined}
+                onChange={(v) => setValue(o.dest, v)}
+              />
             ))}
+            <label htmlFor={`${formId}-extra`}>extra arguments</label>
+            <input id={`${formId}-extra`} type="text" value={extra} placeholder="appended as typed, split like a shell" aria-invalid={built.errors[""] ? true : undefined} onChange={(e) => setExtra(e.target.value)} />
+            {built.errors[""] ? (
+              <div className="help form-error" role="alert">
+                {built.errors[""]}
+              </div>
+            ) : null}
           </div>
+          <div className="command-line" data-testid="command-line" title="The exact command this form runs">
+            {commandLine(script, built.args)}
+          </div>
+          {submitted && invalid ? (
+            <div className="form-error" role="alert" data-testid="form-errors">
+              Fix the highlighted fields before running.
+            </div>
+          ) : null}
           <div className="row">
             <button type="button" className="primary" onClick={() => void run()} disabled={!ready} title={ready ? "Run" : `Kernel ${kernel.state}`}>
               Run
             </button>
-            <button type="button" className="ghost small" onClick={() => setValues(defaultsFor(script))}>
+            <button
+              type="button"
+              className="ghost small"
+              onClick={() => {
+                setOverrides({});
+                setExtra("");
+                setSubmitted(false);
+              }}
+            >
               Reset
             </button>
             <span className="grow" />
-            {lastRun ? (
-              <span className="small muted">
-                last: {formatDuration(lastRun.meta.started_at, lastRun.meta.finished_at)}
-              </span>
-            ) : null}
+            {lastRun ? <span className="small muted">last: {formatDuration(lastRun.meta.started_at, lastRun.meta.finished_at)}</span> : null}
           </div>
         </div>
       ) : null}
@@ -152,11 +250,7 @@ function ScriptCard({ script }: { script: ScriptInfo }) {
 export function ScriptsView() {
   const session = useActiveSession();
   const index = useIndex(session);
-  const stale = useFiles((s) => (session ? (s.indexStale[session] ?? false) : false));
-
-  useEffect(() => {
-    if (session && stale) void refreshIndex(session).catch(notifyError);
-  }, [session, stale]);
+  const kernel = useKernel(session);
 
   if (!session) return <div className="empty">No session</div>;
   return (
@@ -168,7 +262,11 @@ export function ScriptsView() {
         </button>
       </div>
       <div className="panel-body">
-        {!index ? <div className="empty">Indexing…</div> : index.scripts.length === 0 ? <div className="empty">No scripts under scripts/</div> : null}
+        {!index ? (
+          <div className="empty">{kernel.state === "ready" ? "Indexing…" : `Waiting for the kernel (${kernel.state}) to index scripts…`}</div>
+        ) : index.scripts.length === 0 ? (
+          <div className="empty">No scripts under scripts/</div>
+        ) : null}
         {index?.scripts.map((s) => <ScriptCard key={s.path} script={s} />)}
       </div>
     </div>

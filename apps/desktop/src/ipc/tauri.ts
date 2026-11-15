@@ -17,7 +17,9 @@ export class TauriBackend implements Backend {
     channel.onmessage = onEvent;
     const subscription = await invoke<string>("session_subscribe", { session, channel });
     return () => {
-      void invoke("session_unsubscribe", { subscription });
+      // After session_close the backend has already dropped the subscription,
+      // so a redundant unsubscribe is expected to fail; nothing to do about it.
+      invoke("session_unsubscribe", { subscription }).catch(() => undefined);
     };
   }
 }

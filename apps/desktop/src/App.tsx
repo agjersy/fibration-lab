@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { errorMessage } from "./ipc";
 import { bootstrap } from "./state/actions";
+import { useUnsavedGuards } from "./ui/useUnsavedGuards";
+import { Modal } from "./ui/common/Dialog";
 import { useActiveSession, useSessions } from "./state/sessions";
 import { useUi } from "./state/ui";
 import { Toasts } from "./ui/Toasts";
@@ -21,6 +23,8 @@ export function App() {
   const settingsOpen = useUi((s) => s.settingsOpen);
   useResolvedTheme();
   useAppCommands();
+  useUnsavedGuards();
+  const unsaved = useUi((s) => s.unsavedPrompt);
 
   useEffect(() => {
     bootstrap()
@@ -47,6 +51,27 @@ export function App() {
       </div>
       {newSessionOpen ? <NewSessionDialog onClose={() => useUi.getState().setNewSessionOpen(false)} /> : null}
       {settingsOpen ? <SettingsDialog session={active} onClose={() => useUi.getState().setSettingsOpen(false)} /> : null}
+      {unsaved ? (
+        <Modal
+          title={unsaved.title}
+          onClose={() => unsaved.resolve("cancel")}
+          actions={
+            <>
+              <button type="button" onClick={() => unsaved.resolve("cancel")} data-testid="unsaved-cancel">
+                Cancel
+              </button>
+              <button type="button" className="danger" onClick={() => unsaved.resolve("discard")} data-testid="unsaved-discard">
+                Discard changes
+              </button>
+              <button type="button" className="primary" onClick={() => unsaved.resolve("save")} data-testid="unsaved-save">
+                Save
+              </button>
+            </>
+          }
+        >
+          <p>{unsaved.message}</p>
+        </Modal>
+      ) : null}
       <Palette />
       <Toasts />
     </div>

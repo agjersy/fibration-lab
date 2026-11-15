@@ -4,7 +4,7 @@ import { useChat } from "./chat";
 import { useDiagnostics } from "./diagnostics";
 import { applyEvent } from "./dispatcher";
 import { useFiles } from "./files";
-import { useRuns } from "./runs";
+import { flushRunOutput, useRuns } from "./runs";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
 import { attachTerminalSink, deliverTerminalData, useTerminals } from "./terminals";
@@ -12,13 +12,14 @@ import { attachTerminalSink, deliverTerminalData, useTerminals } from "./termina
 const S = "s1";
 const C = "s1-c1";
 
-function run(id: string, status: RunView["meta"]["status"] = "running"): RunView {
+function run(id: string, status: RunView["meta"]["status"] = "running", conversation: string | null = null): RunView {
   return {
     meta: { run_id: id, script: "scripts/decay_sim.py", args: [], status, exit_code: status === "done" ? 0 : null, started_at: "2026-10-26T00:00:00Z", finished_at: null, out_dir: `out/decay_sim/${id}`, sandbox: "bwrap", tree_hash: null, pid: 1, host: "localhost" },
     target: "local",
     artifacts: [],
     stdout_tail: "",
     stderr_tail: "",
+    conversation,
   };
 }
 
@@ -40,14 +41,16 @@ function info(): SessionInfo {
     active_conversation: C,
     target_kind: "local",
     target_host: null,
+    pending_proposals: [],
   };
 }
 
 beforeEach(() => {
   useChat.setState({ conversations: {}, proposals: {} });
-  useRuns.setState({ runs: {}, output: {}, figures: {}, activeFigure: {}, pinned: {} });
+  flushRunOutput();
+  useRuns.setState({ runs: {}, output: {}, outputOrder: [], figures: {}, activeFigure: {}, pinned: {}, selectedRun: {} });
   useDiagnostics.setState({ byPath: {} });
-  useFiles.setState({ indexStale: {}, trees: {}, buffers: {} });
+  useFiles.setState({ indexStale: {}, trees: {}, buffers: {}, expanded: {} });
   useSessions.setState({ infos: {}, kernel: {}, sessions: [] });
   useTasks.setState({ tasks: {} });
   useTerminals.setState({ terminals: {}, active: {} });
@@ -86,20 +89,23 @@ describe("applyEvent", () => {
     expect(useChat.getState().proposals.p1).toMatchObject({ status: "accept", by: "user" });
   });
 
-  it("tracks runs, output, artifacts and figures, and attaches run cards to the busy conversation", () => {
+  it("tracks runs, output, artifacts and figures, and attaches run cards by RunView.conversation", () => {
     applyEvent(S, { type: "turn_started", conversation: C, turn: "t1" });
-    applyEvent(S, { type: "run_started", run: run("r1") });
+    applyEvent(S, { type: "run_started", run: run("r1", "running", C) });
     applyEvent(S, { type: "run_output", run_id: "r1", stream: "stdout", chunk: "a" });
     applyEvent(S, { type: "run_output", run_id: "r1", stream: "stdout", chunk: "b" });
     applyEvent(S, { type: "run_output", run_id: "r1", stream: "stderr", chunk: "e" });
     const figure = { run_id: "r1", script: "scripts/decay_sim.py", path: "out/f.svg", name: "f", format: "svg" as const, sidecar: null, created_at: "", size: 1 };
     applyEvent(S, { type: "run_artifact", run_id: "r1", artifact: { kind: "figure", path: "out/f.svg", size: 1, created_at: "", rendered: true }, figure });
-    applyEvent(S, { type: "run_done", run: run("r1", "done") });
+    // Chunks are batched per frame, so nothing is in the store yet.
+    expect(useRuns.getState().output.r1).toBeUndefined();
+    applyEvent(S, { type: "run_done", run: run("r1", "done", C) });
     const st = useRuns.getState();
     expect(st.runs[S]).toHaveLength(1);
     expect(st.runs[S]![0]!.meta.status).toBe("done");
     expect(st.runs[S]![0]!.artifacts).toHaveLength(1);
-    expect(st.output.r1).toEqual({ stdout: "ab", stderr: "e" });
+    expect(st.output.r1?.stdout.text).toBe("ab");
+    expect(st.output.r1?.stderr.text).toBe("e");
     expect(st.figures[S]![0]!.figures[0]!.name).toBe("f");
     expect(st.figures[S]![0]!.run.meta.status).toBe("done");
     expect(st.activeFigure[S]).toEqual({ name: "f", run_id: "r1" });
@@ -124,11 +130,34 @@ describe("applyEvent", () => {
     expect(useDiagnostics.getState().byPath[S]).toEqual({ "b.py": [d("b.py", 2)] });
   });
 
-  it("marks the index stale and invalidates directories on files_changed", () => {
-    useFiles.getState().setTree(S, "scripts", []);
-    applyEvent(S, { type: "files_changed", paths: ["scripts/new.py"] });
+  it("does not attach a manual run to a busy conversation", () => {
+    applyEvent(S, { type: "turn_started", conversation: C, turn: "t1" });
+    applyEvent(S, { type: "run_started", run: run("manual") });
+    expect(useChat.getState().conversations[C]!.items.some((i) => i.kind === "run")).toBe(false);
+  });
+
+  it("never lets a running snapshot overwrite a finished run", () => {
+    applyEvent(S, { type: "run_done", run: run("r1", "done") });
+    applyEvent(S, { type: "run_started", run: run("r1", "running") });
+    expect(useRuns.getState().runs[S]![0]!.meta.status).toBe("done");
+    useRuns.getState().setRuns(S, [run("r1", "running")]);
+    expect(useRuns.getState().runs[S]![0]!.meta.status).toBe("done");
+    useRuns.getState().setFigures(S, [{ run: run("r1", "running"), figures: [] }]);
+    expect(useRuns.getState().figures[S]![0]!.run.meta.status).toBe("done");
+  });
+
+  it("marks the index stale; expanded directories keep stale entries, collapsed ones are dropped", () => {
+    const entry = { path: "scripts/a.py", name: "a.py", kind: "file" as const, size: 1, children: null };
+    useFiles.getState().setTree(S, "", []);
+    useFiles.getState().setTree(S, "scripts", [entry]);
+    useFiles.getState().setTree(S, "data", []);
+    useFiles.getState().setExpanded(S, "scripts", true);
+    expect(useFiles.getState().invalidateDirs(S, ["scripts/new.py", "data/x.csv"]).sort()).toEqual(["", "scripts"]);
+    applyEvent(S, { type: "files_changed", paths: ["scripts/new.py", "data/x.csv"] });
     expect(useFiles.getState().indexStale[S]).toBe(true);
-    expect(useFiles.getState().trees[S]!["scripts"]).toBeUndefined();
+    // Still showing the old children until the refetch lands.
+    expect(useFiles.getState().trees[S]!["scripts"]).toEqual([entry]);
+    expect(useFiles.getState().trees[S]!["data"]).toBeUndefined();
     applyEvent(S, { type: "index_changed" });
     expect(useFiles.getState().indexStale[S]).toBe(true);
   });
@@ -139,7 +168,7 @@ describe("applyEvent", () => {
     const detach = attachTerminalSink("t1", (d) => got.push(d));
     applyEvent(S, { type: "terminal_data", terminal_id: "t1", data: "late" });
     expect(got).toEqual(["early", "late"]);
-    useTerminals.getState().add(S, "t1", "Terminal 1");
+    useTerminals.getState().add(S, "t1");
     applyEvent(S, { type: "terminal_exit", terminal_id: "t1", code: 0 });
     expect(useTerminals.getState().terminals[S]![0]!.exit).toBe(0);
     detach();
