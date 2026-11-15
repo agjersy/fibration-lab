@@ -49,3 +49,12 @@ Every dependency added to the project is recorded here in the same commit.
 ## Fonts (tests only, vendor/fonts)
 
 Recorded when added.
+
+| Font | License | Source |
+|---|---|---|
+| Liberation Sans (Regular, Bold, Italic, Bold Italic) | SIL OFL 1.1 | fonts-liberation |
+| Carlito (Regular, Bold, Italic, Bold Italic) | SIL OFL 1.1 | fonts-crosextra-carlito |
+| DejaVu Serif (Book, Bold) | Bitstream Vera / DejaVu license (permissive) | fonts-dejavu-core |
+
+The build spec named Noto fonts; the Liberation, Carlito, and DejaVu families are vendored instead because they
+are metric-compatible stand-ins for Arial, Calibri, and a serif face, and were available offline.
