@@ -19,7 +19,7 @@
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
 | P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, system proxy and trust store, local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Proposed (shared) |
-| P14 | Code sharing with Analyst | Common crates (`protocol` patterns, providers, policy, transcript, skills, MCP) extracted into a shared workspace | Open, OQ-P11 |
+| P14 | Code sharing with Analyst | A third repository of shared Rust crates and a UI package, consumed by both apps as pinned git dependencies, extracted gradually starting with the provider layer and policy engine. One skill format (Agent Skills `SKILL.md`) across both apps | Decided (OQ-P11) |
 | P15 | Name | "Personal Present": binary `present`, config `~/.present`, bundle id `dev.personal-present.app` | Proposed, OQ-P12 |
 
 ## 2. System overview
@@ -489,4 +489,16 @@ evals/                deck tasks, graders, templates, scorecard runner
 docs/
 ```
 
-Whether `protocol`, provider, policy, transcript, skills, and MCP code is shared with Analyst through a common workspace is OQ-P11.
+**Shared code (decided, OQ-P11).** Code common to both apps lives in a third repository (working name `agent-workbench-common`) and is consumed by Present and Analyst as git dependencies pinned to tags:
+
+| Package | Contents | Extraction order |
+|---|---|---|
+| `wb-providers` (crate) | `ModelClient`, Anthropic Messages and OpenAI-compatible adapters, SSE parsing, capability probing, proxy and private-CA TLS, gateway quirks, audit hook | Phase 0 of Present (first) |
+| `wb-policy` (crate) | Policy evaluation, ask/deny/review states, scope declaration, protected items | Phase 0 (first) |
+| `wb-transcript` (crate) | Turn and event types, JSONL store, compaction and pinned facts | Phase 0 |
+| `wb-skills` (crate) | Agent Skills loader (`SKILL.md`, resources, script manifests), progressive disclosure tools, Analyst legacy front matter (`triggers`, `paths`, `always`) as optional extensions | Phase 0 |
+| `wb-mcp` (crate) | MCP client wrapper over `rmcp`, tool schema bridging | Phase 1 |
+| `wb-sandbox` (crate + profiles) | macOS `sandbox-exec` profile generation, Linux `bubblewrap`, Windows AppContainer + job object | Phase 1 (Present needs Windows; Analyst gains it for its phase 4) |
+| `@wb/ui` (npm package) | Theme tokens (Analyst's `theme.css`), chat panel and card components, dialogs, toasts, palette, dockview setup, IPC `Backend` interface and mock helpers | Phase 1 |
+
+Each app keeps its own `protocol` crate for domain types; shared types live in the packages above and are re-exported. Extraction is done by moving code out of Analyst with its history, then switching Analyst to the dependency in the same change, so neither app ever runs on a fork. Analyst adopts `SKILL.md` through `wb-skills` while still reading its existing skills during a transition.

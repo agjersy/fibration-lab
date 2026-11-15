@@ -28,16 +28,9 @@
 | OQ-P8 References | Always copied into the project (content-addressed, versioned). v1 formats: PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML and saved pages, Personal Analyst figures and tables (only imported items are copied). No OCR in v1. No web access in v1; later through MCP. Reference sets are large, so hybrid search (FTS5 + bundled offline embedding model, endpoint optional) is in v1. | ARCHITECTURE.md P8, section 8 |
 | OQ-P9 Chart data | Native charts take their data from reference ranges or extracted tables through a declarative, closed set of transforms (filter, sort, top-N, group aggregates, pivot, percent change, share, cumulative, scaling, rounding) run deterministically by the kernel and stored with the chart as provenance; a checker rule recomputes them. Real analysis happens in Personal Analyst; code mode and generated slides remain available for anything else. | ARCHITECTURE.md sections 5, 9 |
 | OQ-P10 Checkpoints | App-owned, append-only, content-addressed snapshot store in `.present/history/` (per turn, per mode switch, per export); no git dependency or integration. | ARCHITECTURE.md P10, section 13 |
+| OQ-P11 Code sharing and skill format | A third repository of shared Rust crates (`wb-providers`, `wb-policy`, `wb-transcript`, `wb-skills`, `wb-mcp`, `wb-sandbox`) and a UI package (`@wb/ui`), consumed by both apps as tag-pinned git dependencies and extracted gradually, provider layer and policy engine first. Both apps use the Agent Skills `SKILL.md` format; Analyst keeps reading its legacy front matter during a transition. | ARCHITECTURE.md P14, section 18 |
 
 ## 3. Open
-
-### OQ-P11. Code sharing with Personal Analyst
-
-**Options.** (a) Copy what is needed and let the two diverge. (b) Extract shared crates (`protocol` patterns, providers, policy, transcript, skills, MCP, UI theme and chat components) into a shared workspace or repository that both apps depend on. (c) One monorepo with two apps.
-
-**Recommendation.** (b), done gradually: Present's phase 0 starts by extracting the provider layer (the two adapters are identical in both apps; proxy and private-CA handling added for Present benefits Analyst too) and the policy engine. Adopting the Agent Skills `SKILL.md` format in Analyst as well keeps one skill format across both apps.
-
-**Decide.** Are you willing to change Analyst's skill format and move shared code out of its repository? Monorepo or separate repositories?
 
 ### OQ-P12. Name
 
