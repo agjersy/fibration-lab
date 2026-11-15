@@ -16,6 +16,7 @@ async function createSession(page: Page) {
   await expect(tab).toBeVisible();
   await expect(tab.locator(".dot.ready")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("workbench")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 }
 
 async function openDecaySim(page: Page) {
@@ -40,6 +41,8 @@ test.describe("workbench (mock backend)", () => {
   test.afterEach(async ({ page }) => {
     const errors = (page as Page & { __errors?: string[] }).__errors ?? [];
     expect(errors, "no console errors or page errors").toEqual([]);
+    // The app's own collector (main.tsx) must agree: no uncaught error, no unhandled rejection.
+    expect(await page.evaluate(() => (globalThis as unknown as { __analystErrors?: string[] }).__analystErrors), "window.__analystErrors").toEqual([]);
   });
 
   test("create a session, edit and save a script, run it and see the figure", async ({ page }) => {
@@ -49,11 +52,11 @@ test.describe("workbench (mock backend)", () => {
 
     // Edit: append a comment on the first line and save with Ctrl+S.
     await editor.locator(".cm-content").click();
-    await page.keyboard.press("Control+Home");
+    await page.keyboard.press("ControlOrMeta+Home");
     await page.keyboard.press("End");
     await page.keyboard.type("  # edited in e2e");
     await expect(tab).toContainText("•");
-    await page.keyboard.press("Control+s");
+    await page.keyboard.press("ControlOrMeta+s");
     await expect(tab).not.toContainText("•");
     await expect(editor.locator(".editor-banner")).toHaveCount(0);
 
@@ -80,7 +83,7 @@ test.describe("workbench (mock backend)", () => {
     await expect(chat.getByTestId("mode-select")).toHaveValue("build");
     const input = chat.getByLabel("Message the agent");
     await input.fill("Add a double exponential model and check the residuals");
-    await input.press("Control+Enter");
+    await input.press("ControlOrMeta+Enter");
     await expect(chat.getByTestId("user-message")).toContainText("double exponential");
     await expect(chat.getByTestId("tool-card").first()).toBeVisible({ timeout: 15_000 });
 
@@ -125,13 +128,13 @@ test.describe("workbench (mock backend)", () => {
 
   test("command palette lists bindings and the file finder opens files", async ({ page }) => {
     await createSession(page);
-    await page.keyboard.press("Control+Shift+P");
+    await page.keyboard.press("ControlOrMeta+Shift+P");
     const palette = page.getByTestId("palette");
     await expect(palette).toBeVisible();
     await expect(palette.getByRole("option", { name: /Toggle left dock/ })).toContainText("Ctrl+B");
     await page.keyboard.press("Escape");
     await expect(palette).toHaveCount(0);
-    await page.keyboard.press("Control+p");
+    await page.keyboard.press("ControlOrMeta+p");
     await page.getByLabel("Palette query").fill("models");
     await expect(palette.getByRole("option", { name: /analysis\/models\.py/ })).toBeVisible();
     await page.keyboard.press("Enter");

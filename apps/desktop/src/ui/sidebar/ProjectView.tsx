@@ -143,10 +143,13 @@ export function ProjectView() {
             const dir = dirOf(prompt.entry.path);
             const to = dir ? `${dir}/${name}` : name;
             void run(async () => {
+              const wasOpen = useFiles.getState().buffers[session]?.[prompt.entry.path] !== undefined;
               await backend().invoke("fs_rename", { session, from: prompt.entry.path, to });
+              // The buffer (with any unsaved edits) moves to the new path and its tab reopens there.
               useFiles.getState().renameBuffer(session, prompt.entry.path, to);
               closePanel(`file:${prompt.entry.path}`);
               await loadDir(session, dir);
+              if (wasOpen) await openFile(to);
             });
           }}
         />

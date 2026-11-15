@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { RunId, SessionId, TurnSummary } from "../../ipc";
-import { ensureFigureData, respondProposal } from "../../state/actions";
-import { useProposal } from "../../state/chat";
+import { useProposal, useResponding } from "../../state/chat";
+import { useFigureData } from "../../state/figureCache";
 import type { ChatItem } from "../../state/chat";
 import { useRuns } from "../../state/runs";
 import { compactJson, formatDuration, shortArgs } from "../common/format";
+import { acceptProposal, rejectProposal } from "../editor/review";
 import { openFile, openProposal, showPanel } from "../workbench/controller";
 
 export function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
@@ -37,6 +38,7 @@ export function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }
 
 export function ProposalCard({ proposalId }: { proposalId: string }) {
   const record = useProposal(proposalId);
+  const responding = useResponding(proposalId);
   if (!record) return null;
   const { proposal, status, by } = record;
   const pending = status === "pending";
@@ -47,8 +49,8 @@ export function ProposalCard({ proposalId }: { proposalId: string }) {
         <span className="badge accent">{proposal.kind}</span>
         <span className="grow truncate">{proposal.summary}</span>
         {!pending ? (
-          <span className={`badge ${status === "reject" ? "error" : "success"}`}>
-            {status === "accept" ? "accepted" : status === "auto" ? "auto" : "rejected"}
+          <span className={`badge ${status === "reject" ? "error" : status === "expired" ? "" : "success"}`}>
+            {status === "accept" ? "accepted" : status === "auto" ? "auto" : status === "expired" ? "no longer pending" : "rejected"}
             {by === "policy" ? " by policy" : ""}
           </span>
         ) : null}
@@ -60,7 +62,7 @@ export function ProposalCard({ proposalId }: { proposalId: string }) {
         {proposal.message ? <pre>{proposal.message}</pre> : null}
         {proposal.reason !== "review" ? (
           <div className="muted">
-            {proposal.reason === "protected" ? "Protected path" : proposal.reason === "out_of_scope" ? "Out of the conversation's scope" : "Policy asks for approval"}
+            {proposal.reason === "protected" ? "Protected path" : proposal.reason === "out_of_scope" ? "Out of the conversation's scope" : "Approval is required before this goes ahead"}
           </div>
         ) : null}
         {!reviewable && proposal.diff ? <pre>{proposal.diff}</pre> : null}
@@ -73,10 +75,11 @@ export function ProposalCard({ proposalId }: { proposalId: string }) {
             </button>
           ) : null}
           <span className="grow" />
-          <button type="button" className="danger" onClick={() => void respondProposal(record.session, proposal.id, { decision: "reject" })}>
+          <button type="button" className="danger" onClick={() => void rejectProposal(record)} disabled={responding} data-testid="proposal-reject">
             Reject
           </button>
-          <button type="button" className="primary" onClick={() => void respondProposal(record.session, proposal.id, { decision: "accept" })}>
+          {/* With a review tab open, this accepts what that tab shows (see ui/editor/review.ts). */}
+          <button type="button" className="primary" onClick={() => void acceptProposal(record)} disabled={responding} data-testid="proposal-accept">
             Accept
           </button>
         </div>
@@ -86,10 +89,7 @@ export function ProposalCard({ proposalId }: { proposalId: string }) {
 }
 
 function FigureThumb({ session, path, name, run_id }: { session: SessionId; path: string; name: string; run_id: RunId }) {
-  const data = useRuns((s) => s.figureData[path]);
-  useEffect(() => {
-    if (!data) void ensureFigureData(session, path).catch(() => undefined);
-  }, [session, path, data]);
+  const data = useFigureData(session, path);
   const open = () => {
     useRuns.getState().setActiveFigure(session, { name, run_id });
     showPanel("figures");

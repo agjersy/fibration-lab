@@ -6,6 +6,7 @@ import { useSessions } from "../../state/sessions";
 import { notifyError, useUi } from "../../state/ui";
 import type { ThemePreference } from "../../state/ui";
 import { Modal } from "../common/Dialog";
+import { ProviderKeys } from "./ProviderKeys";
 
 const POLICY_FIELDS: { key: keyof Omit<PolicyView, "protected" | "max_steps">; options: string[]; label: string }[] = [
   { key: "edits", options: ["review", "auto-new-files", "auto"], label: "Edits" },
@@ -48,6 +49,7 @@ export function SettingsDialog({ session, onClose }: { session: SessionId | null
           <option value="dark">Dark</option>
         </select>
       </div>
+      <ProviderKeys />
       {info && session ? (
         <>
           <h3 className="small muted" style={{ margin: "6px 0 0" }}>

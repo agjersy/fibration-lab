@@ -36,28 +36,45 @@ export function parseScript(path: string, source: string): ScriptInfo {
   let m: RegExpExecArray | null;
   while ((m = re.exec(source))) {
     const call = m[1] ?? "";
-    const flags = [...call.matchAll(/^\s*(["'])(-{1,2}[\w-]+)\1|,\s*(["'])(-{1,2}[\w-]+)\3/g)]
-      .map((x) => x[2] ?? x[4])
-      .filter((x): x is string => typeof x === "string");
+    // Leading string literals are the flags (or the single positional name).
+    const names: string[] = [];
+    let rest = call;
+    for (;;) {
+      const lead = /^\s*(["'])([^"']+)\1\s*(?:,|$)/.exec(rest);
+      if (!lead || lead[2] === undefined) break;
+      names.push(lead[2]);
+      rest = rest.slice(lead[0].length);
+    }
+    const positional = names.length > 0 && names.every((n) => !n.startsWith("-"));
+    const flags = positional ? names.slice(0, 1) : names.filter((n) => n.startsWith("-"));
     const longFlag = flags.find((f) => f.startsWith("--")) ?? flags[0] ?? "";
-    const destRaw = kwarg(call, "dest");
+    const destRaw = kwarg(rest, "dest");
     const dest = destRaw ? String(parseLiteral(destRaw)) : longFlag.replace(/^-+/, "").replace(/-/g, "_");
-    const typeRaw = kwarg(call, "type");
-    const defRaw = kwarg(call, "default");
-    const helpRaw = kwarg(call, "help");
-    const reqRaw = kwarg(call, "required");
-    const choicesRaw = kwarg(call, "choices");
-    const actionRaw = kwarg(call, "action");
+    const typeRaw = kwarg(rest, "type");
+    const defRaw = kwarg(rest, "default");
+    const helpRaw = kwarg(rest, "help");
+    const reqRaw = kwarg(rest, "required");
+    const choicesRaw = kwarg(rest, "choices");
+    const actionRaw = kwarg(rest, "action");
+    const nargsRaw = kwarg(rest, "nargs");
+    const constRaw = kwarg(rest, "const");
     const choices = choicesRaw ? parseLiteral(choicesRaw) : null;
+    const action = actionRaw ? String(parseLiteral(actionRaw)) : null;
+    const nargs = nargsRaw ? parseLiteral(nargsRaw) : null;
+    // argparse's implicit defaults for the boolean actions.
+    const implicitDefault = action === "store_true" ? false : action === "store_false" ? true : null;
     options.push({
       flags,
       dest,
       type: typeRaw ? typeRaw.trim() : null,
-      default: defRaw ? parseLiteral(defRaw) : null,
+      default: defRaw ? parseLiteral(defRaw) : implicitDefault,
       help: helpRaw ? String(parseLiteral(helpRaw)) : null,
       required: reqRaw ? parseLiteral(reqRaw) === true : false,
       choices: Array.isArray(choices) ? choices : null,
-      action: actionRaw ? String(parseLiteral(actionRaw)) : null,
+      action,
+      nargs: typeof nargs === "number" || typeof nargs === "string" ? nargs : null,
+      const: constRaw ? parseLiteral(constRaw) : null,
+      positional,
     });
   }
   return {

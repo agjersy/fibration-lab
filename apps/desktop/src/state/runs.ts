@@ -1,10 +1,18 @@
 import { create } from "zustand";
 import type { Artifact, FigureGroup, FigureView, RunId, RunView, SessionId } from "../ipc";
+import { EMPTY_OUTPUT, appendOutput, outputFromText } from "./outputText";
+import type { OutputBuffer } from "./outputText";
 
+export type StreamName = "stdout" | "stderr";
+
+/** Output kept per run: the last 256 KiB of each stream (see outputText.ts). */
 export interface RunOutput {
-  stdout: string;
-  stderr: string;
+  stdout: OutputBuffer;
+  stderr: OutputBuffer;
 }
+
+/** Output is kept for this many runs; older entries are dropped and re-read through `run_get` on demand. */
+export const MAX_RUNS_WITH_OUTPUT = 20;
 
 export interface FigureSelection {
   name: string;
@@ -14,6 +22,8 @@ export interface FigureSelection {
 interface RunsState {
   runs: Record<SessionId, RunView[]>;
   output: Record<RunId, RunOutput>;
+  /** Run ids with output, least recently touched first. */
+  outputOrder: RunId[];
   figures: Record<SessionId, FigureGroup[]>;
   selectedRun: Record<SessionId, RunId | null>;
   /** Figure currently shown in the Figures panel. */
@@ -21,50 +31,103 @@ interface RunsState {
   /** Figures pinned so newer runs do not replace them. */
   pinned: Record<SessionId, FigureSelection[]>;
   compare: Record<SessionId, RunId | null>;
-  /** data: URLs by repo-relative figure path. */
-  figureData: Record<string, string>;
   setRuns(session: SessionId, runs: RunView[]): void;
   upsertRun(session: SessionId, run: RunView): void;
-  appendOutput(run_id: RunId, stream: "stdout" | "stderr", chunk: string): void;
-  setOutput(run_id: RunId, output: RunOutput): void;
+  /** Applies a batch of streamed chunks in one store update. */
+  appendChunks(batch: ReadonlyMap<RunId, Readonly<Record<StreamName, string>>>): void;
+  /** Replaces a run's output with the complete text from `run_get` (the tail is kept). */
+  setOutputText(run_id: RunId, stdout: string, stderr: string): void;
   addArtifact(session: SessionId, run_id: RunId, artifact: Artifact, figure: FigureView | null): void;
   setFigures(session: SessionId, groups: FigureGroup[]): void;
   selectRun(session: SessionId, run_id: RunId | null): void;
   setActiveFigure(session: SessionId, selection: FigureSelection | null): void;
   togglePin(session: SessionId, selection: FigureSelection): void;
   setCompare(session: SessionId, run_id: RunId | null): void;
-  setFigureData(path: string, dataUrl: string): void;
+  dropSession(session: SessionId): void;
+}
+
+function mergeArtifacts(primary: Artifact[], secondary: Artifact[]): Artifact[] {
+  const extra = secondary.filter((a) => !primary.some((b) => b.path === a.path));
+  return extra.length ? [...primary, ...extra] : primary;
+}
+
+/**
+ * Merges an incoming view into the one already known. A finished run is never
+ * replaced by a "running" snapshot of itself: events and list results can
+ * arrive out of order (a stale `runs_list`, a late `run_started` after a resync).
+ */
+export function mergeRun(existing: RunView | undefined, incoming: RunView): RunView {
+  if (!existing) return incoming;
+  if (existing.meta.status !== "running" && incoming.meta.status === "running") {
+    return { ...existing, artifacts: mergeArtifacts(existing.artifacts, incoming.artifacts) };
+  }
+  return { ...incoming, artifacts: mergeArtifacts(incoming.artifacts, existing.artifacts) };
+}
+
+function touch(order: RunId[], output: Record<RunId, RunOutput>, ids: RunId[], keep: (id: RunId) => boolean): { order: RunId[]; output: Record<RunId, RunOutput> } {
+  let next = order.filter((id) => !ids.includes(id));
+  next.push(...ids);
+  if (next.length <= MAX_RUNS_WITH_OUTPUT) return { order: next, output };
+  const out = { ...output };
+  const evictable = next.filter((id) => !ids.includes(id) && !keep(id));
+  for (const id of evictable) {
+    if (next.length <= MAX_RUNS_WITH_OUTPUT) break;
+    delete out[id];
+    next = next.filter((x) => x !== id);
+  }
+  return { order: next, output: out };
 }
 
 export const useRuns = create<RunsState>((set) => ({
   runs: {},
   output: {},
+  outputOrder: [],
   figures: {},
   selectedRun: {},
   activeFigure: {},
   pinned: {},
   compare: {},
-  figureData: {},
-  setRuns: (session, runs) => set((s) => ({ runs: { ...s.runs, [session]: runs } })),
+  setRuns: (session, runs) =>
+    set((s) => {
+      const known = new Map((s.runs[session] ?? []).map((r) => [r.meta.run_id, r]));
+      const merged = runs.map((r) => mergeRun(known.get(r.meta.run_id), r));
+      // Runs that started after the list was produced are kept in front.
+      const listed = new Set(runs.map((r) => r.meta.run_id));
+      const newer = (s.runs[session] ?? []).filter((r) => !listed.has(r.meta.run_id) && r.meta.status === "running");
+      return { runs: { ...s.runs, [session]: [...newer, ...merged] } };
+    }),
   upsertRun: (session, run) =>
     set((s) => {
       const list = s.runs[session] ?? [];
       const idx = list.findIndex((r) => r.meta.run_id === run.meta.run_id);
-      const existing = idx >= 0 ? list[idx] : undefined;
-      const merged: RunView = existing
-        ? { ...run, artifacts: [...run.artifacts, ...existing.artifacts.filter((a) => !run.artifacts.some((b) => b.path === a.path))] }
-        : run;
+      const merged = mergeRun(idx >= 0 ? list[idx] : undefined, run);
       const next = idx >= 0 ? list.map((r, i) => (i === idx ? merged : r)) : [merged, ...list];
       const groups = s.figures[session] ?? [];
       const figures = groups.map((g) => (g.run.meta.run_id === run.meta.run_id ? { ...g, run: merged } : g));
       return { runs: { ...s.runs, [session]: next }, figures: { ...s.figures, [session]: figures } };
     }),
-  appendOutput: (run_id, stream, chunk) =>
+  appendChunks: (batch) =>
     set((s) => {
-      const cur = s.output[run_id] ?? { stdout: "", stderr: "" };
-      return { output: { ...s.output, [run_id]: { ...cur, [stream]: cur[stream] + chunk } } };
+      if (batch.size === 0) return {};
+      const output = { ...s.output };
+      for (const [run_id, chunks] of batch) {
+        const cur = output[run_id] ?? { stdout: EMPTY_OUTPUT, stderr: EMPTY_OUTPUT };
+        output[run_id] = {
+          stdout: chunks.stdout ? appendOutput(cur.stdout, chunks.stdout) : cur.stdout,
+          stderr: chunks.stderr ? appendOutput(cur.stderr, chunks.stderr) : cur.stderr,
+        };
+      }
+      const selected = new Set(Object.values(s.selectedRun));
+      const t = touch(s.outputOrder, output, [...batch.keys()], (id) => selected.has(id));
+      return { output: t.output, outputOrder: t.order };
     }),
-  setOutput: (run_id, output) => set((s) => ({ output: { ...s.output, [run_id]: output } })),
+  setOutputText: (run_id, stdout, stderr) =>
+    set((s) => {
+      const output = { ...s.output, [run_id]: { stdout: outputFromText(stdout), stderr: outputFromText(stderr) } };
+      const selected = new Set(Object.values(s.selectedRun));
+      const t = touch(s.outputOrder, output, [run_id], (id) => selected.has(id));
+      return { output: t.output, outputOrder: t.order };
+    }),
   addArtifact: (session, run_id, artifact, figure) =>
     set((s) => {
       const list = s.runs[session] ?? [];
@@ -97,9 +160,16 @@ export const useRuns = create<RunsState>((set) => ({
     }),
   setFigures: (session, groups) =>
     set((s) => {
-      const first = groups[0]?.figures[0];
+      // Keep the freshest view of each run (see mergeRun) and any group that
+      // streamed in for a run the list does not know yet.
+      const runs = new Map((s.runs[session] ?? []).map((r) => [r.meta.run_id, r]));
+      const merged = groups.map((g) => ({ ...g, run: mergeRun(runs.get(g.run.meta.run_id), g.run) }));
+      const listed = new Set(groups.map((g) => g.run.meta.run_id));
+      const live = (s.figures[session] ?? []).filter((g) => !listed.has(g.run.meta.run_id) && g.run.meta.status === "running");
+      const all = [...live, ...merged];
+      const first = all[0]?.figures[0];
       const active = s.activeFigure[session] ?? (first ? { name: first.name, run_id: first.run_id } : null);
-      return { figures: { ...s.figures, [session]: groups }, activeFigure: { ...s.activeFigure, [session]: active } };
+      return { figures: { ...s.figures, [session]: all }, activeFigure: { ...s.activeFigure, [session]: active } };
     }),
   selectRun: (session, run_id) => set((s) => ({ selectedRun: { ...s.selectedRun, [session]: run_id } })),
   setActiveFigure: (session, selection) => set((s) => ({ activeFigure: { ...s.activeFigure, [session]: selection } })),
@@ -115,9 +185,57 @@ export const useRuns = create<RunsState>((set) => ({
       };
     }),
   setCompare: (session, run_id) => set((s) => ({ compare: { ...s.compare, [session]: run_id } })),
-  setFigureData: (path, dataUrl) => set((s) => ({ figureData: { ...s.figureData, [path]: dataUrl } })),
+  dropSession: (session) =>
+    set((s) => {
+      const ids = new Set((s.runs[session] ?? []).map((r) => r.meta.run_id));
+      const output = Object.fromEntries(Object.entries(s.output).filter(([id]) => !ids.has(id)));
+      return { output, outputOrder: s.outputOrder.filter((id) => !ids.has(id)) };
+    }),
 }));
 
 export function findRun(session: SessionId, run_id: RunId): RunView | undefined {
   return useRuns.getState().runs[session]?.find((r) => r.meta.run_id === run_id);
+}
+
+// ---- streamed output batching ----
+// `run_output` events can arrive thousands of times per second. They are
+// collected here and applied once per animation frame, so the store (and the
+// output panel) update at most once per frame however chatty the script is.
+
+const pending = new Map<RunId, Record<StreamName, string[]>>();
+let scheduled: { kind: "raf"; id: number } | { kind: "timer"; id: ReturnType<typeof setTimeout> } | null = null;
+
+export function queueRunOutput(run_id: RunId, stream: StreamName, chunk: string): void {
+  let entry = pending.get(run_id);
+  if (!entry) {
+    entry = { stdout: [], stderr: [] };
+    pending.set(run_id, entry);
+  }
+  entry[stream].push(chunk);
+  if (scheduled) return;
+  // Hidden documents do not get animation frames; fall back to a timer there.
+  if (typeof requestAnimationFrame === "function" && typeof document !== "undefined" && document.visibilityState === "visible") {
+    scheduled = { kind: "raf", id: requestAnimationFrame(flushRunOutput) };
+  } else {
+    scheduled = { kind: "timer", id: setTimeout(flushRunOutput, 16) };
+  }
+}
+
+/** Applies everything queued so far. Called per frame, and before anything that reads or replaces output. */
+export function flushRunOutput(): void {
+  if (scheduled) {
+    if (scheduled.kind === "raf") cancelAnimationFrame(scheduled.id);
+    else clearTimeout(scheduled.id);
+    scheduled = null;
+  }
+  if (pending.size === 0) return;
+  const batch = new Map<RunId, Record<StreamName, string>>();
+  for (const [run_id, chunks] of pending) batch.set(run_id, { stdout: chunks.stdout.join(""), stderr: chunks.stderr.join("") });
+  pending.clear();
+  useRuns.getState().appendChunks(batch);
+}
+
+/** Drops queued chunks for a run whose output is about to be replaced wholesale. */
+export function discardQueuedOutput(run_id: RunId): void {
+  pending.delete(run_id);
 }

@@ -10,12 +10,24 @@ export interface Toast {
 
 export type PaletteMode = "commands" | "files" | "goto" | null;
 
+export type UnsavedChoice = "save" | "discard" | "cancel";
+
+export interface UnsavedPrompt {
+  title: string;
+  message: string;
+  resolve: (choice: UnsavedChoice) => void;
+}
+
 interface UiState {
   theme: ThemePreference;
   palette: PaletteMode;
   newSessionOpen: boolean;
   settingsOpen: boolean;
   toasts: Toast[];
+  /** The "unsaved changes" question currently shown, if any. */
+  unsavedPrompt: UnsavedPrompt | null;
+  /** Asks what to do with unsaved changes; resolves "cancel" if another question is already open. */
+  askUnsaved(title: string, message: string): Promise<UnsavedChoice>;
   setTheme(theme: ThemePreference): void;
   setPalette(mode: PaletteMode): void;
   setNewSessionOpen(open: boolean): void;
@@ -36,12 +48,30 @@ function readTheme(): ThemePreference {
   return "system";
 }
 
-export const useUi = create<UiState>((set) => ({
+export const useUi = create<UiState>((set, get) => ({
   theme: readTheme(),
   palette: null,
   newSessionOpen: false,
   settingsOpen: false,
   toasts: [],
+  unsavedPrompt: null,
+  askUnsaved: (title, message) =>
+    new Promise<UnsavedChoice>((resolve) => {
+      if (get().unsavedPrompt) {
+        resolve("cancel");
+        return;
+      }
+      set({
+        unsavedPrompt: {
+          title,
+          message,
+          resolve: (choice) => {
+            set({ unsavedPrompt: null });
+            resolve(choice);
+          },
+        },
+      });
+    }),
   setTheme: (theme) => {
     try {
       localStorage.setItem("analyst.theme", theme);

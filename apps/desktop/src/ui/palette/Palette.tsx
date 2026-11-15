@@ -101,7 +101,7 @@ function PaletteBody({ mode }: { mode: Exclude<PaletteMode, null> }) {
   };
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && close()}>
-      <div className="palette" role="dialog" aria-label={mode === "commands" ? "Command palette" : mode === "files" ? "File finder" : "Go to line"} data-testid="palette">
+      <div className="palette" role="dialog" aria-modal="true" aria-label={mode === "commands" ? "Command palette" : mode === "files" ? "File finder" : "Go to line"} data-testid="palette">
         <input
           ref={inputRef}
           type="text"

@@ -23,6 +23,12 @@ export interface OptionInfo {
   required: boolean;
   choices: unknown[] | null;
   action: string | null;
+  /** argparse `nargs` ("*", "+", "?", or a number) when given. */
+  nargs: string | number | null;
+  /** argparse `const` literal when given. */
+  const: unknown;
+  /** True for positional arguments (no leading dash in `flags`). */
+  positional: boolean;
 }
 
 export interface ScriptInfo {
@@ -192,6 +198,8 @@ export interface SessionInfo extends SessionSummary {
   active_conversation: ConversationId;
   target_kind: "local" | "ssh";
   target_host: string | null;
+  /** Proposals still awaiting a decision (IPC.md section 7). */
+  pending_proposals: ProposalView[];
 }
 
 export interface FileEntry {
@@ -230,6 +238,14 @@ export interface RunView {
   artifacts: Artifact[];
   stdout_tail: string;
   stderr_tail: string;
+  /** Conversation whose agent turn started the run; null for manual and terminal runs. */
+  conversation: ConversationId | null;
+}
+
+/** Result of `run_get`. */
+export interface RunDetail extends RunView {
+  stdout: string;
+  stderr: string;
 }
 
 export interface FigureView {
@@ -303,6 +319,14 @@ export interface ProposalView {
   reason: "review" | "ask" | "out_of_scope" | "protected";
 }
 
+/** One row of `provider_keys_status` (IPC.md section 7). `source` is "env", "stored" or null. */
+export interface ProviderKeyStatus {
+  provider: string;
+  has_key: boolean;
+  source: string | null;
+  api_key_env: string | null;
+}
+
 export type ProposalDecision =
   | { decision: "accept"; content?: string }
   | { decision: "reject"; reason?: string };
@@ -357,4 +381,5 @@ export type SessionEvent =
   | { type: "packages_changed" }
   | { type: "task_log"; task_id: TaskId; line: string }
   | { type: "task_done"; task_id: TaskId; ok: boolean; message: string | null }
-  | { type: "session_changed"; info: SessionInfo };
+  | { type: "session_changed"; info: SessionInfo }
+  | { type: "resync" };

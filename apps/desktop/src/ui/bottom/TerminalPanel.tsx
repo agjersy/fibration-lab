@@ -40,9 +40,14 @@ export function TerminalPanel() {
         ) : null}
       </div>
       {current ? (
-        <Suspense fallback={<div className="empty">Loading terminal…</div>}>
-          <XtermView key={current.id} terminalId={current.id} exited={current.exit} />
-        </Suspense>
+        // Every terminal keeps its screen mounted; only the active one is visible.
+        <div className="terminal-stack">
+          <Suspense fallback={<div className="empty">Loading terminal…</div>}>
+            {terminals.map((t) => (
+              <XtermView key={t.id} terminalId={t.id} exited={t.exit} visible={t.id === current.id} />
+            ))}
+          </Suspense>
+        </div>
       ) : (
         <div className="empty">
           <p>A shell on the session target with the venv active.</p>

@@ -1,6 +1,6 @@
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import type { FigureGroup, FigureView, RunId, SessionId } from "../../ipc";
-import { ensureFigureData } from "../../state/actions";
+import { useFigureData } from "../../state/figureCache";
 import { useChat } from "../../state/chat";
 import { useRuns } from "../../state/runs";
 import type { FigureSelection } from "../../state/runs";
@@ -12,10 +12,7 @@ const NO_GROUPS: FigureGroup[] = [];
 const NO_PINS: FigureSelection[] = [];
 
 function FigureFrame({ session, figure, label }: { session: SessionId; figure: FigureView; label: string }) {
-  const data = useRuns((s) => s.figureData[figure.path]);
-  useEffect(() => {
-    if (!data) void ensureFigureData(session, figure.path).catch(() => undefined);
-  }, [session, figure.path, data]);
+  const data = useFigureData(session, figure.path);
   return (
     <div className="figure-frame" data-testid="figure-frame">
       {data ? <img src={data} alt={figure.sidecar?.title ?? figure.name} /> : <div className="empty">Loading…</div>}

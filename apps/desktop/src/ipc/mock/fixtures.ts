@@ -55,6 +55,9 @@ def double_exp(t, A, tau1, B, tau2, C=0.0):
     return A * np.exp(-t / tau1) + B * np.exp(-t / tau2) + C
 `;
 
+export const RESIDUALS_DOC = `"""Difference between observed and fitted values."""`;
+export const RESIDUALS_DOC_PROPOSED = `"""Difference between observed and fitted values (observed minus fit)."""`;
+
 export const DECAY_SIM_PY = `"""Simulate a noisy exponential decay and fit it back."""
 
 import argparse
@@ -90,6 +93,37 @@ def main() -> None:
     ax.legend()
     plt.show()
     print("residual rms =", float(np.sqrt(np.mean(residuals(y, single_exp(t, *popt)) ** 2))))
+
+
+if __name__ == "__main__":
+    main()
+`;
+
+// Exercises every option shape the run form supports (IPC.md section 7).
+export const FIT_DECAY_PY = `"""Fit a decay model to a CSV file of t,y samples."""
+
+import argparse
+
+import numpy as np
+
+from analysis.models import single_exp
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Fit a decay model to measured data.")
+    parser.add_argument("input", help="CSV file with t,y columns")
+    parser.add_argument("--model", choices=["single", "double"], default="single", help="model to fit")
+    parser.add_argument("--label", required=True, help="label written into the results")
+    parser.add_argument("--bounds", type=float, nargs=2, default=[0.1, 10.0], help="lower and upper bound for tau")
+    parser.add_argument("--no-plot", dest="plot", action="store_false", help="skip the figure")
+    parser.add_argument("--log-scale", action="store_true", help="logarithmic y axis")
+    parser.add_argument("--weights", action=argparse.BooleanOptionalAction, default=True, help="weight points by their uncertainty")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="more logging")
+    args = parser.parse_args()
+
+    t, y = np.loadtxt(args.input, delimiter=",", skiprows=1, unpack=True)
+    print(f"{args.label}: {len(t)} samples, model={args.model}, bounds={args.bounds}")
+    print(single_exp(t, 1.0, 2.5)[:3], y[:3])
 
 
 if __name__ == "__main__":
@@ -153,6 +187,7 @@ export function fixtureFiles(): Map<string, string> {
     ["analysis/__init__.py", ANALYSIS_INIT],
     ["analysis/models.py", MODELS_PY],
     ["scripts/decay_sim.py", DECAY_SIM_PY],
+    ["scripts/fit_decay.py", FIT_DECAY_PY],
     ["scripts/bad.py", BAD_PY],
     ["data/sample.csv", SAMPLE_CSV],
     ["notes.md", NOTES_MD],

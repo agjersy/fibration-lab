@@ -36,9 +36,7 @@ export const useSessions = create<SessionsState>((set) => ({
   setSessions: (sessions) => set({ sessions }),
   setInfo: (info) =>
     set((s) => {
-      const { policy: _p, conversations: _c, ...summary } = info;
-      void _p;
-      void _c;
+      const summary = info;
       const exists = s.sessions.some((x) => x.id === info.id);
       const sessions = exists
         ? s.sessions.map((x) => (x.id === info.id ? { ...x, ...summaryOf(summary) } : x))
@@ -56,6 +54,7 @@ export const useSessions = create<SessionsState>((set) => ({
   markClosed: (session) =>
     set((s) => ({
       sessions: s.sessions.map((x) => (x.id === session ? { ...x, open: false } : x)),
+      infos: Object.fromEntries(Object.entries(s.infos).filter(([id]) => id !== session)),
       kernel: { ...s.kernel, [session]: { state: "stopped", message: null } },
       active: s.active === session ? (s.sessions.find((x) => x.open && x.id !== session)?.id ?? null) : s.active,
     })),

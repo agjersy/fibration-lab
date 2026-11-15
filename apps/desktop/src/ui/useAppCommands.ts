@@ -3,17 +3,23 @@ import { useEffect } from "react";
 import { registerCommands, runCommand } from "../commands";
 import { resolveKey } from "../keymap";
 import type { KeyContext } from "../keymap";
-import { openTerminal, refreshIndex, runScript, saveBuffer } from "../state/actions";
-import { useFiles } from "../state/files";
+import { openTerminal, refreshIndex, runCurrentScript, saveBuffer } from "../state/actions";
 import { useSessions } from "../state/sessions";
 import { useUi } from "../state/ui";
-import { activeEditorPath, closeActiveTab, cycleTab, focusChatInput, showPanel, toggleDock } from "./workbench/controller";
+import { activeEditorPath, closableTabFocused, closeActiveTab, cycleTab, focusChatInput, showPanel, toggleDock } from "./workbench/controller";
 
-function contextOf(target: EventTarget | null): KeyContext {
+export function contextOf(target: EventTarget | null): KeyContext {
   const el = target instanceof Element ? target : null;
+  // Focus inside an xterm: the shell owns the keyboard (see keymap.ts).
+  if (el?.closest(".xterm")) return "terminal";
   if (el?.closest(".cm-editor")) return "editor";
   if (el?.closest("[data-chat-input]")) return "chat";
   return "global";
+}
+
+/** A modal dialog (or the palette) is open: global shortcuts must not act on the workbench behind it. */
+function modalOpen(): boolean {
+  return document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
 }
 
 export function useAppCommands(): void {
@@ -72,9 +78,8 @@ export function useAppCommands(): void {
           const path = activeEditorPath();
           if (!s || !path || !path.endsWith(".py")) return;
           void (async () => {
-            const b = useFiles.getState().buffers[s]?.[path];
-            if (b?.dirty) await saveBuffer(s, path);
-            const id = await runScript(s, path, []);
+            // Saves first when dirty; a failed save aborts the run.
+            const id = await runCurrentScript(s, path);
             if (id) showPanel("runoutput");
           })();
         },
@@ -85,7 +90,7 @@ export function useAppCommands(): void {
         category: "Run",
         run: () => {
           const s = session();
-          if (s) void refreshIndex(s);
+          if (s) void refreshIndex(s).catch(() => undefined);
         },
       },
       { id: "show_figures", title: "Show figures", category: "View", run: () => showPanel("figures") },
@@ -103,14 +108,20 @@ export function useAppCommands(): void {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const ctx = contextOf(e.target);
-      const command = resolveKey(e, ctx);
+      // A binding whose guard does not hold is not resolved, so the event is
+      // left untouched (mod-w without a closable tab stays the platform's).
+      const command = resolveKey(e, ctx, undefined, { closable_tab: closableTabFocused() });
       if (!command) return;
       // The chat input handles its own send binding.
       if (command === "chat_send") return;
       e.preventDefault();
       e.stopPropagation();
-      if (command === "command_palette" && useUi.getState().palette === "commands") {
-        useUi.getState().setPalette(null);
+      if (modalOpen()) {
+        // Only the palette's own toggles work while something modal is open.
+        const palette = useUi.getState().palette;
+        if (palette === null) return;
+        if (command === "command_palette") useUi.getState().setPalette(palette === "commands" ? null : "commands");
+        else if (command === "file_finder") useUi.getState().setPalette(palette === "files" ? null : "files");
         return;
       }
       runCommand(command);

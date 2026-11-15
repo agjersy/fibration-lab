@@ -79,6 +79,10 @@ describe("IPC types match the ts-rs export", () => {
     expectTypeOf<Gen.OutListResult>().toExtend<Hand.OutListResult>();
     expectTypeOf<Hand.OutReadResult>().toExtend<Gen.OutReadResult>();
     expectTypeOf<Gen.OutReadResult>().toExtend<Hand.OutReadResult>();
+    expectTypeOf<Hand.RunDetail>().toExtend<Gen.RunDetail>();
+    expectTypeOf<Gen.RunDetail>().toExtend<Hand.RunDetail>();
+    expectTypeOf<Hand.ProviderKeyStatus>().toExtend<Gen.ProviderKeyStatus>();
+    expectTypeOf<Gen.ProviderKeyStatus>().toExtend<Hand.ProviderKeyStatus>();
     expectTypeOf<Hand.Mode>().toExtend<Gen.Mode>();
     expectTypeOf<Gen.Mode>().toExtend<Hand.Mode>();
     expectTypeOf<Hand.KernelState>().toExtend<Gen.KernelState>();

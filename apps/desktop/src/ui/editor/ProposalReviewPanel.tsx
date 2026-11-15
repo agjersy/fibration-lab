@@ -1,7 +1,7 @@
 import type { IDockviewPanelProps } from "dockview-react";
-import { Suspense, lazy, useCallback, useRef, useState } from "react";
-import { respondProposal } from "../../state/actions";
-import { useProposal } from "../../state/chat";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { useProposal, useResponding } from "../../state/chat";
+import { acceptProposal, registerReview, rejectProposal } from "./review";
 import type { MergeEditorHandle } from "./MergeEditor";
 
 const MergeEditor = lazy(() => import("./MergeEditor"));
@@ -14,6 +14,11 @@ export function ProposalReviewPanel({ params, api }: IDockviewPanelProps<{ propo
     handleRef.current = h;
   }, []);
   const onChunksChange = useCallback((n: number) => setRemaining(n), []);
+  const responding = useResponding(params.proposalId);
+  const proposedText = record?.proposal.proposed ?? "";
+
+  // While this tab is open, accepting from the chat card sends what is reviewed here.
+  useEffect(() => registerReview(params.proposalId, () => handleRef.current?.getDoc() ?? proposedText), [params.proposalId, proposedText]);
 
   if (!record) {
     return (
@@ -27,20 +32,13 @@ export function ProposalReviewPanel({ params, api }: IDockviewPanelProps<{ propo
       </div>
     );
   }
-  const { proposal, status, session } = record;
+  const { proposal, status } = record;
   const pending = status === "pending";
   const original = proposal.original ?? "";
   const proposed = proposal.proposed ?? "";
-
-  const accept = async () => {
-    const content = handleRef.current?.getDoc() ?? proposed;
-    await respondProposal(session, proposal.id, content === proposed ? { decision: "accept" } : { decision: "accept", content });
-    api.close();
-  };
-  const reject = async () => {
-    await respondProposal(session, proposal.id, { decision: "reject" });
-    api.close();
-  };
+  // Both close this tab themselves, and only when the backend took the decision.
+  const accept = () => void acceptProposal(record);
+  const reject = () => void rejectProposal(record);
 
   return (
     <div className="review" data-testid="proposal-review">
@@ -54,16 +52,16 @@ export function ProposalReviewPanel({ params, api }: IDockviewPanelProps<{ propo
             <button type="button" className="small" onClick={() => handleRef.current?.acceptAll()} title="Restore every proposed chunk">
               Reset
             </button>
-            <button type="button" className="small danger" onClick={() => void reject()}>
+            <button type="button" className="small danger" onClick={reject} disabled={responding} data-testid="reject-all">
               Reject all
             </button>
-            <button type="button" className="small primary" onClick={() => void accept()} data-testid="accept-all">
-              Accept all
+            <button type="button" className="small primary" onClick={accept} disabled={responding} data-testid="accept-all" title="Write the file as shown here">
+              {responding ? "Sending…" : "Accept all"}
             </button>
           </>
         ) : (
           <span className={`badge ${status === "accept" || status === "auto" ? "success" : "error"}`}>
-            {status === "accept" ? "accepted" : status === "auto" ? "auto-applied" : "rejected"}
+            {status === "accept" ? "accepted" : status === "auto" ? "auto-applied" : status === "expired" ? "no longer pending" : "rejected"}
           </span>
         )}
       </div>
