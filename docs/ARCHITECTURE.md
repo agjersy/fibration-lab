@@ -13,7 +13,7 @@
 | P5 | Preview and PDF/PNG export | Live HTML/SVG preview from the deck document (structured mode), plus a fidelity render of the actual `.pptx` by PowerPoint automation when installed, else a separately installable bundled LibreOffice, else a system LibreOffice | Decided (OQ-P6) |
 | P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
 | P7 | Skills | Full Anthropic Agent Skills (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every endpoint; scripts in the code sandbox, ask by default | Decided (OQ-P7) |
-| P8 | References | Local extraction and SQLite FTS5 index; search/read tools for the agent; per-element citations in the deck document. Native PDF document blocks with citations used when the provider supports them and the set is small | Proposed |
+| P8 | References | Always copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML, and Personal Analyst outputs. Hybrid search: SQLite FTS5 plus a bundled offline embedding model (endpoint optional). No OCR and no web access in v1. Per-element citations | Decided (OQ-P8) |
 | P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Proposed (shared) |
 | P10 | Checkpoints | Content-addressed snapshot store inside the project (no dependency on a system `git`) | Proposed, OQ-P10 |
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
@@ -110,7 +110,7 @@ Licensing rule from Analyst kept: permissive dependencies only (no GPL or AGPL).
 | Slide | A layout reference, the content of each placeholder, optional extra elements, speaker notes, lock state, and a stable id. | `deck/slides/<id>.json` |
 | Element | Text block, image, chart, table, or (later) diagram, either in a placeholder or positioned freely if the contract allows. Carries citations. | inside the slide |
 | Citation | A link from a run of text or a data series to a location in a reference (page, character range, sheet and cell range, slide and shape). | inside the element |
-| Reference | A source file (or an Analyst artifact) with extracted text, tables, and images, its hash, and its location. | `references/` or linked path; index in SQLite |
+| Reference | A source file (or an Analyst artifact) with extracted text, tables, and images, its hash, and its location. | `references/` (copied, content-addressed); index in SQLite |
 | Conversation, Turn, Proposal | As in Analyst. A proposal is a change set over slides. | transcript |
 | Snapshot | The deck document before an agent turn, content-addressed. | `.present/history/` |
 | Export | A rendered output file with its format, preset, deck snapshot id, and checker result. | `exports/` |
@@ -252,17 +252,24 @@ No shell tool, no general code REPL, no file write outside the deck store, no ne
 
 ## 8. References and source tracing
 
-**Ingestion** (kernel, local): PDF with `pypdfium2` (text with page and character offsets, embedded images); DOCX with `python-docx` (paragraphs, headings, tables); PPTX with `python-pptx` (per slide and shape, notes, and charts' data); XLSX with `openpyxl` (sheets, named ranges, cell values; formulas evaluated values only); CSV; Markdown and plain text; images (with optional captioning by a vision model on request). OCR for scanned PDFs is a later, optional component (Tesseract, Apache-2.0).
+**Ingestion** (kernel, local): PDF with `pypdfium2` (text with page and character offsets, embedded images; pages without a text layer are flagged and can be sent to a vision-capable model as page images, since OCR is not in v1); DOCX with `python-docx` (paragraphs, headings, tables); PPTX with `python-pptx` (per slide and shape, notes, and charts' data); XLSX with `openpyxl` (sheets, named ranges, cell values; formulas as evaluated values only); CSV; Markdown and plain text; images (with optional captioning by a vision model on request); email: `.eml` with the Python standard library and `.msg` with a small reader over `olefile` (BSD) following the published MS-OXMSG format (subject, sender, recipients, date, body, attachments; GPL-licensed `.msg` libraries are excluded by the licensing rule), with attachments ingested as child references; HTML and saved web pages (`.html`, `.mhtml`) with main-content extraction by a permissively licensed parser, keeping headings and tables. Decided (OQ-P8).
 
-**Index.** SQLite FTS5 over chunks that keep their location (file, page, character range, sheet range, slide and shape). Embeddings are optional, only through an approved endpoint configured by the user or the organization, because many enterprise deployments have no embedding model.
+**Index (decided, OQ-P8: large sets, semantic search required).** Typical reference sets are large (hundreds of pages, many documents), so retrieval is hybrid from the first version:
 
-**Two ways into the model.** For a small reference set on a provider with native document support, PDFs can be sent as document blocks with citations enabled (supported by the Anthropic Messages API; a gateway or open-weight server may not support it, so this is probed), and the model's citations are mapped onto the deck's citation format. Otherwise, and always for large sets, the agent uses `refs.search` and `refs.read`. In both cases the citation lands on the text run or chart series it supports.
+- **Chunks** keep their location (file, page, character range, sheet range, slide and shape, email part) and their document's heading path.
+- **Lexical:** SQLite FTS5 (BM25).
+- **Semantic:** a small multilingual embedding model bundled with the app (an ONNX model of roughly 100 to 300 MB with a permissive license, run on CPU through ONNX Runtime in the kernel), so semantic search works offline with no endpoint. Vectors are stored in SQLite with `sqlite-vec`. An approved embedding endpoint can replace the bundled model by configuration; switching models re-embeds in the background.
+- **Fusion:** reciprocal rank fusion of both result lists, then a per-document cap so one long report does not crowd out the rest.
+- **Document map:** at ingest each document gets an outline (headings, page ranges, tables and figures list) built without a model; an optional model-written summary per document is generated on request, since it costs tokens. The agent sees the reference list with these outlines and drills down with `refs.search` and `refs.read`.
+- **Ingest is incremental and background:** a large set is usable as soon as its first documents are indexed, with progress shown in the References panel.
 
-**Linked or copied.** References are linked by absolute path with a content hash by default, with an option to copy into `references/` for a self-contained project (OQ-P8).
+**Into the model.** Retrieval through `refs.search` and `refs.read` is the default path, because sets are large. For a few short PDFs on an endpoint that supports native document blocks with citations (the Anthropic Messages API; probed on gateways), those PDFs can be sent whole, and the model's citations are mapped onto the deck's citation format. Either way the citation lands on the text run or chart series it supports.
+
+**Always copied (decided, OQ-P8).** Adding a reference copies the file into the project's `references/` folder, content-addressed by hash, with its original path and import time recorded. A project folder is therefore self-contained and can be handed to a colleague or archived with its sources. Re-adding a changed file creates a new version; citations keep pointing at the version they were made against, and the app offers to re-check citations against the new version. Large sets make projects large; the References panel shows the size and a 'remove unused references' action (references no slide cites).
 
 **Source lens.** Clicking a cited run opens the Sources panel at the passage with the span highlighted. The number check extracts numeric tokens from a slide's text (with unit, percent, currency, and scale normalization: "18%", "0.18", "€1.2bn") and looks for them in the cited passage; badge green (found), amber (found after normalization or rounding), red (not found), grey (no citation).
 
-**Personal Analyst references.** Pointing a project at an Analyst repo exposes its `out/figures/**` with sidecar metadata (script, arguments, run id, title, axes) and its run tables through `out.read`-style previews. A figure imported into a deck keeps that provenance as its citation.
+**Personal Analyst references (decided, v1).** Pointing a project at an Analyst repo lists its figures (`out/figures/**` with sidecar metadata: script, arguments, run id, target, title, axes) and its output tables. Consistent with both the always-copy rule and Analyst's principle that data stays where it is generated, only what is imported is copied: a figure (PNG and SVG with its sidecar) or a bounded table extract, never the repo or its datasets. Remote-target outputs are read through Analyst's own rendered-products path, not fetched directly. The imported item keeps the Analyst provenance as its citation. A web page or URL is not a reference type in v1 (no web access; later through an MCP connector).
 
 ## 9. Deck contract and checker
 
@@ -424,7 +431,7 @@ Docking with `dockview` and undockable windows as in Analyst (a presenter-style 
   projects/<id>/
     project-state.toml  path, layout, active model
     conversations/<id>.jsonl
-    index.sqlite        reference index, check cache, capability records
+    index.sqlite        reference index (FTS5 + vectors), check cache, capability records
 
 Managed configuration (read-only, admin-owned):
   macOS:   /Library/Application Support/Present/policy.toml (or a configuration profile)
@@ -441,7 +448,7 @@ Managed configuration (read-only, admin-owned):
     slides/<id>.json    structured mode (generated slides carry a script)
     build.py            code mode (plus any modules it imports)
   template/             template file + template.toml sidecar
-  references/           copied references (optional) + links.toml
+  references/           copied references, content-addressed, + manifest.toml (original paths, versions)
   assets/
   exports/
 ```

@@ -25,17 +25,9 @@
 | OQ-P5 Round-trip and import | Phase 1 is one-way: export is final, but every export carries stable element ids. Structured-mode re-import of PowerPoint edits (text, order, layout, chart data on known elements; unknown changes kept as locked foreign elements) in phase 2. Code-mode re-import later, best-effort, as a reviewable script patch. Existing decks not made by the app are references only; a best-effort 'convert to project' importer comes later (it also serves code → structured switching). | ARCHITECTURE.md sections 5, 5.1, 10 |
 | OQ-P6 Rendering engine | Fidelity render chain: PowerPoint automation when installed (COM on Windows, AppleScript on macOS), else a bundled LibreOffice shipped as a separately installable component, else a system LibreOffice. Structured mode keeps the live HTML preview for editing. Without any engine: no PDF/PNG export and no code-mode previews, stated in the UI. CI uses LibreOffice; a Windows runner with PowerPoint is used where available. | ARCHITECTURE.md P5, sections 3, 10 |
 | OQ-P7 Skills and code sandbox | Full Agent Skills including scripts, run by the app (ask by default, deniable by config). One OS-native sandbox for all code (builds, generated slides, skill scripts): macOS `sandbox-exec`, Windows AppContainer + job object, Linux `bubblewrap` in phase 4; no network, writes only to scratch and output; badged fallback to resource limits. Code uses a fixed, pinned package set bundled offline in the installer. | ARCHITECTURE.md P7, P11, sections 12, 12.1 |
+| OQ-P8 References | Always copied into the project (content-addressed, versioned). v1 formats: PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML and saved pages, Personal Analyst figures and tables (only imported items are copied). No OCR in v1. No web access in v1; later through MCP. Reference sets are large, so hybrid search (FTS5 + bundled offline embedding model, endpoint optional) is in v1. | ARCHITECTURE.md P8, section 8 |
 
 ## 3. Open
-
-### OQ-P8. References: scope and handling
-
-**Options and recommendations.**
-- Linked versus copied: link with hash by default, copy on request (self-contained project). *Decide:* do projects need to be portable folders you can hand to a colleague?
-- Formats in v1: PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text. *Decide:* anything else essential (email `.msg`/`.eml`, HTML, scanned PDFs needing OCR)?
-- Web URLs: off by default; possible later through an MCP connector so enterprise policy controls it. *Decide:* do you need the agent to read web pages?
-- Semantic search: only with an approved embedding endpoint; FTS otherwise. *Decide:* is there an embedding model available in your environment?
-- Size: what is a typical reference set (a few documents, or hundreds of pages)?
 
 ### OQ-P9. Charts and data
 
@@ -79,4 +71,5 @@
 - Overflow measurement accuracy: compare the checker's verdicts with PowerPoint and LibreOffice renders on a corpus of slides.
 - LibreOffice versus PowerPoint render differences on the same templates.
 - How often the agent needs generated slides on real briefs, and how often code mode output stays on-template when the build script uses the SDK.
+- Retrieval quality of the bundled embedding model on your real reference sets, versus FTS alone and versus an endpoint model if one becomes available.
 - Gateway and open-weight server behavior on the same tasks (tool calling, document citations, caching, unknown-field handling) through the shared provider layer.
