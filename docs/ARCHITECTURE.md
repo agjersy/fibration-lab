@@ -15,7 +15,7 @@
 | P7 | Skills | Full Anthropic Agent Skills (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every endpoint; scripts in the code sandbox, ask by default | Decided (OQ-P7) |
 | P8 | References | Always copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML, and Personal Analyst outputs. Hybrid search: SQLite FTS5 plus a bundled offline embedding model (endpoint optional). No OCR and no web access in v1. Per-element citations | Decided (OQ-P8) |
 | P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Proposed (shared) |
-| P10 | Checkpoints | Content-addressed snapshot store inside the project (no dependency on a system `git`) | Proposed, OQ-P10 |
+| P10 | Checkpoints | App-owned content-addressed snapshot store in `.present/history/`; no git dependency or integration (a user may still version the folder with git) | Decided (OQ-P10) |
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
 | P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, system proxy and trust store, local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Proposed (shared) |
@@ -385,7 +385,7 @@ max_steps = 60
 - **Review** pauses on each slide proposal; the card shows before/after thumbnails and a text diff, with accept, reject, or "accept with my edits".
 - **Conflict detection** by content hash per slide, as in Analyst.
 - **Locks** on slides and on individual elements; proposals touching them are denied.
-- **Snapshots** before every turn that can change the deck, stored content-addressed in `.present/history/`, with one-click revert of a turn. No system `git` required; a project folder can still be put under git by the user.
+- **Snapshots** (decided, OQ-P10) before every turn that can change the deck, at every mode switch, and at every export. A snapshot is a manifest (slide documents or build script and modules, deck metadata, the asset and reference hashes they use) written to `.present/history/` as content-addressed blobs; references and assets are already content-addressed, so they are never duplicated. One-click revert of a turn, restore of any snapshot as a new snapshot (history is append-only), and a history view with thumbnails from the stored fidelity renders. Pruning by age and count keeps export and mode-switch snapshots. No git dependency and no git integration; a user may put the project folder under git, and `.present/history/` is then best ignored.
 
 ## 14. User interface
 

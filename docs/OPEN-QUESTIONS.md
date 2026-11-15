@@ -27,16 +27,9 @@
 | OQ-P7 Skills and code sandbox | Full Agent Skills including scripts, run by the app (ask by default, deniable by config). One OS-native sandbox for all code (builds, generated slides, skill scripts): macOS `sandbox-exec`, Windows AppContainer + job object, Linux `bubblewrap` in phase 4; no network, writes only to scratch and output; badged fallback to resource limits. Code uses a fixed, pinned package set bundled offline in the installer. | ARCHITECTURE.md P7, P11, sections 12, 12.1 |
 | OQ-P8 References | Always copied into the project (content-addressed, versioned). v1 formats: PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML and saved pages, Personal Analyst figures and tables (only imported items are copied). No OCR in v1. No web access in v1; later through MCP. Reference sets are large, so hybrid search (FTS5 + bundled offline embedding model, endpoint optional) is in v1. | ARCHITECTURE.md P8, section 8 |
 | OQ-P9 Chart data | Native charts take their data from reference ranges or extracted tables through a declarative, closed set of transforms (filter, sort, top-N, group aggregates, pivot, percent change, share, cumulative, scaling, rounding) run deterministically by the kernel and stored with the chart as provenance; a checker rule recomputes them. Real analysis happens in Personal Analyst; code mode and generated slides remain available for anything else. | ARCHITECTURE.md sections 5, 9 |
+| OQ-P10 Checkpoints | App-owned, append-only, content-addressed snapshot store in `.present/history/` (per turn, per mode switch, per export); no git dependency or integration. | ARCHITECTURE.md P10, section 13 |
 
 ## 3. Open
-
-### OQ-P10. Checkpoints without git
-
-**Options.** (a) System `git` like Analyst. (b) Embedded `gitoxide`. (c) App-owned content-addressed snapshot store.
-
-**Recommendation.** (c). Enterprise Windows machines often lack `git`, users are not assumed to know it, and the deck document is small. Users can still put a project under git themselves.
-
-**Decide.** Any reason to require git (for example, you want decks in your analysis repos)?
 
 ### OQ-P11. Code sharing with Personal Analyst
 
