@@ -1,11 +1,15 @@
 //! Edit proposals: `edits` (old/new, exact-once matching) or full `content`, create, delete,
 //! with conflict detection by content hash of the file the proposal was based on.
+//!
+//! Paths are confined twice: lexically (`normalize_rel_path`, reserved directories) and
+//! physically (`resolve_in_repo`, no writes through symlinks). Line endings of the existing
+//! file are preserved.
 
-use crate::util::{normalize_rel_path, sha256_hex};
+use crate::util::{is_reserved_path, is_symlink, normalize_rel_path, resolve_in_repo, sha256_hex};
 use analyst_protocol::transcript::ProposalKind;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Proposal {
@@ -20,9 +24,39 @@ pub struct Proposal {
     pub diff: String,
 }
 
+/// Lexical and physical confinement shared by build and apply. Returns the absolute path.
+fn confine(repo: &Path, rel: &str) -> Result<PathBuf> {
+    if is_reserved_path(rel) {
+        return Err(anyhow!(
+            "`{rel}` is under .git/ or .analyst/, which are never editable"
+        ));
+    }
+    let lexical = repo.join(rel);
+    if is_symlink(&lexical) {
+        return Err(anyhow!(
+            "`{rel}` is a symbolic link; edit the file it points to instead"
+        ));
+    }
+    resolve_in_repo(repo, rel, false).map_err(|e| anyhow!(e))
+}
+
 fn read_existing(repo: &Path, rel: &str) -> Result<String> {
-    let full = repo.join(rel);
+    let full = confine(repo, rel)?;
     std::fs::read_to_string(&full).map_err(|e| anyhow!("cannot read `{rel}`: {e}"))
+}
+
+/// Whether a text uses CRLF line endings (every newline is preceded by a carriage return).
+pub fn is_crlf(text: &str) -> bool {
+    let crlf = text.matches("\r\n").count();
+    crlf > 0 && crlf == text.matches('\n').count()
+}
+
+fn to_lf(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+fn to_crlf(text: &str) -> String {
+    to_lf(text).replace('\n', "\r\n")
 }
 
 /// Build a proposal for `fs.propose_edit`, `fs.propose_create`, or `fs.propose_delete`.
@@ -38,7 +72,8 @@ pub fn build(repo: &Path, id: &str, tool: &str, args: &Value) -> Result<Proposal
                 .get("content")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("`content` is required"))?;
-            if repo.join(&path).exists() {
+            let full = confine(repo, &path)?;
+            if std::fs::symlink_metadata(&full).is_ok() {
                 return Err(anyhow!("`{path}` already exists; use fs.propose_edit"));
             }
             Ok(Proposal {
@@ -68,7 +103,12 @@ pub fn build(repo: &Path, id: &str, tool: &str, args: &Value) -> Result<Proposal
             let new_content = if let Some(edits) = args.get("edits").and_then(Value::as_array) {
                 apply_edits(&existing, edits)?
             } else if let Some(c) = args.get("content").and_then(Value::as_str) {
-                c.to_string()
+                // Models emit LF; keep a CRLF file CRLF.
+                if is_crlf(&existing) {
+                    to_crlf(c)
+                } else {
+                    c.to_string()
+                }
             } else {
                 return Err(anyhow!("fs.propose_edit needs `edits` or `content`"));
             };
@@ -91,8 +131,29 @@ pub fn build(repo: &Path, id: &str, tool: &str, args: &Value) -> Result<Proposal
     }
 }
 
-/// Apply `{old, new}` edits; each `old` must occur exactly once in the current text.
+/// Apply `{old, new}` edits; each `old` must occur exactly once in the current text. A CRLF
+/// file is matched and rewritten line-ending-insensitively: `old`/`new` may use LF, and the
+/// result keeps CRLF.
 pub fn apply_edits(existing: &str, edits: &[Value]) -> Result<String> {
+    if is_crlf(existing) {
+        let normalised: Vec<Value> = edits
+            .iter()
+            .map(|e| {
+                let mut e = e.clone();
+                for key in ["old", "new"] {
+                    if let Some(t) = e.get(key).and_then(Value::as_str) {
+                        e[key] = Value::String(to_lf(t));
+                    }
+                }
+                e
+            })
+            .collect();
+        return Ok(to_crlf(&apply_edits_exact(&to_lf(existing), &normalised)?));
+    }
+    apply_edits_exact(existing, edits)
+}
+
+fn apply_edits_exact(existing: &str, edits: &[Value]) -> Result<String> {
     let mut text = existing.to_string();
     for (i, e) in edits.iter().enumerate() {
         let old = e
@@ -123,9 +184,12 @@ pub fn apply_edits(existing: &str, edits: &[Value]) -> Result<String> {
 }
 
 /// Apply a proposal to the working tree, rejecting it when the file changed since it was
-/// built (conflict).
+/// built (conflict). Creation uses create-new semantics, so a file that appeared while the
+/// proposal was pending is never overwritten. Nothing is written through a symlink or into a
+/// reserved directory.
 pub fn apply(repo: &Path, p: &Proposal) -> Result<()> {
-    let full = repo.join(&p.path);
+    use std::io::Write;
+    let full = confine(repo, &p.path)?;
     if let Some(h) = &p.base_hash {
         let current = std::fs::read(&full).map_err(|e| anyhow!("cannot read `{}`: {e}", p.path))?;
         if sha256_hex(&current) != *h {
@@ -135,15 +199,36 @@ pub fn apply(repo: &Path, p: &Proposal) -> Result<()> {
             ));
         }
     }
+    let content = p.new_content.as_deref().unwrap_or("");
     match p.kind {
         ProposalKind::Delete => {
             std::fs::remove_file(&full).map_err(|e| anyhow!("deleting `{}`: {e}", p.path))?;
         }
-        _ => {
+        ProposalKind::Create => {
             if let Some(parent) = full.parent() {
-                std::fs::create_dir_all(parent)?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| anyhow!("creating the directory for `{}`: {e}", p.path))?;
             }
-            let content = p.new_content.as_deref().unwrap_or("");
+            // The parent may have been replaced by a link while the proposal was pending.
+            let full = confine(repo, &p.path)?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&full)
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        anyhow!(
+                            "conflict: `{}` was created by someone else while this proposal was pending; read it and use fs.propose_edit instead",
+                            p.path
+                        )
+                    } else {
+                        anyhow!("creating `{}`: {e}", p.path)
+                    }
+                })?;
+            f.write_all(content.as_bytes())
+                .map_err(|e| anyhow!("writing `{}`: {e}", p.path))?;
+        }
+        _ => {
             std::fs::write(&full, content).map_err(|e| anyhow!("writing `{}`: {e}", p.path))?;
         }
     }
@@ -352,6 +437,134 @@ mod tests {
             &json!({"path":"../x","content":""})
         )
         .is_err());
+    }
+
+    /// A9: CRLF files can be edited with LF `old`/`new`, and stay CRLF.
+    #[test]
+    fn crlf_files_are_editable_and_stay_crlf() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::write(repo.join("w.py"), "x = 1\r\ny = 2\r\nz = 3\r\n").unwrap();
+        let p = build(
+            repo,
+            "p1",
+            "fs.propose_edit",
+            &json!({"path":"w.py","edits":[{"old":"x = 1\ny = 2","new":"x = 1\ny = 20\nq = 0"}]}),
+        )
+        .unwrap();
+        apply(repo, &p).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.join("w.py")).unwrap(),
+            "x = 1\r\ny = 20\r\nq = 0\r\nz = 3\r\n"
+        );
+        assert_eq!(p.summary, "edit w.py (+2 -1)");
+        let full = build(
+            repo,
+            "p2",
+            "fs.propose_edit",
+            &json!({"path":"w.py","content":"a = 1\nb = 2\n"}),
+        )
+        .unwrap();
+        assert_eq!(full.new_content.as_deref(), Some("a = 1\r\nb = 2\r\n"));
+        // LF files are untouched by the CRLF path.
+        assert_eq!(
+            apply_edits("a\nb\n", &[json!({"old":"a\nb","new":"c"})]).unwrap(),
+            "c\n"
+        );
+    }
+
+    /// A9: a file the user creates while a create-proposal is pending is not overwritten.
+    #[test]
+    fn create_does_not_overwrite_a_file_that_appeared() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let p = build(
+            repo,
+            "p1",
+            "fs.propose_create",
+            &json!({"path":"notes/n.md","content":"agent\n"}),
+        )
+        .unwrap();
+        std::fs::create_dir_all(repo.join("notes")).unwrap();
+        std::fs::write(repo.join("notes/n.md"), "user\n").unwrap();
+        let err = apply(repo, &p).unwrap_err().to_string();
+        assert!(err.contains("conflict") && err.contains("created"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("notes/n.md")).unwrap(),
+            "user\n"
+        );
+    }
+
+    /// G4 and G7: reserved directories and symlinks are refused at build and at apply.
+    #[cfg(unix)]
+    #[test]
+    fn reserved_and_symlinked_paths_are_refused() {
+        use std::os::unix::fs::symlink;
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
+        std::fs::write(repo.join(".git/config"), "[core]\n").unwrap();
+        std::fs::write(outside.path().join("victim.txt"), "v\n").unwrap();
+        symlink(outside.path(), repo.join("esc")).unwrap();
+        symlink(outside.path().join("victim.txt"), repo.join("alias.txt")).unwrap();
+        for (tool, args) in [
+            (
+                "fs.propose_edit",
+                json!({"path":".git/config","content":"x"}),
+            ),
+            (
+                "fs.propose_create",
+                json!({"path":".git/hooks/pre-commit","content":"x"}),
+            ),
+            (
+                "fs.propose_create",
+                json!({"path":".GIT/hooks/pre-commit","content":"x"}),
+            ),
+            (
+                "fs.propose_create",
+                json!({"path":".analyst/project.toml","content":"x"}),
+            ),
+            (
+                "fs.propose_create",
+                json!({"path":"esc/new.txt","content":"x"}),
+            ),
+            (
+                "fs.propose_edit",
+                json!({"path":"esc/victim.txt","content":"x"}),
+            ),
+            ("fs.propose_edit", json!({"path":"alias.txt","content":"x"})),
+            ("fs.propose_delete", json!({"path":"alias.txt"})),
+            ("fs.propose_delete", json!({"path":"esc/victim.txt"})),
+        ] {
+            assert!(build(repo, "p", tool, &args).is_err(), "{tool} {args}");
+        }
+        // A proposal built before the directory became a link is refused at apply.
+        let p = build(
+            repo,
+            "p",
+            "fs.propose_create",
+            &json!({"path":"later/f.txt","content":"x"}),
+        )
+        .unwrap();
+        symlink(outside.path(), repo.join("later")).unwrap();
+        assert!(apply(repo, &p).is_err());
+        assert!(!outside.path().join("f.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("victim.txt")).unwrap(),
+            "v\n"
+        );
+        // Hand-built proposals (the service applies user-edited ones) are confined too.
+        let forged = Proposal {
+            id: "f".into(),
+            kind: ProposalKind::Create,
+            path: ".git/hooks/post-commit".into(),
+            new_content: Some("x".into()),
+            base_hash: None,
+            summary: String::new(),
+            diff: String::new(),
+        };
+        assert!(apply(repo, &forged).is_err());
     }
 
     #[test]

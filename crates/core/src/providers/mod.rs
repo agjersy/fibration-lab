@@ -10,10 +10,12 @@ pub mod text_protocol;
 
 use crate::config::ResolvedModel;
 use analyst_protocol::config::ProviderKind;
-use analyst_protocol::model::{ChatRequest, ModelEvent, StopReason};
+use analyst_protocol::model::{ChatRequest, ContentPart, Message, ModelEvent, StopReason};
 use futures::stream::BoxStream;
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// A streaming chat client. Every adapter produces exactly the `ModelEvent` sequence of
 /// PROTOCOL 4 and always terminates the stream with a `Stop` event.
@@ -23,9 +25,18 @@ pub trait ModelClient: Send + Sync {
     fn model_id(&self) -> &str;
 }
 
-/// Build the client for a resolved model.
+/// Build the client for a resolved model (keys from the environment or the default home's
+/// `credentials.toml`).
 pub fn client_for(resolved: &ResolvedModel) -> anyhow::Result<Arc<dyn ModelClient>> {
-    let api_key = crate::config::api_key(&resolved.provider)?;
+    client_for_in(&crate::config::analyst_home(), resolved)
+}
+
+/// [`client_for`] with an explicit analyst home for stored keys.
+pub fn client_for_in(
+    home: &Path,
+    resolved: &ResolvedModel,
+) -> anyhow::Result<Arc<dyn ModelClient>> {
+    let api_key = crate::config::api_key_in(home, &resolved.provider)?;
     let base_url = resolved.provider.effective_base_url();
     Ok(match resolved.provider.kind {
         ProviderKind::OpenAiCompatible => Arc::new(openai_compat::OpenAiCompatClient::new(
@@ -37,13 +48,41 @@ pub fn client_for(resolved: &ResolvedModel) -> anyhow::Result<Arc<dyn ModelClien
             base_url,
             api_key.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "provider `{}` (anthropic) needs `api_key_env` in config.toml",
+                    "provider `{}` (anthropic) needs an API key: set `api_key_env` in config.toml or store a key",
                     resolved.provider.name
                 )
             })?,
             resolved.spec.id.clone(),
         )?),
     })
+}
+
+/// The model's context window as reported by the provider, when it reports one: Anthropic
+/// `GET /v1/models/{id}` (`max_input_tokens`), OpenAI-compatible `GET /models`
+/// (`context_length`, `context_window`, `max_model_len`, ...). `None` on any failure.
+pub async fn model_info_window(home: &Path, resolved: &ResolvedModel) -> Option<u32> {
+    let key = crate::config::api_key_in(home, &resolved.provider)
+        .ok()
+        .flatten();
+    let base = resolved.provider.effective_base_url();
+    let id = resolved.spec.id.clone();
+    let info = match resolved.provider.kind {
+        ProviderKind::OpenAiCompatible => {
+            let c = openai_compat::OpenAiCompatClient::new(base, key, id.clone()).ok()?;
+            tokio::time::timeout(Duration::from_secs(10), c.list_models())
+                .await
+                .ok()?
+                .ok()?
+        }
+        ProviderKind::Anthropic => {
+            let c = anthropic::AnthropicClient::new(base, key?, id.clone()).ok()?;
+            tokio::time::timeout(Duration::from_secs(10), c.model_info())
+                .await
+                .ok()?
+                .ok()?
+        }
+    };
+    capabilities::context_window_from_info(&info, &id)
 }
 
 /// Turn a receiver of events into a boxed stream (adapters push from a spawned task).
@@ -53,6 +92,233 @@ pub(crate) fn channel_stream(
     Box::pin(futures::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|e| (e, rx))
     }))
+}
+
+/// History as both wire formats need it: text parts that are empty or whitespace-only are
+/// dropped (the Anthropic API rejects them), messages left without content are dropped, and
+/// adjacent messages of the same role are merged so roles strictly alternate.
+pub fn normalize_messages(messages: &[Message]) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::new();
+    for m in messages {
+        let content: Vec<ContentPart> = m
+            .content
+            .iter()
+            .filter(|p| !matches!(p, ContentPart::Text { text } if text.trim().is_empty()))
+            .cloned()
+            .collect();
+        if content.is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if last.role == m.role => {
+                // Keep separate texts readable when two messages are joined.
+                if let (Some(ContentPart::Text { text: a }), Some(ContentPart::Text { .. })) =
+                    (last.content.last_mut(), content.first())
+                {
+                    if !a.ends_with('\n') {
+                        a.push('\n');
+                    }
+                }
+                last.content.extend(content);
+            }
+            _ => out.push(Message {
+                role: m.role,
+                content,
+            }),
+        }
+    }
+    out
+}
+
+/// Timeouts and retry policy for provider HTTP calls (PROTOCOL 9).
+#[derive(Debug, Clone)]
+pub struct HttpPolicy {
+    pub connect_timeout: Duration,
+    /// Time allowed until response headers arrive.
+    pub first_byte_timeout: Duration,
+    /// Longest silence tolerated between stream chunks.
+    pub idle_timeout: Duration,
+    /// Total attempts before the first byte (1 = no retry).
+    pub max_attempts: u32,
+    /// First backoff delay; doubles per attempt.
+    pub backoff_base: Duration,
+}
+
+impl Default for HttpPolicy {
+    fn default() -> Self {
+        HttpPolicy {
+            connect_timeout: Duration::from_secs(15),
+            first_byte_timeout: Duration::from_secs(300),
+            idle_timeout: Duration::from_secs(180),
+            max_attempts: 4,
+            backoff_base: Duration::from_secs(1),
+        }
+    }
+}
+
+pub(crate) fn http_client(policy: &HttpPolicy) -> anyhow::Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(policy.connect_timeout)
+        .build()?)
+}
+
+/// Why a request produced no usable response.
+#[derive(Debug)]
+pub(crate) enum SendFailure {
+    Http { status: u16, body: String },
+    Transport(String),
+}
+
+impl SendFailure {
+    pub(crate) fn message(&self) -> String {
+        match self {
+            SendFailure::Http { status, body } => {
+                format!("HTTP {status}: {}", crate::util::truncate_bytes(body, 2000))
+            }
+            SendFailure::Transport(e) => format!("request failed: {e}"),
+        }
+    }
+}
+
+fn retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 425 | 429) || (500..=599).contains(&status)
+}
+
+/// Send a request, retrying with exponential backoff on connection errors, 429, 5xx, and
+/// overload (529) responses. Nothing has been streamed to the caller at this point, so a
+/// retry cannot duplicate output. `Retry-After` (seconds) is honoured up to 30 s.
+pub(crate) async fn send_with_retry<F>(
+    make: F,
+    policy: &HttpPolicy,
+) -> Result<reqwest::Response, SendFailure>
+where
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let sent = tokio::time::timeout(policy.first_byte_timeout, make().send()).await;
+        let (failure, retry_after) = match sent {
+            Ok(Ok(resp)) if resp.status().is_success() => return Ok(resp),
+            Ok(Ok(resp)) => {
+                let status = resp.status().as_u16();
+                let retry_after = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok());
+                let body = resp.text().await.unwrap_or_default();
+                let failure = SendFailure::Http { status, body };
+                if !retryable_status(status) {
+                    return Err(failure);
+                }
+                (failure, retry_after)
+            }
+            Ok(Err(e)) => (SendFailure::Transport(e.to_string()), None),
+            Err(_) => (
+                SendFailure::Transport(format!(
+                    "no response within {} s",
+                    policy.first_byte_timeout.as_secs()
+                )),
+                None,
+            ),
+        };
+        if attempt >= policy.max_attempts.max(1) {
+            return Err(failure);
+        }
+        let backoff = policy.backoff_base * 2u32.saturating_pow(attempt - 1);
+        let delay = match retry_after {
+            Some(s) => Duration::from_secs(s.min(30)).max(backoff),
+            None => backoff,
+        };
+        tracing::warn!(
+            "model request failed ({}); retry {attempt}/{} in {:?}",
+            failure.message(),
+            policy.max_attempts - 1,
+            delay
+        );
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// Per-response state of a wire adapter, driven by [`pump`].
+pub(crate) trait SseState: Send {
+    fn on_event(&mut self, ev: &sse::SseEvent) -> Vec<ModelEvent>;
+    /// The body ended. Must yield `Stop { reason: Error }` when no terminal event was seen.
+    fn on_eof(&mut self) -> Vec<ModelEvent>;
+}
+
+async fn stop_error(tx: &tokio::sync::mpsc::Sender<ModelEvent>, message: String) {
+    let _ = tx
+        .send(ModelEvent::Stop {
+            reason: StopReason::Error,
+            message: Some(message),
+        })
+        .await;
+}
+
+/// Read an SSE response body into model events, with an idle timeout between chunks.
+pub(crate) async fn pump(
+    resp: reqwest::Response,
+    tx: tokio::sync::mpsc::Sender<ModelEvent>,
+    idle_timeout: Duration,
+    mut state: impl SseState,
+) {
+    use futures::StreamExt;
+    let mut bytes = resp.bytes_stream();
+    let mut parser = sse::SseParser::new();
+    loop {
+        let chunk = match tokio::time::timeout(idle_timeout, bytes.next()).await {
+            Err(_) => {
+                stop_error(
+                    &tx,
+                    format!(
+                        "the model stream stalled: no data for {} s",
+                        idle_timeout.as_secs()
+                    ),
+                )
+                .await;
+                return;
+            }
+            Ok(None) => break,
+            Ok(Some(Err(e))) => {
+                stop_error(&tx, format!("stream error: {e}")).await;
+                return;
+            }
+            Ok(Some(Ok(c))) => c,
+        };
+        for ev in parser.push(&chunk) {
+            for me in state.on_event(&ev) {
+                if tx.send(me).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+    if let Some(ev) = parser.finish() {
+        for me in state.on_event(&ev) {
+            let _ = tx.send(me).await;
+        }
+    }
+    for me in state.on_eof() {
+        let _ = tx.send(me).await;
+    }
+}
+
+/// A unique id for a tool call whose provider did not supply one.
+pub(crate) fn generated_call_id() -> String {
+    format!("call_{}", &uuid::Uuid::new_v4().simple().to_string()[..16])
+}
+
+/// Arguments for a tool call whose JSON could not be parsed. `_truncated` is set when the
+/// response stopped at the output token limit, so the agent can tell the model to split the
+/// edit instead of executing garbage.
+pub(crate) fn unparsed_arguments(raw: &str, truncated: bool) -> serde_json::Value {
+    let mut v = serde_json::json!({ "_raw": crate::util::truncate_bytes(raw, 2000) });
+    if truncated {
+        v["_truncated"] = serde_json::json!(true);
+    }
+    v
 }
 
 /// A client that replays scripted event sequences; records every request it receives.
@@ -145,4 +411,137 @@ pub async fn collect(mut stream: BoxStream<'static, ModelEvent>) -> Collected {
         }
     }
     c
+}
+
+#[cfg(test)]
+pub(crate) mod testserver {
+    //! A minimal scripted HTTP server for adapter tests: each connection gets the next
+    //! canned response; request bodies are recorded.
+
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    pub struct Canned {
+        pub status: u16,
+        pub headers: Vec<(&'static str, String)>,
+        pub body: String,
+    }
+
+    impl Canned {
+        pub fn sse(body: &str) -> Canned {
+            Canned {
+                status: 200,
+                headers: vec![("content-type", "text/event-stream".into())],
+                body: body.to_string(),
+            }
+        }
+        pub fn status(status: u16, body: &str) -> Canned {
+            Canned {
+                status,
+                headers: vec![],
+                body: body.to_string(),
+            }
+        }
+    }
+
+    pub struct Server {
+        pub url: String,
+        pub requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Server {
+        pub fn bodies(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut tmp).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
+                let len = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                while buf.len() < pos + 4 + len {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                return String::from_utf8_lossy(&buf[pos + 4..]).to_string();
+            }
+        }
+        String::new()
+    }
+
+    pub async fn serve(responses: Vec<Canned>) -> Server {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let rec = requests.clone();
+        tokio::spawn(async move {
+            for r in responses {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let body = read_request(&mut sock).await;
+                rec.lock().unwrap().push(body);
+                let mut head = format!("HTTP/1.1 {} X\r\nconnection: close\r\n", r.status);
+                for (k, v) in &r.headers {
+                    head.push_str(&format!("{k}: {v}\r\n"));
+                }
+                head.push_str("\r\n");
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(r.body.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        Server { url, requests }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use analyst_protocol::model::Role;
+
+    /// A1 and A4: adjacent same-role messages merge and whitespace-only text disappears.
+    #[test]
+    fn normalize_merges_roles_and_drops_blank_text() {
+        let msgs = vec![
+            Message::user_text("one"),
+            Message::user_text("two"),
+            Message::assistant_text("  \n "),
+            Message::user_text("three"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentPart::Text { text: "\n".into() },
+                    ContentPart::ToolCall {
+                        id: "c".into(),
+                        name: "t".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                ],
+            },
+            Message::assistant_text("after"),
+        ];
+        let n = normalize_messages(&msgs);
+        assert_eq!(n.len(), 2);
+        assert_eq!(n[0].role, Role::User);
+        assert_eq!(n[0].text(), "one\ntwo\nthree");
+        assert_eq!(n[1].role, Role::Assistant);
+        assert_eq!(n[1].content.len(), 2);
+        assert!(matches!(n[1].content[0], ContentPart::ToolCall { .. }));
+    }
 }

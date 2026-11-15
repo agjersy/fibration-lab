@@ -22,6 +22,9 @@ pub struct KernelArgs {
     pub out_dir: Option<String>,
     /// `--sandbox auto|bwrap|sandbox-exec|none`.
     pub sandbox: Option<String>,
+    /// External data directories approved by the user (the global config's target
+    /// `data_dirs`), emitted as repeated `--data-dir <abs path>`.
+    pub data_dirs: Vec<String>,
 }
 
 impl KernelArgs {
@@ -42,6 +45,10 @@ impl KernelArgs {
             v.push("--sandbox".into());
             v.push(s.clone());
         }
+        for d in &self.data_dirs {
+            v.push("--data-dir".into());
+            v.push(d.clone());
+        }
         v
     }
 }
@@ -60,37 +67,44 @@ pub trait KernelTransport: Send + Sync {
 
     /// Spawn the kernel process.
     async fn spawn(&self) -> Result<SpawnedKernel> {
-        let line = self.command_line();
-        let (program, args) = line
-            .split_first()
-            .ok_or_else(|| anyhow::anyhow!("empty kernel command line"))?;
-        let mut cmd = Command::new(program);
-        cmd.args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("spawning kernel: {}", line.join(" ")))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("kernel stdin not captured"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("kernel stdout not captured"))?;
-        Ok(SpawnedKernel {
-            child,
-            stdin,
-            stdout,
-        })
+        spawn_line(&self.command_line())
     }
 
     fn describe(&self) -> String {
         self.command_line().join(" ")
     }
+}
+
+/// Spawn a kernel command line with piped stdio. The child is killed when its handle drops.
+pub fn spawn_line(line: &[String]) -> Result<SpawnedKernel> {
+    let (program, args) = line
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("empty kernel command line"))?;
+    // Bare program names are resolved through the widened tool search path, and the
+    // kernel inherits that PATH so it can find `uv`, `rg`, and the sandbox helpers.
+    let mut cmd = Command::new(crate::util::resolve_tool(program));
+    cmd.args(args)
+        .env("PATH", crate::util::tool_path_env())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("spawning kernel: {}", line.join(" ")))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("kernel stdin not captured"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("kernel stdout not captured"))?;
+    Ok(SpawnedKernel {
+        child,
+        stdin,
+        stdout,
+    })
 }
 
 /// Local kernel: `<launcher...> --python .. --root .. --runs-dir .. [--out-dir ..] [--sandbox ..]`.
@@ -135,19 +149,33 @@ pub struct SshStdio {
     pub args: KernelArgs,
 }
 
-/// `ssh [-o ControlMaster=auto -o ControlPath=<dir>/%C -o ControlPersist=10m] <host>` prefix.
+/// Options for every ssh, scp, and rsync-over-ssh invocation: connection multiplexing (when a
+/// control directory is given), batch mode, a connect timeout, and keepalives so a dead
+/// connection (laptop sleep, network change) fails within about 45 s instead of hanging.
+pub fn ssh_options(control_dir: Option<&Path>) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut opt = |o: String| {
+        v.push("-o".to_string());
+        v.push(o);
+    };
+    if let Some(dir) = control_dir {
+        opt("ControlMaster=auto".into());
+        opt(format!("ControlPath={}/%C", dir.display()));
+        opt("ControlPersist=10m".into());
+    }
+    opt("BatchMode=yes".into());
+    opt("ConnectTimeout=10".into());
+    opt("ServerAliveInterval=15".into());
+    opt("ServerAliveCountMax=3".into());
+    v
+}
+
+/// `ssh <options> -- <host>` prefix. The `--` keeps a host from being read as an option;
+/// hosts starting with `-` are additionally rejected by `target::validate_host`.
 pub fn ssh_prefix(host: &str, control_dir: Option<&Path>) -> Vec<String> {
     let mut v = vec!["ssh".to_string()];
-    if let Some(dir) = control_dir {
-        v.push("-o".into());
-        v.push("ControlMaster=auto".into());
-        v.push("-o".into());
-        v.push(format!("ControlPath={}/%C", dir.display()));
-        v.push("-o".into());
-        v.push("ControlPersist=10m".into());
-    }
-    v.push("-o".into());
-    v.push("BatchMode=yes".into());
+    v.extend(ssh_options(control_dir));
+    v.push("--".into());
     v.push(host.to_string());
     v
 }
@@ -158,14 +186,8 @@ impl SshStdio {
         parts.extend(self.args.to_args());
         parts
             .iter()
-            .map(|p| {
-                // `~/...` must stay unquoted so the remote shell expands it.
-                if let Some(rest) = p.strip_prefix("~/") {
-                    format!("~/{}", crate::util::sh_quote(rest))
-                } else {
-                    crate::util::sh_quote(p)
-                }
-            })
+            // `~/...` must stay unquoted so the remote shell expands it.
+            .map(|p| crate::util::sh_quote_path(p))
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -178,6 +200,11 @@ impl KernelTransport for SshStdio {
         v.push(self.remote_command());
         v
     }
+
+    async fn spawn(&self) -> Result<SpawnedKernel> {
+        crate::target::validate_host(&self.host)?;
+        spawn_line(&self.command_line())
+    }
 }
 
 /// Resolve the interpreter of the app tooling environment (the one that hosts
@@ -188,8 +215,15 @@ impl KernelTransport for SshStdio {
 /// 3. Dev mode: `<workspace>/python/kernel/.venv/bin/python` if it exists, where `<workspace>`
 ///    is found by walking up from the current executable's directory and then from the current
 ///    working directory, looking for a directory containing `python/kernel`.
-/// 4. `python3` on `PATH`.
+/// 4. The bootstrapped tooling environment `$ANALYST_HOME/tooling/.venv` (see
+///    `target::bootstrap::ensure_local`).
+/// 5. `python3` found on the tool search path.
 pub fn resolve_tooling_python(global: &GlobalConfig) -> String {
+    resolve_tooling_python_in(global, &crate::config::analyst_home())
+}
+
+/// [`resolve_tooling_python`] for an explicit analyst home.
+pub fn resolve_tooling_python_in(global: &GlobalConfig, home: &Path) -> String {
     if let Ok(v) = std::env::var("ANALYST_TOOLING_PYTHON") {
         if !v.is_empty() {
             return v;
@@ -217,7 +251,11 @@ pub fn resolve_tooling_python(global: &GlobalConfig) -> String {
             }
         }
     }
-    "python3".to_string()
+    let bootstrapped = crate::target::bootstrap::local_tooling_python(home);
+    if bootstrapped.is_file() {
+        return bootstrapped.to_string_lossy().to_string();
+    }
+    crate::util::tool("python3")
 }
 
 #[cfg(test)]
@@ -231,7 +269,39 @@ mod tests {
             runs_dir: "/home/u/.analyst/runs".into(),
             out_dir: None,
             sandbox: Some("auto".into()),
+            data_dirs: vec![],
         }
+    }
+
+    #[test]
+    fn data_dirs_become_repeated_arguments() {
+        let mut a = args();
+        a.data_dirs = vec!["/data/shared".into(), "/mnt/my data".into()];
+        let v = a.to_args();
+        assert_eq!(
+            v[v.len() - 4..],
+            ["--data-dir", "/data/shared", "--data-dir", "/mnt/my data"]
+        );
+        let t = SshStdio {
+            host: "h".into(),
+            control_dir: None,
+            remote_launcher: vec!["python".into()],
+            args: a,
+        };
+        assert!(t
+            .remote_command()
+            .ends_with("--data-dir /data/shared --data-dir '/mnt/my data'"));
+    }
+
+    #[tokio::test]
+    async fn ssh_transport_rejects_option_like_hosts() {
+        let t = SshStdio {
+            host: "-oProxyCommand=touch /tmp/pwned".into(),
+            control_dir: None,
+            remote_launcher: vec!["python".into()],
+            args: args(),
+        };
+        assert!(t.spawn().await.is_err());
     }
 
     #[test]
@@ -271,6 +341,7 @@ mod tests {
                 runs_dir: "~/.analyst/runs".into(),
                 out_dir: None,
                 sandbox: Some("auto".into()),
+                data_dirs: vec![],
             },
         };
         let line = t.command_line();
@@ -278,9 +349,22 @@ mod tests {
         assert_eq!(line[1..3], ["-o", "ControlMaster=auto"]);
         assert_eq!(line[3..5], ["-o", "ControlPath=/home/u/.analyst/ssh/%C"]);
         assert_eq!(line[5..7], ["-o", "ControlPersist=10m"]);
-        assert_eq!(line[9], "lab-gpu");
         assert_eq!(
-            line[10],
+            line[7..15],
+            [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3"
+            ]
+        );
+        assert_eq!(line[15..17], ["--", "lab-gpu"]);
+        assert_eq!(
+            line[17],
             "~/.analyst/tooling/.venv/bin/python -m analyst_kernel --python ~/analyst/repo/.venv/bin/python --root ~/analyst/repo --runs-dir ~/.analyst/runs --sandbox auto"
         );
     }

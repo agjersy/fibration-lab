@@ -70,7 +70,9 @@ pub fn template_files(name: &str) -> Vec<(&'static str, String)> {
         ("notes.md", format!("# {name}\n\nNotes and decisions.\n")),
         (
             ".gitignore",
-            "out/\n!out/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.analyst/env.sh\n.ruff_cache/\n"
+            // `data/*` (not `data/`) so the `.gitkeep` exception can apply: data files are
+            // never committed, checkpointed, or synced by default.
+            "out/*\n!out/.gitkeep\ndata/*\n!data/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.analyst/env.sh\n.ruff_cache/\n"
                 .into(),
         ),
         (
@@ -83,11 +85,9 @@ pub fn template_files(name: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
-/// Whether `uv` is on PATH.
+/// Whether `uv` can be found (PATH, the login shell's PATH, or a well-known location).
 pub fn has_uv() -> bool {
-    std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).any(|d| d.join("uv").is_file()))
-        .unwrap_or(false)
+    crate::util::find_tool("uv").is_some()
 }
 
 /// Apply the template to `root` (created if missing). Existing files are kept.
@@ -118,7 +118,8 @@ pub fn init_repo(root: &Path, opts: &InitOptions) -> Result<InitReport> {
     if opts.run_uv {
         if has_uv() {
             for args in [vec!["venv", "-q"], vec!["sync", "-q"]] {
-                let st = std::process::Command::new("uv")
+                let st = std::process::Command::new(crate::util::resolve_tool("uv"))
+                    .env("PATH", crate::util::tool_path_env())
                     .args(&args)
                     .current_dir(&root)
                     .stdin(std::process::Stdio::null())
@@ -178,5 +179,13 @@ mod tests {
         assert_eq!(again.kept.len(), template_files("x").len());
         let cfg = crate::config::load_project(&root).unwrap();
         assert_eq!(cfg, analyst_protocol::config::ProjectConfig::default());
+        // A8: data files are ignored, the placeholders are tracked.
+        std::fs::write(root.join("data/big.csv"), "1,2\n").unwrap();
+        std::fs::write(root.join("out/result.txt"), "r\n").unwrap();
+        let st = crate::checkpoint::git(&root, &["status", "--porcelain"], None).unwrap();
+        assert_eq!(st.trim(), "", "data and out files must be ignored: {st}");
+        let tracked = crate::checkpoint::git(&root, &["ls-files"], None).unwrap();
+        assert!(tracked.contains("data/.gitkeep") && tracked.contains("out/.gitkeep"));
+        assert!(!tracked.contains("big.csv"));
     }
 }

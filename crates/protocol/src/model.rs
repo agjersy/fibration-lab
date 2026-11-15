@@ -125,8 +125,6 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
 }
 
 /// Probed capability record, cached in `~/.analyst/capabilities.json` keyed by `provider/model`.
@@ -136,6 +134,9 @@ pub struct ModelCapabilities {
     pub tools: ToolSupport,
     pub vision: bool,
     pub probed_at: String,
+    /// Output token limit per call from the model's config override, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for ModelCapabilities {
@@ -145,6 +146,7 @@ impl Default for ModelCapabilities {
             tools: ToolSupport::Native,
             vision: false,
             probed_at: String::new(),
+            max_output_tokens: None,
         }
     }
 }
@@ -215,7 +217,6 @@ mod tests {
                 parameters: json!({"type":"object"}),
             }],
             max_tokens: Some(10),
-            temperature: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         let back: ChatRequest = serde_json::from_str(&s).unwrap();

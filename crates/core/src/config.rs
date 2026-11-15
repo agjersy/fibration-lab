@@ -140,20 +140,113 @@ pub fn default_model(global: &GlobalConfig) -> Result<ModelSpec> {
     ModelSpec::parse(s)
 }
 
-/// API key for a provider: read from the named environment variable (phase 0).
-/// `Ok(None)` when the provider declares no key variable; an error when the variable is named
-/// but unset.
+/// Path of the stored API keys under a home directory.
+pub fn credentials_path(home: &Path) -> PathBuf {
+    home.join("credentials.toml")
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct Credentials {
+    #[serde(default)]
+    keys: std::collections::BTreeMap<String, String>,
+}
+
+fn load_credentials(home: &Path) -> Result<Credentials> {
+    let path = credentials_path(home);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text).with_context(|| format!("parsing {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Credentials::default()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// Where a provider's key comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySource {
+    /// The environment variable named by `api_key_env`.
+    Env,
+    /// `$ANALYST_HOME/credentials.toml`.
+    Stored,
+}
+
+/// The key for a provider and where it came from: the environment variable named by
+/// `api_key_env` wins when set and non-empty, then `[keys] <provider name>` in
+/// `<home>/credentials.toml`.
+pub fn api_key_lookup(home: &Path, provider: &ProviderConfig) -> Option<(String, KeySource)> {
+    if let Some(var) = &provider.api_key_env {
+        if let Ok(v) = std::env::var(var) {
+            if !v.is_empty() {
+                return Some((v, KeySource::Env));
+            }
+        }
+    }
+    load_credentials(home)
+        .ok()
+        .and_then(|c| c.keys.get(&provider.name).cloned())
+        .filter(|k| !k.is_empty())
+        .map(|k| (k, KeySource::Stored))
+}
+
+/// API key for a provider, using the default analyst home for stored keys. See
+/// [`api_key_in`].
 pub fn api_key(provider: &ProviderConfig) -> Result<Option<String>> {
+    api_key_in(&analyst_home(), provider)
+}
+
+/// API key for a provider: environment variable first, then `<home>/credentials.toml`.
+/// `Ok(None)` when the provider declares no key variable and none is stored; an error when a
+/// variable is named but neither it nor a stored key exists.
+pub fn api_key_in(home: &Path, provider: &ProviderConfig) -> Result<Option<String>> {
+    if let Some((key, _)) = api_key_lookup(home, provider) {
+        return Ok(Some(key));
+    }
     match &provider.api_key_env {
         None => Ok(None),
-        Some(var) => match std::env::var(var) {
-            Ok(v) if !v.is_empty() => Ok(Some(v)),
-            _ => Err(anyhow!(
-                "provider `{}` needs an API key in environment variable {var}, which is unset",
-                provider.name
-            )),
-        },
+        Some(var) => Err(anyhow!(
+            "provider `{}` needs an API key: set the environment variable {var}, or store one (`analyst key set {}`, or the app's settings)",
+            provider.name,
+            provider.name
+        )),
     }
+}
+
+/// Store (or, with an empty key, remove) a provider's key in `<home>/credentials.toml`. The
+/// file is created with mode 0600 and replaced atomically.
+pub fn set_api_key(home: &Path, provider: &str, key: &str) -> Result<()> {
+    if provider.is_empty() {
+        return Err(anyhow!("the provider name is empty"));
+    }
+    std::fs::create_dir_all(home).with_context(|| format!("creating {}", home.display()))?;
+    let mut creds = load_credentials(home)?;
+    let key = key.trim();
+    if key.is_empty() {
+        creds.keys.remove(provider);
+    } else {
+        creds.keys.insert(provider.to_string(), key.to_string());
+    }
+    let text = toml::to_string_pretty(&creds).context("serializing credentials")?;
+    let path = credentials_path(home);
+    let tmp = home.join(format!(".credentials.{}.tmp", crate::util::short_rand()));
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .open(&tmp)
+            .with_context(|| format!("creating {}", tmp.display()))?;
+        f.write_all(text.as_bytes())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e).with_context(|| format!("replacing {}", path.display()));
+    }
+    Ok(())
 }
 
 /// Look up a target by name. `local` always exists.
@@ -223,6 +316,7 @@ mod tests {
             context_window: Some(1000),
             tools: None,
             vision: None,
+            max_output_tokens: None,
         });
         let r = resolve_model(&g, &ModelSpec::parse("p/m").unwrap()).unwrap();
         assert_eq!(r.overrides.unwrap().context_window, Some(1000));
@@ -253,5 +347,73 @@ mod tests {
         assert_eq!(e.timeout_s, 5);
         assert_eq!(e.out_dir, "out");
         assert_eq!(effective_project(&p, "local").timeout_s, 600);
+    }
+
+    /// B12: keys can be stored, the environment wins, and the file is private.
+    #[test]
+    fn stored_api_keys() {
+        let home = tempfile::tempdir().unwrap();
+        let var = format!(
+            "ANALYST_TEST_KEY_{}",
+            crate::util::short_rand().to_uppercase()
+        );
+        let p = ProviderConfig {
+            name: "anthropic".into(),
+            kind: ProviderKind::Anthropic,
+            base_url: None,
+            api_key_env: Some(var.clone()),
+        };
+        let err = api_key_in(home.path(), &p).unwrap_err().to_string();
+        assert!(
+            err.contains(&var) && err.contains("analyst key set"),
+            "{err}"
+        );
+        set_api_key(home.path(), "anthropic", "sk-stored\n").unwrap();
+        set_api_key(home.path(), "other", "sk-other").unwrap();
+        assert_eq!(
+            api_key_in(home.path(), &p).unwrap().as_deref(),
+            Some("sk-stored")
+        );
+        assert_eq!(
+            api_key_lookup(home.path(), &p).map(|(_, s)| s),
+            Some(KeySource::Stored)
+        );
+        let text = std::fs::read_to_string(credentials_path(home.path())).unwrap();
+        assert!(
+            text.contains("[keys]") && text.contains("anthropic = \"sk-stored\""),
+            "{text}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(credentials_path(home.path()))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::env::set_var(&var, "sk-env");
+        assert_eq!(
+            api_key_in(home.path(), &p).unwrap().as_deref(),
+            Some("sk-env")
+        );
+        assert_eq!(
+            api_key_lookup(home.path(), &p).map(|(_, s)| s),
+            Some(KeySource::Env)
+        );
+        std::env::remove_var(&var);
+        // An empty key removes the entry and leaves the others.
+        set_api_key(home.path(), "anthropic", "").unwrap();
+        assert!(api_key_in(home.path(), &p).is_err());
+        let other = ProviderConfig {
+            name: "other".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: None,
+            api_key_env: None,
+        };
+        assert_eq!(
+            api_key_in(home.path(), &other).unwrap().as_deref(),
+            Some("sk-other")
+        );
     }
 }
