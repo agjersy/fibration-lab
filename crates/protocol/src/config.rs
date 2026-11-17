@@ -13,6 +13,8 @@ pub struct GlobalConfig {
     pub providers: Vec<ProviderConfig>,
     pub models: Vec<ModelConfig>,
     pub targets: Vec<TargetConfig>,
+    /// Where Python packages are installed from.
+    pub packages: PackagesConfig,
     /// Interpreter of the app tooling environment (hosts `analyst_kernel`); optional.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tooling_python: Option<String>,
@@ -32,6 +34,25 @@ impl Default for Defaults {
         Defaults {
             model: None,
             target: "local".to_string(),
+        }
+    }
+}
+
+/// The default Python package index (`https://pypi.org/simple`).
+pub const DEFAULT_PACKAGE_INDEX: &str = "https://pypi.org/simple";
+
+/// `[packages]`: the one package index installs may contact (public PyPI or a mirror).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PackagesConfig {
+    /// Simple-API index URL handed to `uv` for every install.
+    pub index_url: String,
+}
+
+impl Default for PackagesConfig {
+    fn default() -> Self {
+        PackagesConfig {
+            index_url: DEFAULT_PACKAGE_INDEX.to_string(),
         }
     }
 }
@@ -114,6 +135,10 @@ pub struct TargetConfig {
     pub sandbox: Option<String>,
     #[serde(default)]
     pub data_dirs: Vec<String>,
+    /// A local `uv` binary built for this host's OS and architecture. It is copied to the
+    /// host when the host has no `uv` and the local `uv` does not match its platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uv_binary: Option<String>,
 }
 
 // ---- project config ----
@@ -140,7 +165,8 @@ pub enum UnsandboxedRuns {
     Auto,
 }
 
-/// On-disk shape of `[policy]`.
+/// On-disk shape of `[policy]`. A `network = ...` key from older files is accepted and
+/// ignored: sandboxed code never has network access, so there is nothing to configure.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 struct PolicyTable {
@@ -276,15 +302,6 @@ pub enum AskPolicy {
     Deny,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum NetworkPolicy {
-    #[default]
-    Deny,
-    Ask,
-    Allow,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PolicyConfig {
@@ -292,7 +309,6 @@ pub struct PolicyConfig {
     pub runs: RunPolicy,
     pub packages: AskPolicy,
     pub shell: AskPolicy,
-    pub network: NetworkPolicy,
     pub git: AskPolicy,
     pub protected: Vec<String>,
     pub max_steps: u32,
@@ -305,7 +321,6 @@ impl Default for PolicyConfig {
             runs: RunPolicy::Auto,
             packages: AskPolicy::Ask,
             shell: AskPolicy::Ask,
-            network: NetworkPolicy::Deny,
             git: AskPolicy::Ask,
             protected: vec![],
             max_steps: 40,
@@ -372,9 +387,34 @@ data_dirs = ["/data/shared"]
         );
         assert_eq!(c.models[0].tools, Some(ToolSupport::Native));
         assert_eq!(c.targets[0].kind, TargetKind::Ssh);
+        assert_eq!(c.packages.index_url, DEFAULT_PACKAGE_INDEX);
+        assert_eq!(c.targets[0].uv_binary, None);
         let s = toml::to_string(&c).unwrap();
         let back: GlobalConfig = toml::from_str(&s).unwrap();
         assert_eq!(c, back);
+        let mirror: GlobalConfig = toml::from_str(
+            "[packages]\nindex_url = \"https://mirror.corp/simple\"\n\n[[targets]]\nname = \"hpc\"\nkind = \"ssh\"\nhost = \"hpc\"\nuv_binary = \"/opt/uv/aarch64/uv\"\n",
+        )
+        .unwrap();
+        assert_eq!(mirror.packages.index_url, "https://mirror.corp/simple");
+        assert_eq!(
+            mirror.targets[0].uv_binary.as_deref(),
+            Some("/opt/uv/aarch64/uv")
+        );
+    }
+
+    /// Older project files carry `network = "deny" | "ask" | "allow"`. The key is gone; the
+    /// file still loads and nothing in the loaded policy can grant network access.
+    #[test]
+    fn a_leftover_network_policy_is_ignored() {
+        for value in ["deny", "ask", "allow"] {
+            let c: ProjectConfig = toml::from_str(&format!(
+                "[policy]\nruns = \"ask\"\nnetwork = \"{value}\"\n"
+            ))
+            .unwrap();
+            assert_eq!(c.policy.runs, RunPolicy::Ask);
+            assert!(!toml::to_string(&c).unwrap().contains("network"));
+        }
     }
 
     #[test]
@@ -389,7 +429,6 @@ data_dirs = ["/data/shared"]
         assert!((c.contract.near_duplicate_threshold - 0.8).abs() < 1e-9);
         assert_eq!(c.policy.edits, EditPolicy::Review);
         assert_eq!(c.policy.runs, RunPolicy::Auto);
-        assert_eq!(c.policy.network, NetworkPolicy::Deny);
         assert_eq!(c.policy.max_steps, 40);
     }
 
