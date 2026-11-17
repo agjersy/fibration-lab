@@ -75,8 +75,27 @@ pub trait KernelTransport: Send + Sync {
     }
 }
 
+/// Environment variables that commonly hold provider API keys; never passed to a kernel.
+pub const PROVIDER_KEY_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "MISTRAL_API_KEY",
+    "GROQ_API_KEY",
+    "DEEPSEEK_API_KEY",
+];
+
 /// Spawn a kernel command line with piped stdio. The child is killed when its handle drops.
 pub fn spawn_line(line: &[String]) -> Result<SpawnedKernel> {
+    spawn_line_without_env(line, &[])
+}
+
+/// [`spawn_line`], additionally removing `env_remove` (the configured providers'
+/// `api_key_env` names) from the child's environment. The common provider key variables are
+/// always removed: the kernel and the scripts it runs have no use for them.
+pub fn spawn_line_without_env(line: &[String], env_remove: &[String]) -> Result<SpawnedKernel> {
     let (program, args) = line
         .split_first()
         .ok_or_else(|| anyhow::anyhow!("empty kernel command line"))?;
@@ -89,6 +108,12 @@ pub fn spawn_line(line: &[String]) -> Result<SpawnedKernel> {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
+    for name in PROVIDER_KEY_VARS {
+        cmd.env_remove(name);
+    }
+    for name in env_remove {
+        cmd.env_remove(name);
+    }
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning kernel: {}", line.join(" ")))?;
@@ -114,6 +139,8 @@ pub fn spawn_line(line: &[String]) -> Result<SpawnedKernel> {
 pub struct LocalStdio {
     pub launcher: Vec<String>,
     pub args: KernelArgs,
+    /// Extra environment variables removed from the kernel process.
+    pub env_remove: Vec<String>,
 }
 
 impl LocalStdio {
@@ -121,11 +148,22 @@ impl LocalStdio {
         LocalStdio {
             launcher: vec![tooling_python.into(), "-m".into(), "analyst_kernel".into()],
             args,
+            env_remove: vec![],
         }
     }
 
     pub fn with_launcher(launcher: Vec<String>, args: KernelArgs) -> Self {
-        LocalStdio { launcher, args }
+        LocalStdio {
+            launcher,
+            args,
+            env_remove: vec![],
+        }
+    }
+
+    /// Remove these variables from the kernel's environment.
+    pub fn without_env(mut self, names: Vec<String>) -> Self {
+        self.env_remove = names;
+        self
     }
 }
 
@@ -135,6 +173,10 @@ impl KernelTransport for LocalStdio {
         let mut v = self.launcher.clone();
         v.extend(self.args.to_args());
         v
+    }
+
+    async fn spawn(&self) -> Result<SpawnedKernel> {
+        spawn_line_without_env(&self.command_line(), &self.env_remove)
     }
 }
 

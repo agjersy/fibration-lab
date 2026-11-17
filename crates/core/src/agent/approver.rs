@@ -11,6 +11,9 @@ pub struct ApprovalRequest {
     pub reason: String,
     /// Present for edit-class tools: summary and diff to show.
     pub proposal: Option<Proposal>,
+    /// Id of the tool call being approved. It is also the id of the transcript's `proposal`
+    /// and `decision` events for this call, so UIs can use it as the proposal id.
+    pub call_id: String,
 }
 
 /// The outcome of an approval. `Accept { content: Some(..) }` carries the file content the user

@@ -1,9 +1,12 @@
 //! One agent turn per `chat_send`, run in a tokio task on the existing `agent` module. The
 //! `UiApprover` turns policy `Ask` decisions into `proposal` events and parks on a oneshot that
-//! `proposal_respond` resolves; `chat_cancel` aborts the task and rejects pending proposals.
+//! `proposal_respond` resolves; `chat_cancel` aborts the task, which rejects pending proposals
+//! and cancels the runs the turn started. A guard clears `busy` and reports `turn_error`
+//! however the task ends, including a panic (A10). A conversation reopened from disk gets its
+//! model history, scope, and pinned facts back through `Agent::rehydrate` (A11).
 
 use super::error::{ServiceError, ServiceResult};
-use super::runtime::{PendingProposal, SessionRuntime};
+use super::runtime::SessionRuntime;
 use crate::agent::{Agent, AgentConfig, ApprovalDecision, ApprovalRequest, Approver};
 use crate::config;
 use crate::policy::Policy;
@@ -27,8 +30,10 @@ pub struct ConversationRuntime {
     busy: AtomicBool,
     task: Mutex<Option<JoinHandle<()>>>,
     turns: AtomicU32,
-    /// Set when the model changed; the next turn rebuilds the client.
+    /// Set when the model (or its key) changed; the next turn rebuilds the client.
     model_dirty: AtomicBool,
+    /// Set by `abort` so the turn's guard reports "cancelled" instead of a failure.
+    cancelled: AtomicBool,
 }
 
 impl ConversationRuntime {
@@ -40,6 +45,7 @@ impl ConversationRuntime {
             task: Mutex::new(None),
             turns: AtomicU32::new(0),
             model_dirty: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
         }
     }
 
@@ -53,28 +59,59 @@ impl ConversationRuntime {
         }
     }
 
-    pub async fn invalidate_model(&self) {
+    pub fn invalidate_model(&self) {
         self.model_dirty.store(true, Ordering::SeqCst);
     }
 
-    /// Abort the running turn, if any. Returns whether one was running.
-    pub fn abort(&self) -> bool {
-        let h = self.task.lock().ok().and_then(|mut t| t.take());
-        match h {
-            Some(h) => {
-                h.abort();
-                self.busy.store(false, Ordering::SeqCst);
-                true
-            }
-            None => false,
+    /// Abort the running turn, if any, and hand back its task. The task's guard clears `busy`,
+    /// rejects pending proposals, and reports `turn_error: cancelled` when the task is
+    /// dropped; awaiting the handle waits for exactly that.
+    pub fn abort(&self) -> Option<JoinHandle<()>> {
+        let h = self.task.lock().ok().and_then(|mut t| t.take())?;
+        if h.is_finished() {
+            return None;
         }
+        self.cancelled.store(true, Ordering::SeqCst);
+        h.abort();
+        Some(h)
+    }
+}
+
+/// Ends a turn exactly once, however its task ends: normally, aborted (`chat_cancel`, session
+/// close), or by a panic.
+struct TurnGuard {
+    rt: Arc<SessionRuntime>,
+    conv: Arc<ConversationRuntime>,
+    turn: String,
+    finished: bool,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        self.rt.reject_pending(Some(&self.conv.id));
+        let cancelled = self.conv.cancelled.swap(false, Ordering::SeqCst);
+        if !self.finished {
+            self.rt.emit(SessionEvent::TurnError {
+                conversation: self.conv.id.clone(),
+                turn: self.turn.clone(),
+                message: if cancelled {
+                    "cancelled".into()
+                } else {
+                    "the turn stopped unexpectedly (internal error); the conversation can be continued".into()
+                },
+            });
+        }
+        self.conv.busy.store(false, Ordering::SeqCst);
     }
 }
 
 /// Which `ProposalReason` a policy reason string means.
 fn classify_reason(reason: &str) -> (bool, ProposalReason) {
     let r = reason.to_ascii_lowercase();
-    if r.contains("outside the declared scope") || r.contains("no scope declared") {
+    if r.contains("outside the declared scope")
+        || r.contains("no scope declared")
+        || r.contains("widen its declared edit scope")
+    {
         (false, ProposalReason::OutOfScope)
     } else if r.contains("protected") {
         (false, ProposalReason::Protected)
@@ -102,6 +139,8 @@ pub fn proposal_view(
 ) -> ProposalView {
     let (in_scope, reason) = classify_reason(&req.reason);
     let args = &req.args;
+    // Under the `limits` or `none` sandbox, run-class tools ask and the card says why.
+    let unsandboxed = req.reason.to_ascii_lowercase().contains("unsandboxed");
     let mut view = ProposalView {
         id: id.to_string(),
         conversation: conversation.to_string(),
@@ -131,6 +170,28 @@ pub fn proposal_view(
         return view;
     }
     match req.tool.as_str() {
+        "declare_scope" => {
+            // Widening the declared edit scope (G5): an edit-kind card without a file.
+            let added = str_list(args.get("add")).unwrap_or_default();
+            view.kind = ProposalKind::Edit;
+            view.path = None;
+            view.in_scope = false;
+            view.reason = ProposalReason::OutOfScope;
+            view.summary = format!("Widen edit scope: {}", added.join(", "));
+            let current = str_list(args.get("current_scope")).unwrap_or_default();
+            let mut detail = format!(
+                "Scope so far: {}",
+                if current.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    current.join(", ")
+                }
+            );
+            if let Some(plan) = args.get("plan").and_then(Value::as_str) {
+                detail.push_str(&format!("\nPlan: {}", truncate_bytes(plan, 500)));
+            }
+            view.message = Some(detail);
+        }
         "pkg.add" | "pkg.remove" | "pkg.sync" => {
             view.kind = ProposalKind::Package;
             view.packages = Some(str_list(args.get("packages")).unwrap_or_default());
@@ -151,7 +212,14 @@ pub fn proposal_view(
                 .get("command")
                 .and_then(Value::as_str)
                 .map(|s| s.to_string());
-            view.summary = format!("shell: {}", view.command.clone().unwrap_or_default());
+            view.summary = if unsandboxed {
+                format!(
+                    "Unsandboxed run: {}",
+                    view.command.clone().unwrap_or_default()
+                )
+            } else {
+                format!("shell: {}", view.command.clone().unwrap_or_default())
+            };
         }
         "git.commit" => {
             view.kind = ProposalKind::Commit;
@@ -170,14 +238,15 @@ pub fn proposal_view(
                 .to_string();
             view.path = Some(script.to_string());
             view.command = Some(cmd.clone());
-            view.summary = if args
+            let network = args
                 .get("network")
                 .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                format!("run (with network): {cmd}")
-            } else {
-                format!("run: {cmd}")
+                .unwrap_or(false);
+            view.summary = match (unsandboxed, network) {
+                (true, true) => format!("Unsandboxed run: {cmd} (with network)"),
+                (true, false) => format!("Unsandboxed run: {cmd}"),
+                (false, true) => format!("run (with network): {cmd}"),
+                (false, false) => format!("run: {cmd}"),
             };
         }
         "exec.snippet" => {
@@ -185,13 +254,20 @@ pub fn proposal_view(
             let code = args.get("code").and_then(Value::as_str).unwrap_or("");
             view.command = Some(format!("python -c {code}"));
             view.proposed = Some(code.to_string());
-            view.summary = format!(
-                "snippet: {}",
-                truncate_bytes(code.lines().next().unwrap_or(""), 80)
-            );
+            let first = truncate_bytes(code.lines().next().unwrap_or(""), 80);
+            view.summary = if unsandboxed {
+                format!("Unsandboxed run: snippet: {first}")
+            } else {
+                format!("snippet: {first}")
+            };
         }
         other => {
-            view.summary = format!("{other} {}", truncate_bytes(&args.to_string(), 160));
+            let text = format!("{other} {}", truncate_bytes(&args.to_string(), 160));
+            view.summary = if unsandboxed {
+                format!("Unsandboxed run: {text}")
+            } else {
+                text
+            };
             view.command = Some(args.to_string());
         }
     }
@@ -225,18 +301,16 @@ impl Approver for UiApprover {
                 reason: Some("session closed".into()),
             };
         };
-        let id = format!("p-{}", crate::util::stamped_id());
+        // The proposal id is the tool call id: the transcript's `proposal` and `decision`
+        // events carry the same id, so a card rebuilt from the transcript matches this one.
+        let id = if req.call_id.is_empty() {
+            format!("p-{}", crate::util::stamped_id())
+        } else {
+            req.call_id.clone()
+        };
         let view = proposal_view(&rt.repo, &id, &self.conversation, req);
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        if let Ok(mut p) = rt.pending.lock() {
-            p.insert(
-                id.clone(),
-                PendingProposal {
-                    conversation: self.conversation.clone(),
-                    tx,
-                },
-            );
-        }
+        let (view, rx) = rt.add_pending(&self.conversation, view);
+        let id = view.id.clone();
         rt.emit(SessionEvent::Proposal { proposal: view });
         let decision = match rx.await {
             Ok(d) => d,
@@ -273,8 +347,8 @@ pub async fn model_for(
     let spec = config::ModelSpec::parse(spec).map_err(|e| ServiceError::invalid(e.to_string()))?;
     let resolved =
         config::resolve_model(global, &spec).map_err(|e| ServiceError::not_found(e.to_string()))?;
-    let client =
-        providers::client_for(&resolved).map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
+    let client = providers::client_for_in(home, &resolved)
+        .map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
     let key = spec.to_string();
     let caps = capabilities::ensure(
         home,
@@ -289,23 +363,33 @@ pub async fn model_for(
     Ok((client, caps, key))
 }
 
-/// Append attachments to the user text the way the agent sees them.
+/// Append attachments to the user text the way the agent sees them. Attached paths are
+/// confined to the repository like every other file command (G7): an absolute path, a `..`
+/// path, or a symlink out of the repo is not read and never reaches the model provider.
 fn render_attachments(repo: &std::path::Path, text: &str, attachments: &[Attachment]) -> String {
     if attachments.is_empty() {
         return text.to_string();
     }
+    let label = |p: &str| truncate_bytes(p, 200).replace(['\n', '\r', '`'], " ");
     let mut s = text.to_string();
     for a in attachments {
         s.push_str("\n\n");
         match a {
-            Attachment::File { path } => {
-                let content = std::fs::read_to_string(repo.join(path)).unwrap_or_default();
-                let body = truncate_bytes(&content, analyst_protocol::TOOL_RESULT_CAP_BYTES);
-                s.push_str(&format!("[Attached file {path}]\n```\n{body}\n```"));
-                if body.len() < content.len() {
-                    s.push_str("\n(truncated; read the rest with fs.read)");
+            Attachment::File { path } => match super::fs::read(repo, path) {
+                Ok(file) => {
+                    let body =
+                        truncate_bytes(&file.content, analyst_protocol::TOOL_RESULT_CAP_BYTES);
+                    s.push_str(&format!("[Attached file {}]\n```\n{body}\n```", file.path));
+                    if body.len() < file.content.len() {
+                        s.push_str("\n(truncated; read the rest with fs.read)");
+                    }
                 }
-            }
+                Err(e) => s.push_str(&format!(
+                    "[Attachment {} could not be attached: {}]",
+                    label(path),
+                    e.message
+                )),
+            },
             Attachment::Selection {
                 path,
                 start_line,
@@ -313,20 +397,30 @@ fn render_attachments(repo: &std::path::Path, text: &str, attachments: &[Attachm
                 text,
             } => {
                 s.push_str(&format!(
-                    "[Selection from {path} lines {start_line}-{end_line}]\n```\n{text}\n```"
+                    "[Selection from {} lines {start_line}-{end_line}]\n```\n{text}\n```",
+                    label(path)
                 ));
             }
-            Attachment::Figure { path } => {
-                let sidecar = std::fs::read_to_string(repo.join(path).with_extension("json"))
-                    .unwrap_or_default();
-                s.push_str(&format!("[Attached figure {path}]"));
-                if !sidecar.is_empty() {
-                    s.push_str(&format!(
-                        "\nSidecar metadata:\n{}",
-                        truncate_bytes(&sidecar, 2000)
-                    ));
+            Attachment::Figure { path } => match super::fs::resolve(repo, path) {
+                Ok((rel, _)) if !rel.is_empty() => {
+                    let sidecar = super::fs::read(repo, &crate::target::sync::sidecar_path(&rel))
+                        .map(|f| f.content)
+                        .unwrap_or_default();
+                    s.push_str(&format!("[Attached figure {rel}]"));
+                    if !sidecar.is_empty() {
+                        s.push_str(&format!(
+                            "\nSidecar metadata:\n{}",
+                            truncate_bytes(&sidecar, 2000)
+                        ));
+                    }
                 }
-            }
+                Ok(_) => s.push_str("[Attachment could not be attached: empty path]"),
+                Err(e) => s.push_str(&format!(
+                    "[Attachment {} could not be attached: {}]",
+                    label(path),
+                    e.message
+                )),
+            },
         }
     }
     s
@@ -387,18 +481,47 @@ pub async fn start_turn(
     {
         return Err(ServiceError::invalid("the conversation is busy"));
     }
+    // Turn ids continue after a restart: count the turns already in the transcript.
+    if conv.turns.load(Ordering::SeqCst) == 0 {
+        let past = rt
+            .session_snapshot()
+            .read_transcript(&conv.id)
+            .map(|evs| {
+                evs.iter()
+                    .filter(|e| matches!(e, Event::User { .. }))
+                    .count() as u32
+            })
+            .unwrap_or(0);
+        let _ = conv
+            .turns
+            .compare_exchange(0, past, Ordering::SeqCst, Ordering::SeqCst);
+    }
     let n = conv.turns.fetch_add(1, Ordering::SeqCst) + 1;
     let turn_id = format!("{}-{n}", conv.id);
     let conv_id = conv.id.clone();
     let user_text = render_attachments(&rt.repo, text, &attachments);
+    conv.cancelled.store(false, Ordering::SeqCst);
     rt.emit(SessionEvent::TurnStarted {
         conversation: conv_id.clone(),
         turn: turn_id.clone(),
     });
     let tid = turn_id.clone();
     let c2 = conv.clone();
-    let handle = tokio::spawn(async move {
+    // The task slot is held while spawning so an immediate `abort` finds the handle.
+    let mut slot = conv
+        .task
+        .lock()
+        .map_err(|_| ServiceError::internal("conversation task slot poisoned"))?;
+    *slot = Some(tokio::spawn(async move {
+        // Dropped on every exit path, including abort and panic.
+        let mut guard = TurnGuard {
+            rt: rt.clone(),
+            conv: c2.clone(),
+            turn: tid.clone(),
+            finished: false,
+        };
         let outcome = run_turn(&rt, &c2, &tid, &user_text).await;
+        guard.finished = true;
         match outcome {
             Ok(summary) => rt.emit(SessionEvent::TurnDone {
                 conversation: conv_id.clone(),
@@ -411,15 +534,8 @@ pub async fn start_turn(
                 message: e.to_string(),
             }),
         }
-        rt.reject_pending(Some(&conv_id));
-        c2.busy.store(false, Ordering::SeqCst);
-        if let Ok(mut t) = c2.task.lock() {
-            *t = None;
-        }
-    });
-    if let Ok(mut t) = conv.task.lock() {
-        *t = Some(handle);
-    }
+    }));
+    drop(slot);
     Ok(turn_id)
 }
 
@@ -441,7 +557,12 @@ async fn run_turn(
         .ok_or_else(|| ServiceError::invalid("no model configured for this conversation"))?;
     let project = rt.effective_project();
     let mut guard = conv.agent.lock().await;
-    let kernel = rt.kernel_client().await;
+    // A turn is an explicit action: wait for the kernel when the session starts one itself.
+    let kernel = if rt.opts.autostart_kernel {
+        rt.ensure_kernel().await.ok()
+    } else {
+        rt.kernel_client().await
+    };
     let target = rt.target();
     let max_steps = project.policy.max_steps;
     let needs_new = guard.is_none();
@@ -455,11 +576,21 @@ async fn run_turn(
         ctx.kernel = kernel.clone();
         ctx.target = target.clone();
         ctx.control_dir = rt.opts.control_dir.clone();
-        let policy = Policy::new(&rt.repo, project.policy.clone(), meta.mode)
+        let policy = Policy::for_project(&rt.repo, &project, meta.mode)
             .map_err(|e| ServiceError::invalid(e.to_string()))?;
         let approver: Arc<dyn Approver> = Arc::new(UiApprover::new(rt, &conv.id));
         let config = AgentConfig::new(meta.mode, &name, caps, max_steps);
-        *guard = Some(Agent::new(client, ctx, policy, approver, config));
+        let mut agent = Agent::new(client, ctx, policy, approver, config);
+        // A conversation reopened from disk continues with its model history, the scope of
+        // an unfinished turn, and its pinned facts (A11).
+        let past = rt
+            .session_snapshot()
+            .read_transcript(&conv.id)
+            .unwrap_or_default();
+        if !past.is_empty() {
+            agent.rehydrate(&past);
+        }
+        *guard = Some(agent);
         conv.model_dirty.store(false, Ordering::SeqCst);
     }
     let agent = guard
@@ -467,22 +598,35 @@ async fn run_turn(
         .ok_or_else(|| ServiceError::internal("agent missing"))?;
     if let Some(c) = &override_client {
         agent.model = c.clone();
-    } else if conv.model_dirty.swap(false, Ordering::SeqCst)
-        && agent.config.model_name != model_spec
-    {
+    } else if conv.model_dirty.swap(false, Ordering::SeqCst) {
         let (client, caps, name) = model_for(&rt.home, &global, &model_spec).await?;
         agent.model = client;
         agent.config.caps = caps;
         agent.config.model_name = name;
     }
     // Refresh per-turn state: kernel, target, policy (session overrides), mode.
+    let sandbox = match &kernel {
+        Some(k) => k.hello().await.map(|h| h.sandbox),
+        None => None,
+    };
     agent.ctx.kernel = kernel;
+    agent.ctx.data_roots = target.data_dirs().to_vec();
     agent.ctx.target = target;
     agent.ctx.project = project.clone();
+    // Runs the turn starts are attributed to this conversation (`RunView.conversation`).
+    let (weak_rt, run_conv) = (Arc::downgrade(rt), conv.id.clone());
+    agent.ctx.on_run_started = Some(Arc::new(move |run_id: &str| {
+        if let Some(rt) = weak_rt.upgrade() {
+            rt.note_agent_run(run_id, &run_conv);
+        }
+    }));
     let scope = agent.policy.scope.clone();
-    let mut policy = Policy::new(&rt.repo, project.policy.clone(), meta.mode)
+    let mut policy = Policy::for_project(&rt.repo, &project, meta.mode)
         .map_err(|e| ServiceError::invalid(e.to_string()))?;
     policy.scope = scope;
+    if let Some(kind) = &sandbox {
+        policy.set_sandbox(kind);
+    }
     agent.policy = policy;
     agent.set_mode(meta.mode);
     agent.config.max_steps = max_steps;
@@ -592,27 +736,25 @@ async fn run_turn(
     }
 }
 
-/// Abort the running turn, reject its pending proposals, and repair the agent history.
+/// Abort the running turn. Its pending proposals are rejected, the runs it started are
+/// cancelled on the target (the run tool's cancel guard fires when the turn's future is
+/// dropped), `turn_error: cancelled` is reported, and the agent history is repaired.
 pub async fn cancel_turn(rt: &Arc<SessionRuntime>, conv: &Arc<ConversationRuntime>) {
-    let was_running = conv.abort();
-    rt.reject_pending(Some(&conv.id));
-    if was_running {
-        // The aborted task dropped its guard; repair the history for the next turn.
-        if let Some(a) = conv.agent.lock().await.as_mut() {
-            a.recover_after_cancel();
-        }
-        let turn = format!("{}-{}", conv.id, conv.turns.load(Ordering::SeqCst));
-        let _ = rt.session_snapshot().append_event(
-            &conv.id,
-            &Event::Assistant {
-                ts: now_rfc3339(),
-                text: "[turn cancelled by the user]".into(),
-            },
-        );
-        rt.emit(SessionEvent::TurnError {
-            conversation: conv.id.clone(),
-            turn,
-            message: "cancelled".into(),
-        });
+    let Some(handle) = conv.abort() else {
+        rt.reject_pending(Some(&conv.id));
+        return;
+    };
+    // Wait until the task is really gone: its future (and with it every run cancel guard and
+    // the agent lock) has been dropped, and the turn guard has reported the cancellation.
+    let _ = handle.await;
+    if let Some(a) = conv.agent.lock().await.as_mut() {
+        a.recover_after_cancel();
     }
+    let _ = rt.session_snapshot().append_event(
+        &conv.id,
+        &Event::Assistant {
+            ts: now_rfc3339(),
+            text: "[turn cancelled by the user]".into(),
+        },
+    );
 }

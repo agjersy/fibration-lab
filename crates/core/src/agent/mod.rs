@@ -764,6 +764,7 @@ impl Agent {
                 }),
                 reason: reason.clone(),
                 proposal: None,
+                call_id: id.to_string(),
             };
             match self.approver.decide(&req).await {
                 ApprovalDecision::Accept { .. } => widened = true,
@@ -892,6 +893,7 @@ impl Agent {
                     args: args.clone(),
                     reason: eval.reason.clone(),
                     proposal: proposal.clone(),
+                    call_id: id.to_string(),
                 };
                 let decision = self.approver.decide(&req).await;
                 let ok = decision.accepted();

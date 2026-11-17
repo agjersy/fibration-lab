@@ -1,18 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities of the Personal Analyst windows: core events and windowing plus the native dialog plugin. Everything else goes through the app's own commands.",
-  "windows": ["main", "*"],
+  "description": "Capabilities of the main window, limited to what the renderer uses: event listening and destroying or closing its own window (the unsaved-changes guard on close), and the native open dialog. Everything else goes through the app's own commands. No window or webview creation.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
-    "core:default",
     "core:event:default",
-    "core:window:default",
-    "core:window:allow-set-title",
-    "core:window:allow-create",
+    "core:window:allow-destroy",
     "core:window:allow-close",
-    "core:webview:default",
-    "core:webview:allow-create-webview-window",
-    "core:app:default",
-    "dialog:default"
+    "dialog:allow-open"
   ]
 }

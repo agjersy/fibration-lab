@@ -5,6 +5,7 @@
 
 pub mod agent_runner;
 pub mod error;
+pub mod events;
 pub mod figures;
 pub mod fs;
 pub mod runtime;
@@ -13,7 +14,8 @@ pub mod terminal;
 
 pub use agent_runner::{ConversationRuntime, UiApprover};
 pub use error::{ServiceError, ServiceResult};
-pub use runtime::{RuntimeOptions, SessionRuntime};
+pub use events::{EventHub, Subscription};
+pub use runtime::{RuntimeOptions, SessionRuntime, Tooling, ToolingState};
 pub use tasks::{TaskLogger, TaskRegistry};
 pub use terminal::{CaptureEnv, Terminal, TerminalManager, TerminalSpec};
 
@@ -25,7 +27,8 @@ use analyst_protocol::config::{GlobalConfig, ProviderKind, TargetKind};
 use analyst_protocol::ui::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Options for the whole app.
 #[derive(Debug, Clone)]
@@ -44,6 +47,9 @@ pub struct WorkbenchOptions {
     pub dev_mode: bool,
     /// How `session_create { init: true }` applies the template.
     pub init: crate::init::InitOptions,
+    /// The kernel source bundled with a packaged app (a directory with `pyproject.toml`,
+    /// `analyst_kernel/`, and `analyst_mpl/`). See [`Workbench::prepare_tooling`].
+    pub kernel_source: Option<PathBuf>,
 }
 
 impl WorkbenchOptions {
@@ -56,6 +62,7 @@ impl WorkbenchOptions {
             autostart_kernel: true,
             dev_mode: cfg!(debug_assertions),
             init: crate::init::InitOptions::default(),
+            kernel_source: None,
         }
     }
 }
@@ -67,7 +74,13 @@ pub struct Workbench {
     pub sessions: RwLock<HashMap<SessionId, Arc<SessionRuntime>>>,
     pub terminals: TerminalManager,
     pub tasks: Arc<TaskRegistry>,
-    mpl_dir: OnceLock<Option<PathBuf>>,
+    /// State of the local tooling environment, shared with every session runtime.
+    pub tooling: Arc<Tooling>,
+    mpl_dir: Mutex<Option<PathBuf>>,
+    kernel_source: RwLock<Option<PathBuf>>,
+    /// Serialises `open_session` so parallel opens of one session build one runtime (U4).
+    opening: tokio::sync::Mutex<()>,
+    runtimes_built: AtomicU64,
 }
 
 impl Workbench {
@@ -76,13 +89,18 @@ impl Workbench {
         std::fs::create_dir_all(&opts.home)?;
         let global =
             config::load_global(&opts.home).map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
+        let kernel_source = opts.kernel_source.clone();
         Ok(Workbench {
             opts,
+            kernel_source: RwLock::new(kernel_source),
             global: RwLock::new(global),
             sessions: RwLock::new(HashMap::new()),
             terminals: TerminalManager::new(),
             tasks: Arc::new(TaskRegistry::new()),
-            mpl_dir: OnceLock::new(),
+            tooling: Tooling::ready(),
+            mpl_dir: Mutex::new(None),
+            opening: tokio::sync::Mutex::new(()),
+            runtimes_built: AtomicU64::new(0),
         })
     }
 
@@ -107,6 +125,19 @@ impl Workbench {
         Ok(g)
     }
 
+    /// The kernel source bundled with the app, if known.
+    pub fn kernel_source(&self) -> Option<PathBuf> {
+        self.kernel_source.read().ok().and_then(|k| k.clone())
+    }
+
+    /// Set the bundled kernel source (the desktop shell resolves it from its resource
+    /// directory once the app is running).
+    pub fn set_kernel_source(&self, dir: PathBuf) {
+        if let Ok(mut k) = self.kernel_source.write() {
+            *k = Some(dir);
+        }
+    }
+
     fn control_dir(&self) -> Option<PathBuf> {
         let d = self.opts.home.join("ssh");
         std::fs::create_dir_all(&d).ok()?;
@@ -114,25 +145,157 @@ impl Workbench {
     }
 
     fn tooling_python(&self) -> String {
-        runtime::tooling_python(&self.global())
+        runtime::tooling_python(&self.global(), &self.opts.home)
     }
 
+    /// The directory holding `analyst_mpl`. Only a successful lookup is cached: the tooling
+    /// environment may not exist yet when the first session opens.
     fn mpl_dir(&self) -> Option<PathBuf> {
-        self.mpl_dir
-            .get_or_init(|| terminal::find_mpl_dir(&self.tooling_python()))
-            .clone()
+        if let Some(d) = self.mpl_dir.lock().ok().and_then(|m| m.clone()) {
+            return Some(d);
+        }
+        if self.tooling.state() != ToolingState::Ready {
+            return self.kernel_source();
+        }
+        let found = terminal::find_mpl_dir(&self.tooling_python()).or_else(|| self.kernel_source());
+        if let (Some(d), Ok(mut m)) = (&found, self.mpl_dir.lock()) {
+            *m = Some(d.clone());
+        }
+        found
+    }
+
+    /// Environment variables never passed to child processes (provider API keys, U11).
+    fn key_env_names(&self) -> Vec<String> {
+        terminal::key_env_names(&self.global())
     }
 
     fn runtime_options(&self) -> RuntimeOptions {
         RuntimeOptions {
-            tooling_python: self.tooling_python(),
+            tooling_python: None,
+            tooling: self.tooling.clone(),
+            env_remove: self.key_env_names(),
             kernel_launcher: self.opts.kernel_launcher.clone(),
             sandbox: self.opts.sandbox.clone(),
             session_python: self.opts.session_python.clone(),
             autostart_kernel: self.opts.autostart_kernel,
             control_dir: self.control_dir(),
-            mpl_dir: self.mpl_dir(),
+            mpl_dir: None,
+            kernel_source: self.kernel_source(),
         }
+    }
+
+    /// Send an event to every open session (tasks that belong to no session).
+    fn broadcast(&self, e: SessionEvent) {
+        let sinks: Vec<Arc<SessionRuntime>> = self
+            .sessions
+            .read()
+            .map(|s| s.values().cloned().collect())
+            .unwrap_or_default();
+        for rt in sinks {
+            rt.emit(e.clone());
+        }
+    }
+
+    /// Whether the local kernel needs the bootstrapped tooling environment
+    /// (`$ANALYST_HOME/tooling`): no launcher override, no `ANALYST_TOOLING_PYTHON`, no
+    /// `tooling_python` in the config, and no development checkout with a kernel venv.
+    fn needs_local_tooling(&self) -> bool {
+        if self.opts.kernel_launcher.is_some() {
+            return false;
+        }
+        if std::env::var("ANALYST_TOOLING_PYTHON")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        if self
+            .global()
+            .tooling_python
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        // A development checkout with a kernel venv hosts the kernel itself.
+        !self
+            .tooling_python()
+            .replace('\\', "/")
+            .ends_with("python/kernel/.venv/bin/python")
+    }
+
+    /// Prepare the local tooling environment in the background when the app does not run
+    /// from a development checkout (B12): `uv venv` + `uv pip install <kernel source>` under
+    /// `$ANALYST_HOME/tooling`, version-checked, so later starts do nothing. Kernels wait for
+    /// it; a failure (for example a missing `uv`) becomes the kernel's error state with a
+    /// message that names what is missing and where it was looked for. Progress is reported
+    /// as `task_log` / `task_done` to every open session. Returns the task id when work was
+    /// started.
+    pub fn prepare_tooling(self: &Arc<Self>) -> Option<TaskId> {
+        if !self.needs_local_tooling() {
+            return None;
+        }
+        if crate::target::bootstrap::local_is_current(&self.opts.home) {
+            return None;
+        }
+        let source = self
+            .kernel_source()
+            .filter(|p| p.exists())
+            .or_else(crate::target::bootstrap::find_dev_kernel_source);
+        let id = self.tasks.alloc("tooling");
+        let Some(source) = source else {
+            let msg = "The Python tooling environment cannot be set up: the kernel source bundled with the app was not found. Reinstall the app, or set ANALYST_TOOLING_PYTHON to an interpreter that has analyst_kernel installed.".to_string();
+            tracing::error!("{msg}");
+            self.tooling.set(ToolingState::Failed(msg));
+            return None;
+        };
+        self.tooling.set(ToolingState::Preparing);
+        let wb = self.clone();
+        let task_id = id.clone();
+        tokio::spawn(async move {
+            let log = |line: String| {
+                tracing::info!("tooling: {line}");
+                wb.broadcast(SessionEvent::TaskLog {
+                    task_id: task_id.clone(),
+                    line,
+                });
+            };
+            log(format!(
+                "setting up the Python tooling environment in {} from {}",
+                wb.opts.home.join("tooling").display(),
+                source.display()
+            ));
+            match crate::target::bootstrap::ensure_local(&wb.opts.home, &source).await {
+                Ok(outcome) => {
+                    log(match outcome {
+                        crate::target::bootstrap::Outcome::UpToDate(v) => {
+                            format!("tooling {v} already installed")
+                        }
+                        crate::target::bootstrap::Outcome::Installed(v) => {
+                            format!("installed tooling {v}")
+                        }
+                    });
+                    wb.tooling.set(ToolingState::Ready);
+                    wb.broadcast(SessionEvent::TaskDone {
+                        task_id: task_id.clone(),
+                        ok: true,
+                        message: None,
+                    });
+                }
+                Err(e) => {
+                    let msg = format!("Setting up the Python tooling environment failed: {e:#}");
+                    tracing::error!("{msg}");
+                    log(format!("error: {msg}"));
+                    wb.tooling.set(ToolingState::Failed(msg.clone()));
+                    wb.broadcast(SessionEvent::TaskDone {
+                        task_id: task_id.clone(),
+                        ok: false,
+                        message: Some(msg),
+                    });
+                }
+            }
+        });
+        Some(id)
     }
 
     pub fn app_info(&self) -> AppInfo {
@@ -248,23 +411,40 @@ impl Workbench {
         self.open_session(&id).await
     }
 
-    /// Open a stored session (idempotent).
+    /// Open a stored session (idempotent). Never waits for the kernel. Parallel calls for the
+    /// same session build one runtime (U4).
     pub async fn open_session(&self, id: &str) -> ServiceResult<SessionInfo> {
         if let Ok(rt) = self.session(id) {
             return Ok(rt.info().await);
         }
-        let session = Session::open(&self.opts.home, id)
-            .map_err(|e| ServiceError::not_found(format!("{e:#}")))?;
-        let rt = SessionRuntime::open(
-            session,
-            self.global(),
-            self.runtime_options(),
-            self.tasks.clone(),
-        )?;
-        if let Ok(mut s) = self.sessions.write() {
-            s.insert(id.to_string(), rt.clone());
-        }
+        let rt = {
+            let _opening = self.opening.lock().await;
+            match self.session(id) {
+                Ok(rt) => rt,
+                Err(_) => {
+                    let session = Session::open(&self.opts.home, id)
+                        .map_err(|e| ServiceError::not_found(format!("{e:#}")))?;
+                    let rt = SessionRuntime::open(
+                        session,
+                        self.global(),
+                        self.runtime_options(),
+                        self.tasks.clone(),
+                    )?;
+                    self.runtimes_built.fetch_add(1, Ordering::SeqCst);
+                    self.sessions
+                        .write()
+                        .map_err(|_| ServiceError::internal("session table poisoned"))?
+                        .insert(id.to_string(), rt.clone());
+                    rt
+                }
+            }
+        };
         Ok(rt.info().await)
+    }
+
+    /// How many session runtimes this workbench has built (tests).
+    pub fn runtimes_built(&self) -> u64 {
+        self.runtimes_built.load(Ordering::SeqCst)
     }
 
     /// Suspend a session: kernel shut down, terminals closed.
@@ -399,25 +579,10 @@ impl Workbench {
             config::ModelSpec::parse(model).map_err(|e| ServiceError::invalid(e.to_string()))?;
         let resolved = config::resolve_model(&global, &spec)
             .map_err(|e| ServiceError::not_found(e.to_string()))?;
-        let client = crate::providers::client_for(&resolved)
+        let client = crate::providers::client_for_in(&self.opts.home, &resolved)
             .map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
         let key = spec.to_string();
-        let info_window = if resolved.provider.kind == ProviderKind::OpenAiCompatible {
-            match crate::providers::openai_compat::OpenAiCompatClient::new(
-                resolved.provider.effective_base_url(),
-                config::api_key(&resolved.provider).ok().flatten(),
-                spec.id.clone(),
-            ) {
-                Ok(c) => tokio::time::timeout(std::time::Duration::from_secs(10), c.list_models())
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok())
-                    .and_then(|info| capabilities::context_window_from_info(&info, &spec.id)),
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+        let info_window = crate::providers::model_info_window(&self.opts.home, &resolved).await;
         capabilities::ensure(
             &self.opts.home,
             &key,
@@ -430,6 +595,53 @@ impl Workbench {
         .map_err(|e| ServiceError::internal(format!("probe failed: {e:#}")))?;
         self.model_entry(&global, &spec.provider, &spec.id)
             .ok_or_else(|| ServiceError::not_found(format!("model `{model}` not found")))
+    }
+
+    /// One row per configured provider: whether a key is available and where it comes from
+    /// (`"env"`, `"stored"`, or null). Key values never leave the backend.
+    pub fn provider_keys_status(&self) -> Vec<ProviderKeyStatus> {
+        let global = self.reload_global().unwrap_or_else(|_| self.global());
+        global
+            .providers
+            .iter()
+            .map(|p| {
+                let source = config::api_key_lookup(&self.opts.home, p).map(|(_, s)| match s {
+                    config::KeySource::Env => "env".to_string(),
+                    config::KeySource::Stored => "stored".to_string(),
+                });
+                ProviderKeyStatus {
+                    provider: p.name.clone(),
+                    has_key: source.is_some(),
+                    source,
+                    api_key_env: p.api_key_env.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Store a provider's key in `$ANALYST_HOME/credentials.toml` (mode 0600); an empty key
+    /// removes it. Conversations pick the change up on their next turn.
+    pub fn provider_key_set(&self, provider: &str, key: &str) -> ServiceResult<()> {
+        let global = self.reload_global().unwrap_or_else(|_| self.global());
+        if !global.providers.iter().any(|p| p.name == provider) {
+            return Err(ServiceError::not_found(format!(
+                "provider `{provider}` is not configured"
+            )));
+        }
+        if key.contains(['\n', '\r']) {
+            return Err(ServiceError::invalid("the key must be a single line"));
+        }
+        config::set_api_key(&self.opts.home, provider, key)
+            .map_err(|e| ServiceError::io(format!("{e:#}")))?;
+        let open: Vec<Arc<SessionRuntime>> = self
+            .sessions
+            .read()
+            .map(|s| s.values().cloned().collect())
+            .unwrap_or_default();
+        for rt in open {
+            rt.invalidate_models();
+        }
+        Ok(())
     }
 
     pub fn targets_list(&self) -> Vec<TargetInfo> {
@@ -528,10 +740,11 @@ impl Workbench {
             control_dir: self.control_dir(),
             capture: CaptureEnv::new(&rt.repo, &rt.out_dir(), self.mpl_dir()),
             shell: None,
+            env_remove: self.key_env_names(),
             cols,
             rows,
         };
-        let t = Terminal::open(id.clone(), session, &spec, rt.events())?;
+        let t = Terminal::open(id.clone(), session, &spec, rt.hub())?;
         self.terminals.insert(t);
         Ok(id)
     }

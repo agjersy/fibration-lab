@@ -65,6 +65,9 @@ pub struct ToolOutcome {
 /// Callback for live run output: `(stream, chunk)` with stream `stdout` or `stderr`.
 pub type OutputSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
+/// Callback invoked with the run id as soon as `run.script` has started a run.
+pub type RunStartedSink = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Everything tools need.
 pub struct ToolContext {
     pub repo: PathBuf,
@@ -77,6 +80,9 @@ pub struct ToolContext {
     pub control_dir: Option<PathBuf>,
     pub last_sync_hash: Mutex<Option<String>>,
     pub output_sink: Option<OutputSink>,
+    /// Told about every run this context starts (the desktop service attributes runs to
+    /// conversations with it).
+    pub on_run_started: Option<RunStartedSink>,
     /// User-approved external data directories (the global config's target `data_dirs`):
     /// `fs.read` may follow a repo symlink into them. Empty by default.
     pub data_roots: Vec<String>,
@@ -101,6 +107,7 @@ impl ToolContext {
             control_dir: None,
             last_sync_hash: Mutex::new(None),
             output_sink: None,
+            on_run_started: None,
             data_roots: vec![],
         }
     }
@@ -687,6 +694,9 @@ impl ToolContext {
             })
             .await?;
         let run_id = started.run_id.clone();
+        if let Some(sink) = &self.on_run_started {
+            sink(&run_id);
+        }
         // If this future is dropped before the run finishes (the turn was cancelled), the
         // guard cancels the run on the target.
         let cancel_guard = kernel.cancel_guard(&run_id);

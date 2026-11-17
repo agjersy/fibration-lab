@@ -62,7 +62,7 @@ pub fn workbench_from_env() -> anyhow::Result<Arc<Workbench>> {
 }
 
 /// The command names registered in `generate_handler!`, kept in one place so a test can check
-/// them against docs/IPC.md section 4.
+/// them against docs/IPC.md sections 4 and 7.
 pub const COMMANDS: &[&str] = &[
     "app_info",
     "sessions_list",
@@ -111,6 +111,8 @@ pub const COMMANDS: &[&str] = &[
     "proposal_respond",
     "models_list",
     "model_probe",
+    "provider_keys_status",
+    "provider_key_set",
     "targets_list",
     "target_bootstrap",
     "terminal_open",
@@ -120,14 +122,95 @@ pub const COMMANDS: &[&str] = &[
     "dialog_pick_directory",
 ];
 
+/// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see
+/// `bundle.resources` in `tauri.conf.json`), when it is there.
+fn bundled_kernel_source(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().resource_dir().ok()?.join("kernel");
+    dir.join("pyproject.toml").is_file().then_some(dir)
+}
+
+/// The macOS application menu. The default menu binds Cmd+W to "Close Window", which would
+/// close the only window instead of the active editor tab; this one has no such item, so the
+/// renderer's close-tab shortcut receives the key. The standard Edit items stay, because on
+/// macOS copy, paste, undo, and select-all reach the webview through them.
+pub fn build_app_menu<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    use tauri::menu::{Menu, PredefinedMenuItem, Submenu};
+    let app_menu = Submenu::with_items(
+        app,
+        "Personal Analyst",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    // No `close_window` here on purpose.
+    let window = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::fullscreen(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit, &window])
+}
+
 /// Configure and run the app.
 pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
     use commands::*;
     let state = AppState::new(workbench.clone());
     let shutdown_wb = workbench.clone();
+    let setup_wb = workbench.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        .setup(move |app| {
+            if cfg!(target_os = "macos") {
+                let menu = build_app_menu(app.handle())?;
+                app.set_menu(menu)?;
+            }
+            // Packaging (B12): outside a development checkout the kernel is installed from
+            // the bundled source into `$ANALYST_HOME/tooling`, in the background. Kernels
+            // wait for it; a missing `uv` becomes a clear kernel error state.
+            match bundled_kernel_source(app.handle()) {
+                Some(dir) => {
+                    tracing::info!("bundled kernel source: {}", dir.display());
+                    setup_wb.set_kernel_source(dir);
+                }
+                None => tracing::info!("no bundled kernel source next to the app"),
+            }
+            if let Some(task) = setup_wb.prepare_tooling() {
+                tracing::info!("preparing the tooling environment ({task})");
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let label = window.label().to_string();
@@ -184,6 +267,8 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             proposal_respond,
             models_list,
             model_probe,
+            provider_keys_status,
+            provider_key_set,
             targets_list,
             target_bootstrap,
             terminal_open,
@@ -207,7 +292,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
 mod tests {
     use super::COMMANDS;
 
-    /// Copied from docs/IPC.md section 4 (the `command` column).
+    /// Copied from docs/IPC.md sections 4 and 7 (the `command` columns).
     const IPC_MD_COMMANDS: &[&str] = &[
         "app_info",
         "sessions_list",
@@ -256,6 +341,8 @@ mod tests {
         "proposal_respond",
         "models_list",
         "model_probe",
+        "provider_keys_status",
+        "provider_key_set",
         "targets_list",
         "target_bootstrap",
         "terminal_open",

@@ -59,12 +59,40 @@ fn to_rel(repo: &Path, p: &Path) -> String {
         .replace('\\', "/")
 }
 
-/// Build a `FigureView` for a figure file (sidecar read from `<stem>.json` next to it).
+/// A run id that is safe to use as a single path component (ids read from `run.json` files
+/// on disk are untrusted).
+pub fn safe_run_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('.')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// The sidecar next to a figure: `<file name>.meta.json` (PROTOCOL 9).
+pub fn sidecar_file(figure: &Path) -> PathBuf {
+    let mut name = figure
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".meta.json");
+    figure.with_file_name(name)
+}
+
+/// Whether a path is a figure sidecar (`*.meta.json`), which is never listed as a figure.
+fn is_sidecar(path: &Path) -> bool {
+    path.file_name()
+        .map(|n| n.to_string_lossy().ends_with(".meta.json"))
+        .unwrap_or(false)
+}
+
+/// Build a `FigureView` for a figure file (sidecar read from `<file name>.meta.json` next to
+/// it).
 pub fn figure_view(repo: &Path, file: &Path, run_id: &str, script: &str) -> Option<FigureView> {
     let rel = to_rel(repo, file);
     let format = FigureFormat::from_path(&rel)?;
-    let sidecar_path = file.with_extension("json");
-    let sidecar: Option<FigureSidecar> = std::fs::read_to_string(&sidecar_path)
+    let sidecar: Option<FigureSidecar> = std::fs::read_to_string(sidecar_file(file))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok());
     let meta = std::fs::metadata(file).ok()?;
@@ -89,6 +117,31 @@ pub fn figure_view(repo: &Path, file: &Path, run_id: &str, script: &str) -> Opti
     })
 }
 
+/// A `FigureView` built from a kernel artifact alone, for figures that are not on this
+/// machine yet (remote targets).
+pub fn figure_view_from_artifact(
+    artifact: &analyst_protocol::kernel::Artifact,
+    run_id: &str,
+    script: &str,
+) -> Option<FigureView> {
+    let format = FigureFormat::from_path(&artifact.path)?;
+    Some(FigureView {
+        run_id: run_id.to_string(),
+        script: script.to_string(),
+        path: artifact.path.clone(),
+        name: artifact
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&artifact.path)
+            .to_string(),
+        format,
+        sidecar: artifact.sidecar.clone(),
+        created_at: artifact.created_at.clone(),
+        size: artifact.size,
+    })
+}
+
 /// Figure files under a directory, sorted by path (skips `_`-prefixed directories).
 pub fn figure_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -102,6 +155,7 @@ pub fn figure_files(dir: &Path) -> Vec<PathBuf> {
         .flatten()
     {
         if e.file_type().is_file()
+            && !is_sidecar(e.path())
             && ArtifactKind::from_path(&e.path().to_string_lossy()) == ArtifactKind::Figure
         {
             out.push(e.path().to_path_buf());
@@ -127,6 +181,8 @@ pub fn scan_run_dir(repo: &Path, dir: &Path) -> Option<ScannedRun> {
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+    // A `run.json` with an unusable id is treated like a missing one.
+    let run_json = run_json.filter(|r| safe_run_id(&r.run_id));
     let (run_id, script, args, started_at, host) = match &run_json {
         Some(r) => (
             r.run_id.clone(),
@@ -159,33 +215,52 @@ pub fn scan_run_dir(repo: &Path, dir: &Path) -> Option<ScannedRun> {
     })
 }
 
-/// Every run directory under `out/` (two levels: `<script>/<run>`), newest first by
-/// `started_at`, including terminal runs and directories that only hold figures.
-pub fn scan_out(repo: &Path, out_dir: &str) -> Vec<ScannedRun> {
+/// Run directories under `out/` (two levels: `<script>/<run>`), newest first by directory
+/// name. Run directory names are time stamps, so this order needs no file reads.
+pub fn run_dirs(repo: &Path, out_dir: &str) -> Vec<PathBuf> {
     let out = repo.join(out_dir);
-    let mut runs = Vec::new();
+    let mut dirs: Vec<(String, PathBuf)> = Vec::new();
     let Ok(scripts) = std::fs::read_dir(&out) else {
-        return runs;
+        return vec![];
     };
     for s in scripts.flatten() {
-        let sp = s.path();
         let sname = s.file_name().to_string_lossy().to_string();
-        if !sp.is_dir() || sname.starts_with('_') || sname.starts_with('.') {
+        if sname.starts_with('_') || sname.starts_with('.') {
             continue;
         }
-        let Ok(run_dirs) = std::fs::read_dir(&sp) else {
+        if !s.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(rd) = std::fs::read_dir(s.path()) else {
             continue;
         };
-        for r in run_dirs.flatten() {
-            let rp = r.path();
+        for r in rd.flatten() {
             let rname = r.file_name().to_string_lossy().to_string();
-            if !rp.is_dir() || rname.starts_with('_') || rname.starts_with('.') {
+            if rname.starts_with('_') || rname.starts_with('.') {
                 continue;
             }
-            if let Some(scanned) = scan_run_dir(repo, &rp) {
-                if scanned.has_run_json || !scanned.figures.is_empty() {
-                    runs.push(scanned);
-                }
+            // `file_type` does not follow symlinks: a link out of the repo is never scanned.
+            if !r.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            dirs.push((rname, r.path()));
+        }
+    }
+    dirs.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    dirs.into_iter().map(|(_, p)| p).collect()
+}
+
+/// Run directories under `out/`, newest first by `started_at`, including terminal runs and
+/// directories that only hold figures. Scanning stops once `limit` runs are found (U3).
+pub fn scan_out_limited(repo: &Path, out_dir: &str, limit: usize) -> Vec<ScannedRun> {
+    let mut runs = Vec::new();
+    for dir in run_dirs(repo, out_dir) {
+        if runs.len() >= limit {
+            break;
+        }
+        if let Some(scanned) = scan_run_dir(repo, &dir) {
+            if scanned.has_run_json || !scanned.figures.is_empty() {
+                runs.push(scanned);
             }
         }
     }
@@ -197,8 +272,16 @@ pub fn scan_out(repo: &Path, out_dir: &str) -> Vec<ScannedRun> {
     runs
 }
 
+/// Every run directory under `out/`.
+pub fn scan_out(repo: &Path, out_dir: &str) -> Vec<ScannedRun> {
+    scan_out_limited(repo, out_dir, usize::MAX)
+}
+
 /// Figures pulled from a remote target into `artifacts/<run_id>/<path>`.
 pub fn scan_pulled(artifacts_dir: &Path, run_id: &str, script: &str) -> Vec<FigureView> {
+    if !safe_run_id(run_id) {
+        return vec![];
+    }
     let base = artifacts_dir.join(run_id);
     if !base.is_dir() {
         return vec![];
@@ -240,7 +323,7 @@ mod tests {
         std::fs::create_dir_all(&r1).unwrap();
         std::fs::write(r1.join("residuals.png"), b"png").unwrap();
         std::fs::write(
-            r1.join("residuals.json"),
+            r1.join("residuals.png.meta.json"),
             serde_json::json!({
                 "run_id": "20260101-000000-aaaaaa", "script": "scripts/fit.py", "args": [],
                 "title": "Residuals", "axes": [], "created_at": "2026-01-01T00:00:01Z",
@@ -288,5 +371,17 @@ mod tests {
         );
         assert_eq!(run_dir_of("out", "out/_repl/r1/a.png"), None);
         assert_eq!(run_dir_of("out", "scripts/a.py"), None);
+        // A data file that happens to share the figure's stem is not a sidecar (K3), and a
+        // run.json with a path-like id is ignored.
+        assert_eq!(fit.figures.len(), 1);
+        std::fs::write(
+            repo.join("out/terminal/20260102-000000/run.json"),
+            r#"{"run_id":"../../x","script":"terminal"}"#,
+        )
+        .unwrap();
+        let runs = scan_out_limited(repo, "out", 1);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "terminal-20260102-000000");
+        assert!(!safe_run_id("../x") && !safe_run_id("") && safe_run_id("20260101-000000-ab12cd"));
     }
 }

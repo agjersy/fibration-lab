@@ -110,6 +110,9 @@ pub async fn session_rename(
 }
 
 /// Opens a per-window channel; events flow until `session_unsubscribe` or the window closes.
+/// `not_found` when the session is not open (the renderer opens first, IPC.md section 7).
+/// A subscriber that falls behind receives `{"type":"resync"}`; terminal output arrives merged
+/// on its own bounded path and cannot displace control events.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn session_subscribe(
     state: State<'_, AppState>,
@@ -120,20 +123,16 @@ pub async fn session_subscribe(
     let rt = rt_of(&state, &session)?;
     let id = format!("sub-{}", analyst_core::util::stamped_id());
     let mut rx = rt.subscribe();
+    drop(rt);
     let sub_id = id.clone();
     let handle = tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if channel.send(event).is_err() {
-                        tracing::debug!("subscription {sub_id}: channel closed");
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("subscription {sub_id}: dropped {n} events");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        while let Ok(event) = rx.recv().await {
+            if matches!(event, SessionEvent::Resync) {
+                tracing::warn!("subscription {sub_id}: fell behind, asking the renderer to resync");
+            }
+            if channel.send(event).is_err() {
+                tracing::debug!("subscription {sub_id}: channel closed");
+                break;
             }
         }
     });
@@ -347,8 +346,11 @@ pub async fn runs_list(
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn run_get(state: State<'_, AppState>, session: String, run_id: String) -> R<RunDetail> {
-    rt_of(&state, &session)?
-        .run_get(&run_id)
+    let rt = rt_of(&state, &session)?;
+    // Reads up to 2 MiB per stream from the run's log files.
+    tokio::task::spawn_blocking(move || rt.run_get(&run_id))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?
         .map_err(Into::into)
 }
 
@@ -386,7 +388,7 @@ pub async fn figures_list(
     session: String,
     limit: Option<u32>,
 ) -> R<Vec<FigureGroup>> {
-    Ok(rt_of(&state, &session)?.figures_list(limit))
+    Ok(rt_of(&state, &session)?.figures_list(limit).await)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -582,6 +584,21 @@ pub async fn model_probe(state: State<'_, AppState>, model: String) -> R<ModelEn
         .workbench
         .model_probe(&model)
         .await
+        .map_err(Into::into)
+}
+
+/// One row per configured provider; key values never cross the boundary.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn provider_keys_status(state: State<'_, AppState>) -> R<Vec<ProviderKeyStatus>> {
+    Ok(state.workbench.provider_keys_status())
+}
+
+/// Store (or, with an empty key, remove) a provider's key in `$ANALYST_HOME/credentials.toml`.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn provider_key_set(state: State<'_, AppState>, provider: String, key: String) -> R<()> {
+    state
+        .workbench
+        .provider_key_set(&provider, &key)
         .map_err(Into::into)
 }
 

@@ -1,19 +1,20 @@
 //! Terminals (ARCHITECTURE 5.15) on `portable-pty`. Local: `$SHELL` (fallback `/bin/sh`) in the
 //! repo with the session venv on PATH and the figure-capture environment, so anything run from
 //! the terminal produces figures. Remote: `ssh -t <host>` into the mirror with the same setup.
-//! A reader thread forwards output as `terminal_data` (lossy UTF-8); exit is `terminal_exit`.
+//! A reader thread forwards output as `terminal_data` (lossy UTF-8) and the exit as
+//! `terminal_exit`, both on the hub's terminal path (bounded and coalescing, see `events`).
+//! The shell never inherits provider API keys (U11), and its `PATH` is the widened tool path.
 
 use super::error::{ServiceError, ServiceResult};
+use super::events::EventHub;
 use crate::target::Target;
-use crate::util::sh_quote;
-use analyst_protocol::ui::{SessionEvent, TerminalId};
+use crate::util::{sh_quote, sh_quote_path};
+use analyst_protocol::ui::TerminalId;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
-
 /// The figure-capture environment exported into every terminal (PROTOCOL 1.4 and 1.6).
 #[derive(Debug, Clone)]
 pub struct CaptureEnv {
@@ -24,16 +25,48 @@ pub struct CaptureEnv {
     pub out_dir: PathBuf,
     /// `ANALYST_RUN_ID` for this terminal (`terminal-<stamp>`).
     pub run_id: String,
+    /// The configured output directory, repo-relative (`out` by default).
+    pub out_rel: String,
+}
+
+/// Environment variables that commonly hold provider API keys. They are removed from every
+/// child process the app starts (terminal shells, kernels) together with the `api_key_env`
+/// names of the configured providers.
+pub const COMMON_KEY_VARS: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "MISTRAL_API_KEY",
+    "GROQ_API_KEY",
+    "DEEPSEEK_API_KEY",
+];
+
+/// Every variable to scrub for a global config: the common ones plus each provider's
+/// `api_key_env`.
+pub fn key_env_names(global: &analyst_protocol::config::GlobalConfig) -> Vec<String> {
+    let mut v: Vec<String> = COMMON_KEY_VARS.iter().map(|s| s.to_string()).collect();
+    for p in &global.providers {
+        if let Some(n) = &p.api_key_env {
+            if !n.is_empty() && !v.contains(n) {
+                v.push(n.clone());
+            }
+        }
+    }
+    v
 }
 
 impl CaptureEnv {
     /// A fresh capture environment under `<repo>/<out_dir>/terminal/<stamp>`.
     pub fn new(repo: &Path, out_dir: &str, mpl_dir: Option<PathBuf>) -> CaptureEnv {
         let stamp = crate::util::stamped_id();
+        let out_rel = crate::util::normalize_rel_path(out_dir).unwrap_or_else(|_| "out".into());
         CaptureEnv {
             mpl_dir,
-            out_dir: repo.join(out_dir).join("terminal").join(&stamp),
+            out_dir: repo.join(&out_rel).join("terminal").join(&stamp),
             run_id: format!("terminal-{stamp}"),
+            out_rel,
         }
     }
 
@@ -63,6 +96,8 @@ impl CaptureEnv {
         }
         pythonpath.push(repo.to_string_lossy().to_string());
         vars.push(("PYTHONPATH".to_string(), pythonpath.join(":")));
+        // Apps started from a launcher have a minimal PATH; use the widened tool path.
+        let path = crate::util::tool_path_env().to_string_lossy().to_string();
         let venv = repo.join(".venv");
         if venv.is_dir() {
             vars.push((
@@ -70,8 +105,9 @@ impl CaptureEnv {
                 venv.to_string_lossy().to_string(),
             ));
             let bin = venv.join("bin").to_string_lossy().to_string();
-            let path = std::env::var("PATH").unwrap_or_default();
             vars.push(("PATH".to_string(), format!("{bin}:{path}")));
+        } else {
+            vars.push(("PATH".to_string(), path));
         }
         vars
     }
@@ -79,24 +115,21 @@ impl CaptureEnv {
     /// The remote shell command for `ssh -t`: enter the mirror, export the environment, exec a
     /// login shell.
     pub fn remote_command(&self, mirror: &str) -> String {
-        let m = if let Some(rest) = mirror.strip_prefix("~/") {
-            format!("~/{}", sh_quote(rest))
-        } else {
-            sh_quote(mirror)
-        };
-        let out_rel = self
+        let m = sh_quote_path(mirror);
+        let stamp = self
             .out_dir
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
+        // The configured out_dir, quoted as one word; `$PWD` stays outside the quotes.
+        let out_rel = sh_quote(&format!("{}/terminal/{stamp}", self.out_rel));
         format!(
             "cd {m} && export VIRTUAL_ENV=\"$PWD/.venv\" PATH=\"$PWD/.venv/bin:$HOME/.analyst/bin:$PATH\" \
-MPLBACKEND=module://analyst_mpl ANALYST_ROOT=\"$PWD\" ANALYST_OUT_DIR=\"$PWD/out/terminal/{out_rel}\" \
+MPLBACKEND=module://analyst_mpl ANALYST_ROOT=\"$PWD\" ANALYST_OUT_DIR=\"$PWD\"/{out_rel} \
 ANALYST_RUN_ID={run_id} PYTHONUNBUFFERED=1 \
 PYTHONPATH=\"$($HOME/.analyst/tooling/.venv/bin/python -c 'import analyst_mpl,os;print(os.path.dirname(os.path.dirname(analyst_mpl.__file__)))' 2>/dev/null):$PWD\"; \
 exec \"${{SHELL:-/bin/sh}}\" -l",
             run_id = sh_quote(&self.run_id),
-            out_rel = sh_quote(&out_rel),
         )
     }
 }
@@ -104,7 +137,7 @@ exec \"${{SHELL:-/bin/sh}}\" -l",
 /// Locate the directory containing `analyst_mpl` for the local target: ask the tooling
 /// interpreter, else look for `python/kernel/analyst_mpl` in a development checkout.
 pub fn find_mpl_dir(tooling_python: &str) -> Option<PathBuf> {
-    let out = std::process::Command::new(tooling_python)
+    let out = std::process::Command::new(crate::util::resolve_tool(tooling_python))
         .args([
             "-c",
             "import analyst_mpl, os; print(os.path.dirname(os.path.dirname(analyst_mpl.__file__)))",
@@ -148,6 +181,9 @@ pub struct TerminalSpec {
     pub capture: CaptureEnv,
     /// Shell for local terminals; `None` = `$SHELL` or `/bin/sh`.
     pub shell: Option<String>,
+    /// Environment variables removed from the shell (provider API keys, see
+    /// [`key_env_names`]).
+    pub env_remove: Vec<String>,
     pub cols: u16,
     pub rows: u16,
 }
@@ -164,12 +200,12 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Spawn the pty and its reader thread. Output and exit go to `events`.
+    /// Spawn the pty and its reader thread. Output and exit go to the hub's terminal path.
     pub fn open(
         id: TerminalId,
         session: &str,
         spec: &TerminalSpec,
-        events: broadcast::Sender<SessionEvent>,
+        events: EventHub,
     ) -> ServiceResult<Terminal> {
         let pty = native_pty_system();
         let pair = pty
@@ -204,12 +240,20 @@ impl Terminal {
                 // `-t` forces a tty; BatchMode stays so a missing key fails fast.
                 line.insert(1, "-t".to_string());
                 line.push(spec.capture.remote_command(&mirror));
-                let mut c = CommandBuilder::new(&line[0]);
+                crate::target::validate_host(host)
+                    .map_err(|e| ServiceError::invalid(e.to_string()))?;
+                let mut c = CommandBuilder::new(crate::util::resolve_tool(&line[0]));
                 c.args(&line[1..]);
                 c.cwd(&spec.repo);
                 c
             }
         };
+        for name in COMMON_KEY_VARS {
+            cmd.env_remove(name);
+        }
+        for name in &spec.env_remove {
+            cmd.env_remove(name);
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         let child = pair
@@ -284,7 +328,7 @@ fn reader_loop(
     id: TerminalId,
     mut reader: Box<dyn Read + Send>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    events: broadcast::Sender<SessionEvent>,
+    events: EventHub,
 ) {
     let mut buf = [0u8; 8192];
     let mut carry: Vec<u8> = Vec::new();
@@ -294,21 +338,13 @@ fn reader_loop(
             Ok(n) => {
                 carry.extend_from_slice(&buf[..n]);
                 let (text, rest) = decode_prefix(&carry);
-                if !text.is_empty() {
-                    let _ = events.send(SessionEvent::TerminalData {
-                        terminal_id: id.clone(),
-                        data: text,
-                    });
-                }
+                events.terminal_data(&id, &text);
                 carry = rest;
             }
         }
     }
     if !carry.is_empty() {
-        let _ = events.send(SessionEvent::TerminalData {
-            terminal_id: id.clone(),
-            data: String::from_utf8_lossy(&carry).to_string(),
-        });
+        events.terminal_data(&id, &String::from_utf8_lossy(&carry));
     }
     let code = child.wait().ok().map(|st| {
         if st.success() {
@@ -317,10 +353,7 @@ fn reader_loop(
             st.exit_code() as i64
         }
     });
-    let _ = events.send(SessionEvent::TerminalExit {
-        terminal_id: id,
-        code,
-    });
+    events.terminal_exit(&id, code);
 }
 
 /// Decode as much of `bytes` as is valid UTF-8, keeping an incomplete trailing sequence (at
@@ -394,6 +427,7 @@ impl TerminalManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use analyst_protocol::ui::SessionEvent;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -411,18 +445,22 @@ mod tests {
     #[tokio::test]
     async fn local_terminal_echoes_a_command() {
         let repo = tempfile::tempdir().unwrap();
-        let (tx, mut rx) = broadcast::channel(256);
+        let hub = EventHub::new();
+        let mut rx = hub.subscribe();
+        // The app's own environment holds a provider key; the shell must not see it.
+        std::env::set_var("ANALYST_TEST_PROVIDER_KEY", "sk-secret");
         let spec = TerminalSpec {
             repo: repo.path().to_path_buf(),
             target: Target::Local,
             control_dir: None,
             capture: CaptureEnv::new(repo.path(), "out", None),
             shell: Some("/bin/sh".into()),
+            env_remove: vec!["ANALYST_TEST_PROVIDER_KEY".into()],
             cols: 80,
             rows: 24,
         };
-        let t = Terminal::open("t1".into(), "s1", &spec, tx).unwrap();
-        t.write("echo hello; echo $ANALYST_RUN_ID; echo $MPLBACKEND\n")
+        let t = Terminal::open("t1".into(), "s1", &spec, hub.clone()).unwrap();
+        t.write("echo hello; echo key=[$ANALYST_TEST_PROVIDER_KEY]; echo $ANALYST_RUN_ID; echo $MPLBACKEND\n")
             .unwrap();
         t.resize(100, 30).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -439,6 +477,8 @@ mod tests {
         }
         assert!(seen.contains("hello"), "{seen:?}");
         assert!(seen.contains("terminal-"), "{seen:?}");
+        assert!(seen.contains("key=[]"), "provider key leaked: {seen:?}");
+        assert!(!seen.contains("sk-secret"), "{seen:?}");
         t.write("exit 3\n").unwrap();
         let mut code = None;
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -450,5 +490,25 @@ mod tests {
             }
         }
         assert_eq!(code, Some(Some(3)));
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+
+    #[test]
+    fn remote_command_uses_the_configured_out_dir_and_quotes_paths() {
+        let repo = std::path::Path::new("/r");
+        let c = CaptureEnv::new(repo, "results dir", None);
+        let cmd = c.remote_command("~/analyst/my repo");
+        assert!(cmd.starts_with("cd ~/'analyst/my repo' && "), "{cmd}");
+        assert!(
+            cmd.contains("ANALYST_OUT_DIR=\"$PWD\"/'results dir/terminal/"),
+            "{cmd}"
+        );
+        assert!(!cmd.contains("$PWD/out/terminal"), "{cmd}");
+        let names = key_env_names(&Default::default());
+        assert!(names.iter().any(|n| n == "ANTHROPIC_API_KEY"));
     }
 }

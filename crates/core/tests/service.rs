@@ -5,7 +5,7 @@
 //! Skips (with a message) when no tooling interpreter is available:
 //! `ANALYST_TOOLING_PYTHON`, else `<workspace>/python/kernel/.venv/bin/python`.
 
-use analyst_core::service::{Workbench, WorkbenchOptions};
+use analyst_core::service::{Subscription, Workbench, WorkbenchOptions};
 use analyst_protocol::kernel::{ArtifactKind, RunStatus, Severity};
 use analyst_protocol::ui::*;
 use std::path::{Path, PathBuf};
@@ -76,7 +76,7 @@ def single_exp(t, a, tau):
     return a * np.exp(-t / tau)
 "#;
 
-async fn wait_for<F>(rx: &mut broadcast::Receiver<SessionEvent>, secs: u64, pred: F) -> SessionEvent
+async fn wait_for<F>(rx: &mut Subscription, secs: u64, pred: F) -> SessionEvent
 where
     F: Fn(&SessionEvent) -> bool,
 {
@@ -189,13 +189,11 @@ async fn real_kernel_session_index_check_run_figures_equations() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
-    let d = wait_for(&mut rx, 30, |e| {
-        matches!(e, SessionEvent::Diagnostics { .. })
+    // (Saving a `.py` file also triggers a check of that file, so wait for this one.)
+    wait_for(&mut rx, 30, |e| {
+        matches!(e, SessionEvent::Diagnostics { paths, .. } if paths.contains(&"scripts/decay_sim.py".to_string()))
     })
     .await;
-    assert!(
-        matches!(d, SessionEvent::Diagnostics { paths, .. } if paths.contains(&"scripts/decay_sim.py".to_string()))
-    );
 
     // Run it and collect the run events.
     let view = rt
@@ -255,7 +253,7 @@ async fn real_kernel_session_index_check_run_figures_equations() {
     assert!(repo.path().join(&figure.path).is_file());
 
     // figures_list groups by run, newest first, with the sidecar.
-    let groups = rt.figures_list(None);
+    let groups = rt.figures_list(None).await;
     assert!(!groups.is_empty());
     let g = groups.iter().find(|g| g.run.meta.run_id == run_id).unwrap();
     assert!(g.figures.iter().any(|f| f.path == figure.path));
@@ -291,6 +289,11 @@ async fn real_kernel_session_index_check_run_figures_equations() {
     let pkgs = rt.env_packages().await.unwrap();
     assert!(pkgs.iter().any(|p| p.name.eq_ignore_ascii_case("numpy")));
 
+    // Kernel-free data is served without the kernel, and `conversation` is null for a run
+    // started from the run form.
+    assert!(runs[0].conversation.is_none());
+    assert!(detail.view.artifacts.iter().any(|a| a.path == figure.path));
+
     wb.close_session(&sid).await.unwrap();
     assert!(matches!(
         wait_for(&mut rx, 10, |e| matches!(
@@ -303,4 +306,49 @@ async fn real_kernel_session_index_check_run_figures_equations() {
             ..
         }
     ));
+
+    // Reopen (B2): open, then subscribe, then session_info. The earlier run, its full output,
+    // and its figure with the sidecar are there before the kernel is, and the kernel reaches
+    // `ready` again with the sandbox reported through `session_changed`.
+    let info = wb.open_session(&sid).await.unwrap();
+    assert!(info.summary.open);
+    let rt = wb.session(&sid).unwrap();
+    let mut rx = rt.subscribe();
+    let runs = rt.runs_list(None);
+    assert_eq!(runs[0].meta.run_id, run_id);
+    assert_eq!(runs[0].meta.status, RunStatus::Done);
+    let detail = rt.run_get(&run_id).unwrap();
+    assert!(detail.stdout.contains("samples 7"), "{detail:?}");
+    assert!(detail.view.artifacts.iter().any(|a| a.path == figure.path));
+    let groups = rt.figures_list(None).await;
+    let g = groups.iter().find(|g| g.run.meta.run_id == run_id).unwrap();
+    let f = g.figures.iter().find(|f| f.path == figure.path).unwrap();
+    assert_eq!(
+        f.sidecar.as_ref().and_then(|s| s.title.as_deref()),
+        Some("decay")
+    );
+    assert_eq!(g.run.meta.args, vec!["--n", "7"]);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let info = wb.session_info(&sid).await.unwrap();
+        if info.kernel == KernelState::Ready {
+            assert_eq!(info.sandbox.as_deref(), Some("none"));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "kernel did not become ready after reopen: {:?}",
+            info.kernel
+        );
+        wait_for(&mut rx, 60, |e| {
+            matches!(
+                e,
+                SessionEvent::KernelState { .. } | SessionEvent::SessionChanged { .. }
+            )
+        })
+        .await;
+    }
+    let idx = rt.index_get().await.unwrap();
+    assert_eq!(idx.scripts.len(), 1);
+    wb.close_session(&sid).await.unwrap();
 }

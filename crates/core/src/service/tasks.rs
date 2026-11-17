@@ -76,8 +76,11 @@ impl TaskLogger {
             .split_first()
             .ok_or_else(|| anyhow!("empty command line"))?;
         self.log(format!("$ {}", line.join(" ")));
-        let mut cmd = tokio::process::Command::new(program);
+        // Bare tool names resolve through the widened search path (apps started from a
+        // launcher have a minimal PATH), and children inherit it.
+        let mut cmd = tokio::process::Command::new(crate::util::resolve_tool(program));
         cmd.args(args)
+            .env("PATH", crate::util::tool_path_env())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
