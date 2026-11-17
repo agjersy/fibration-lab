@@ -5124,6 +5124,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wb-net"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "wb-policy"
 version = "0.0.1"
 dependencies = [

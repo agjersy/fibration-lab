@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     # Shared core modules
+    "crates/wb-net",
     "crates/wb-providers",
     "crates/wb-policy",
     "crates/wb-transcript",

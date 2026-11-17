@@ -1,0 +1,18 @@
+[package]
+name = "wb-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The network gate: the only code in the app that opens outbound connections or authorizes a subprocess to, plus the egress ledger and the .env secret store."
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
