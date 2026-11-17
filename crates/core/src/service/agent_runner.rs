@@ -238,15 +238,10 @@ pub fn proposal_view(
                 .to_string();
             view.path = Some(script.to_string());
             view.command = Some(cmd.clone());
-            let network = args
-                .get("network")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            view.summary = match (unsandboxed, network) {
-                (true, true) => format!("Unsandboxed run: {cmd} (with network)"),
-                (true, false) => format!("Unsandboxed run: {cmd}"),
-                (false, true) => format!("run (with network): {cmd}"),
-                (false, false) => format!("run: {cmd}"),
+            view.summary = if unsandboxed {
+                format!("Unsandboxed run: {cmd}")
+            } else {
+                format!("run: {cmd}")
             };
         }
         "exec.snippet" => {
@@ -341,13 +336,14 @@ impl Approver for UiApprover {
 /// and cached when missing).
 pub async fn model_for(
     home: &std::path::Path,
+    repo: Option<&std::path::Path>,
     global: &analyst_protocol::config::GlobalConfig,
     spec: &str,
 ) -> ServiceResult<(Arc<dyn ModelClient>, ModelCapabilities, String)> {
     let spec = config::ModelSpec::parse(spec).map_err(|e| ServiceError::invalid(e.to_string()))?;
     let resolved =
         config::resolve_model(global, &spec).map_err(|e| ServiceError::not_found(e.to_string()))?;
-    let client = providers::client_for_in(home, &resolved)
+    let client = providers::client_for_repo(home, repo, &resolved)
         .map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
     let key = spec.to_string();
     let caps = capabilities::ensure(
@@ -569,7 +565,7 @@ async fn run_turn(
     if needs_new {
         let (client, caps, name) = match &override_client {
             Some(c) => (c.clone(), ModelCapabilities::default(), model_spec.clone()),
-            None => model_for(&rt.home, &global, &model_spec).await?,
+            None => model_for(&rt.home, Some(&rt.repo), &global, &model_spec).await?,
         };
         let session = rt.session_snapshot();
         let mut ctx = ToolContext::new(&rt.repo, &rt.home, session, &conv.id, project.clone());
@@ -599,7 +595,8 @@ async fn run_turn(
     if let Some(c) = &override_client {
         agent.model = c.clone();
     } else if conv.model_dirty.swap(false, Ordering::SeqCst) {
-        let (client, caps, name) = model_for(&rt.home, &global, &model_spec).await?;
+        let (client, caps, name) =
+            model_for(&rt.home, Some(&rt.repo), &global, &model_spec).await?;
         agent.model = client;
         agent.config.caps = caps;
         agent.config.model_name = name;

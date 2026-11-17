@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use wb_net::{reqwest, EgressError};
 
 /// A streaming chat client. Every adapter produces exactly the `ModelEvent` sequence of
 /// PROTOCOL 4 and always terminates the stream with a `Stop` event.
@@ -26,7 +27,7 @@ pub trait ModelClient: Send + Sync {
 }
 
 /// Build the client for a resolved model (keys from the environment or the default home's
-/// `credentials.toml`).
+/// `.env`).
 pub fn client_for(resolved: &ResolvedModel) -> anyhow::Result<Arc<dyn ModelClient>> {
     client_for_in(&crate::config::analyst_home(), resolved)
 }
@@ -36,8 +37,28 @@ pub fn client_for_in(
     home: &Path,
     resolved: &ResolvedModel,
 ) -> anyhow::Result<Arc<dyn ModelClient>> {
-    let api_key = crate::config::api_key_in(home, &resolved.provider)?;
+    client_for_repo(home, None, resolved)
+}
+
+/// [`client_for_in`] for a session: the repo's own untracked `.env` is consulted for the key
+/// after the process environment and `<home>/.env`.
+pub fn client_for_repo(
+    home: &Path,
+    repo: Option<&Path>,
+    resolved: &ResolvedModel,
+) -> anyhow::Result<Arc<dyn ModelClient>> {
+    let api_key = crate::config::api_key_in(home, repo, &resolved.provider)?;
     let base_url = resolved.provider.effective_base_url();
+    // The user's provider configuration is what puts a host on the gate's allowlist.
+    wb_net::gate()
+        .allow_model_endpoint(&base_url)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "provider `{}`: {}",
+                resolved.provider.name,
+                egress_message(&e)
+            )
+        })?;
     Ok(match resolved.provider.kind {
         ProviderKind::OpenAiCompatible => Arc::new(openai_compat::OpenAiCompatClient::new(
             base_url,
@@ -60,11 +81,16 @@ pub fn client_for_in(
 /// The model's context window as reported by the provider, when it reports one: Anthropic
 /// `GET /v1/models/{id}` (`max_input_tokens`), OpenAI-compatible `GET /models`
 /// (`context_length`, `context_window`, `max_model_len`, ...). `None` on any failure.
-pub async fn model_info_window(home: &Path, resolved: &ResolvedModel) -> Option<u32> {
-    let key = crate::config::api_key_in(home, &resolved.provider)
+pub async fn model_info_window(
+    home: &Path,
+    repo: Option<&Path>,
+    resolved: &ResolvedModel,
+) -> Option<u32> {
+    let key = crate::config::api_key_in(home, repo, &resolved.provider)
         .ok()
         .flatten();
     let base = resolved.provider.effective_base_url();
+    wb_net::gate().allow_model_endpoint(&base).ok()?;
     let id = resolved.spec.id.clone();
     let info = match resolved.provider.kind {
         ProviderKind::OpenAiCompatible => {
@@ -133,7 +159,6 @@ pub fn normalize_messages(messages: &[Message]) -> Vec<Message> {
 /// Timeouts and retry policy for provider HTTP calls (PROTOCOL 9).
 #[derive(Debug, Clone)]
 pub struct HttpPolicy {
-    pub connect_timeout: Duration,
     /// Time allowed until response headers arrive.
     pub first_byte_timeout: Duration,
     /// Longest silence tolerated between stream chunks.
@@ -147,7 +172,6 @@ pub struct HttpPolicy {
 impl Default for HttpPolicy {
     fn default() -> Self {
         HttpPolicy {
-            connect_timeout: Duration::from_secs(15),
             first_byte_timeout: Duration::from_secs(300),
             idle_timeout: Duration::from_secs(180),
             max_attempts: 4,
@@ -156,17 +180,43 @@ impl Default for HttpPolicy {
     }
 }
 
-pub(crate) fn http_client(policy: &HttpPolicy) -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .connect_timeout(policy.connect_timeout)
-        .build()?)
+/// Build a request to a model endpoint. This is the only way the provider layer reaches the
+/// network: the gate refuses (and records) any destination that is not a configured
+/// provider `base_url`. `purpose` is a ledger label (`chat`, `probe`), never request content.
+pub(crate) fn gated(
+    method: reqwest::Method,
+    url: &str,
+    purpose: &str,
+) -> Result<reqwest::RequestBuilder, EgressError> {
+    wb_net::gate().request(method, url, purpose)
+}
+
+/// A refusal by the network gate, in words a user can act on.
+pub fn egress_message(e: &EgressError) -> String {
+    match e {
+        EgressError::Denied { destination, .. } => format!(
+            "the request was not sent: {destination} is not a configured model endpoint. The app only contacts the `base_url` of providers listed in config.toml; add or correct the provider there"
+        ),
+        EgressError::BadDestination(d) => format!(
+            "the request was not sent: `{d}` is not a usable http(s) URL; check the provider's `base_url` in config.toml"
+        ),
+        EgressError::Ledger(why) => format!(
+            "the request was not sent: the network ledger (egress.jsonl in the analyst home) could not be written ({why}). Nothing leaves the machine unrecorded; make the home directory writable"
+        ),
+        EgressError::Client(why) => format!("the HTTP client could not be built: {why}"),
+    }
 }
 
 /// Why a request produced no usable response.
 #[derive(Debug)]
 pub(crate) enum SendFailure {
-    Http { status: u16, body: String },
+    Http {
+        status: u16,
+        body: String,
+    },
     Transport(String),
+    /// The network gate refused the destination; never retried.
+    Egress(String),
 }
 
 impl SendFailure {
@@ -176,6 +226,7 @@ impl SendFailure {
                 format!("HTTP {status}: {}", crate::util::truncate_bytes(body, 2000))
             }
             SendFailure::Transport(e) => format!("request failed: {e}"),
+            SendFailure::Egress(e) => e.clone(),
         }
     }
 }
@@ -192,12 +243,13 @@ pub(crate) async fn send_with_retry<F>(
     policy: &HttpPolicy,
 ) -> Result<reqwest::Response, SendFailure>
 where
-    F: Fn() -> reqwest::RequestBuilder,
+    F: Fn() -> Result<reqwest::RequestBuilder, EgressError>,
 {
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        let sent = tokio::time::timeout(policy.first_byte_timeout, make().send()).await;
+        let request = make().map_err(|e| SendFailure::Egress(egress_message(&e)))?;
+        let sent = tokio::time::timeout(policy.first_byte_timeout, request.send()).await;
         let (failure, retry_after) = match sent {
             Ok(Ok(resp)) if resp.status().is_success() => return Ok(resp),
             Ok(Ok(resp)) => {
@@ -487,6 +539,8 @@ pub(crate) mod testserver {
     pub async fn serve(responses: Vec<Canned>) -> Server {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
+        // Tests name their fake endpoint to the gate, as configuration does for real ones.
+        wb_net::gate().allow_model_endpoint(&url).unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let rec = requests.clone();
         tokio::spawn(async move {
@@ -516,6 +570,33 @@ mod tests {
     use analyst_protocol::model::Role;
 
     /// A1 and A4: adjacent same-role messages merge and whitespace-only text disappears.
+    /// A request to a host nobody configured is never sent: the stream ends with an error
+    /// that says why, and the fake server sees nothing.
+    #[tokio::test]
+    async fn an_unconfigured_endpoint_is_refused_before_any_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let c = openai_compat::OpenAiCompatClient::new(url.clone(), None, "m".into()).unwrap();
+        let got = collect(c.stream(ChatRequest::default())).await;
+        assert_eq!(got.stop, Some(StopReason::Error));
+        let msg = got.stop_message.unwrap();
+        assert!(
+            msg.contains("not a configured model endpoint") && msg.contains("config.toml"),
+            "{msg}"
+        );
+        assert!(c.list_models().await.is_err());
+        let accepted = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        assert!(accepted.is_err(), "a connection was opened");
+        // Naming the endpoint (as the provider configuration does) lets requests through.
+        wb_net::gate().allow_model_endpoint(&url).unwrap();
+        assert!(gated(
+            reqwest::Method::POST,
+            &format!("{url}/chat/completions"),
+            "chat"
+        )
+        .is_ok());
+    }
+
     #[test]
     fn normalize_merges_roles_and_drops_blank_text() {
         let msgs = vec![

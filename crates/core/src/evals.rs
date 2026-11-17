@@ -737,7 +737,7 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
 async fn fixture_python(repo: &Path) -> String {
     if repo.join("pyproject.toml").is_file() && crate::util::find_tool("uv").is_some() {
         match crate::target::run_command(
-            &["uv".to_string(), "sync".to_string(), "-q".to_string()],
+            &crate::egress::uv_install("uv", &["sync"], &["-q"]),
             Some(repo),
         )
         .await

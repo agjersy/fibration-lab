@@ -1,13 +1,14 @@
 //! Anthropic Messages adapter (PROTOCOL 4).
 
 use super::{
-    channel_stream, generated_call_id, http_client, normalize_messages, pump, send_with_retry,
-    unparsed_arguments, HttpPolicy, ModelClient, SseState,
+    channel_stream, egress_message, gated, generated_call_id, normalize_messages, pump,
+    send_with_retry, unparsed_arguments, HttpPolicy, ModelClient, SseState,
 };
 use analyst_protocol::model::{ChatRequest, ContentPart, ModelEvent, Role, StopReason};
 use futures::stream::BoxStream;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use wb_net::reqwest;
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_MAX_TOKENS: u32 = analyst_protocol::config::DEFAULT_MAX_OUTPUT_TOKENS;
@@ -319,7 +320,6 @@ impl SseState for StreamState {
 }
 
 pub struct AnthropicClient {
-    http: reqwest::Client,
     base_url: String,
     api_key: String,
     model: String,
@@ -330,7 +330,6 @@ impl AnthropicClient {
     pub fn new(base_url: String, api_key: String, model: String) -> anyhow::Result<Self> {
         let policy = HttpPolicy::default();
         Ok(AnthropicClient {
-            http: http_client(&policy)?,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
@@ -345,9 +344,8 @@ impl AnthropicClient {
     /// `GET {base_url}/v1/models/{id}`, raw JSON (`max_input_tokens` is the context window).
     pub async fn model_info(&self) -> anyhow::Result<Value> {
         let url = format!("{}/v1/models/{}", self.base_url, self.model);
-        Ok(self
-            .http
-            .get(url)
+        Ok(gated(reqwest::Method::GET, &url, "probe")
+            .map_err(|e| anyhow::anyhow!(egress_message(&e)))?
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .send()
@@ -361,18 +359,17 @@ impl AnthropicClient {
 impl ModelClient for AnthropicClient {
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, ModelEvent> {
         let body = build_body(&req);
-        let http = self.http.clone();
         let url = self.messages_url();
         let api_key = self.api_key.clone();
         let policy = self.policy.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         tokio::spawn(async move {
             let make = || {
-                http.post(&url)
+                Ok(gated(reqwest::Method::POST, &url, "chat")?
                     .header("x-api-key", &api_key)
                     .header("anthropic-version", ANTHROPIC_VERSION)
                     .header("content-type", "application/json")
-                    .json(&body)
+                    .json(&body))
             };
             match send_with_retry(make, &policy).await {
                 Ok(resp) => pump(resp, tx, policy.idle_timeout, StreamState::new()).await,

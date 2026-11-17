@@ -670,7 +670,6 @@ impl ToolContext {
             .get("timeout_s")
             .and_then(Value::as_f64)
             .unwrap_or(eff.timeout_s as f64);
-        let network = args.get("network").and_then(Value::as_bool);
         let kernel = self.kernel()?.clone();
         let tree_hash = match self.sync_if_needed().await {
             Ok(h) => h,
@@ -689,7 +688,6 @@ impl ToolContext {
                 args: Some(run_args.clone()),
                 env: None,
                 timeout_s: Some(timeout_s),
-                network,
                 tree_hash,
             })
             .await?;
@@ -875,7 +873,8 @@ impl ToolContext {
                 ToolError::new(format!("sync after the package change failed: {e}"))
             })?;
         }
-        let remote = remote_uv_command(name, has_pyproject, &mirror, &packages);
+        let index_flag = crate::egress::remote_index_flag("uv (remote)")?;
+        let remote = remote_uv_command(name, has_pyproject, &mirror, &packages, &index_flag);
         let s = target::run_ssh(&host, self.control_dir.as_deref(), &remote).await?;
         log.push_str(&s);
         Ok(json!({"ok": true, "output": tail_bytes(&log, 4000)}))
@@ -957,53 +956,65 @@ pub fn validate_package_names(packages: &[String]) -> Result<(), ToolError> {
 
 /// The `uv` command line run in the local repo. On a remote target with a pyproject, adds
 /// and removals only update `pyproject.toml` and `uv.lock` (`--no-sync`).
+///
+/// Everything that resolves or downloads packages is built by [`crate::egress::uv_install`]
+/// and so names the configured index; `pip uninstall` needs no index and runs offline.
 pub fn local_uv_line(
     tool: &str,
     has_pyproject: bool,
     remote_target: bool,
     packages: &[String],
 ) -> Result<Vec<String>, ToolError> {
-    let mut line = vec!["uv".to_string()];
+    let mut rest: Vec<String> = Vec::new();
+    if has_pyproject && remote_target && tool != "pkg.sync" {
+        rest.push("--no-sync".into());
+    }
+    if tool != "pkg.sync" {
+        rest.push("--".into());
+        rest.extend(packages.iter().cloned());
+    }
+    let install = |sub: &[&str]| crate::egress::uv_install("uv", sub, &rest);
     match (tool, has_pyproject) {
-        ("pkg.add", true) => line.push("add".into()),
-        ("pkg.remove", true) => line.push("remove".into()),
-        ("pkg.add", false) => line.extend(["pip".into(), "install".into()]),
-        ("pkg.remove", false) => line.extend(["pip".into(), "uninstall".into()]),
-        ("pkg.sync", true) => {
-            line.push("sync".into());
-            return Ok(line);
+        ("pkg.add", true) => Ok(install(&["add"])),
+        ("pkg.remove", true) => Ok(install(&["remove"])),
+        ("pkg.add", false) => Ok(install(&["pip", "install"])),
+        ("pkg.remove", false) => {
+            let mut line: Vec<String> = ["uv", "pip", "uninstall"].map(String::from).to_vec();
+            line.extend(rest.iter().cloned());
+            Ok(line)
         }
-        ("pkg.sync", false) => {
-            return Err(ToolError::new("pkg.sync needs a pyproject.toml / uv.lock"))
-        }
-        _ => return Err(ToolError::new(format!("unknown package tool `{tool}`"))),
+        ("pkg.sync", true) => Ok(install(&["sync"])),
+        ("pkg.sync", false) => Err(ToolError::new("pkg.sync needs a pyproject.toml / uv.lock")),
+        _ => Err(ToolError::new(format!("unknown package tool `{tool}`"))),
     }
-    if has_pyproject && remote_target {
-        line.push("--no-sync".into());
-    }
-    line.push("--".into());
-    line.extend(packages.iter().cloned());
-    Ok(line)
 }
 
-/// The remote shell command applied in the mirror after the push.
+/// The remote shell command applied in the mirror after the push. `index_flag` is the
+/// authorized `--default-index '<url>'` from [`crate::egress::remote_index_flag`]; a removal
+/// without a pyproject needs no index and runs offline.
 pub fn remote_uv_command(
     tool: &str,
     has_pyproject: bool,
     mirror: &str,
     packages: &[String],
+    index_flag: &str,
 ) -> String {
     let cd = format!("cd {}", crate::util::sh_quote_path(mirror));
     if has_pyproject {
-        return format!("{cd} && ~/.analyst/bin/uv sync");
+        return format!("{cd} && ~/.analyst/bin/uv sync {index_flag}");
     }
-    let sub = if tool == "pkg.remove" {
-        "pip uninstall"
-    } else {
-        "pip install"
-    };
     let pkgs: Vec<String> = packages.iter().map(|p| crate::util::sh_quote(p)).collect();
-    format!("{cd} && ~/.analyst/bin/uv {sub} -- {}", pkgs.join(" "))
+    if tool == "pkg.remove" {
+        format!(
+            "{cd} && UV_OFFLINE=1 ~/.analyst/bin/uv pip uninstall -- {}",
+            pkgs.join(" ")
+        )
+    } else {
+        format!(
+            "{cd} && ~/.analyst/bin/uv pip install {index_flag} -- {}",
+            pkgs.join(" ")
+        )
+    }
 }
 
 /// Line-oriented rendering of a tool result for the spilled artifact: top-level string
@@ -1309,31 +1320,77 @@ mod tests {
             assert!(e.message.contains("package name"), "{}", e.message);
         }
         let pk = vec!["numpy>=2".to_string(), "pandas".to_string()];
+        // Installs name the configured index right after the subcommand; the gate
+        // authorizes exactly that index when the line is spawned.
+        let index = crate::egress::package_index();
+        let ix = index.as_str();
         assert_eq!(
             local_uv_line("pkg.add", true, false, &pk).unwrap(),
-            vec!["uv", "add", "--", "numpy>=2", "pandas"]
+            vec![
+                "uv",
+                "add",
+                "--default-index",
+                ix,
+                "--",
+                "numpy>=2",
+                "pandas"
+            ]
         );
         assert_eq!(
             local_uv_line("pkg.add", true, true, &pk).unwrap(),
-            vec!["uv", "add", "--no-sync", "--", "numpy>=2", "pandas"]
+            vec![
+                "uv",
+                "add",
+                "--default-index",
+                ix,
+                "--no-sync",
+                "--",
+                "numpy>=2",
+                "pandas"
+            ]
         );
         assert_eq!(
-            local_uv_line("pkg.remove", false, false, &pk).unwrap(),
+            local_uv_line("pkg.add", false, false, &pk).unwrap(),
+            vec![
+                "uv",
+                "pip",
+                "install",
+                "--default-index",
+                ix,
+                "--",
+                "numpy>=2",
+                "pandas"
+            ]
+        );
+        // An uninstall needs no index: no flag, so it runs offline.
+        let uninstall = local_uv_line("pkg.remove", false, false, &pk).unwrap();
+        assert_eq!(
+            uninstall,
             vec!["uv", "pip", "uninstall", "--", "numpy>=2", "pandas"]
         );
+        assert!(crate::egress::guard(&uninstall)
+            .unwrap()
+            .env
+            .contains(&("UV_OFFLINE".to_string(), "1".to_string())));
         assert_eq!(
             local_uv_line("pkg.sync", true, true, &[]).unwrap(),
-            vec!["uv", "sync"]
+            vec!["uv", "sync", "--default-index", ix]
         );
         assert!(local_uv_line("pkg.sync", false, false, &[]).is_err());
-        // With a pyproject the remote side only syncs to the pushed lockfile.
+        // With a pyproject the remote side only syncs to the pushed lockfile, from the
+        // same index.
+        let flag = "--default-index 'https://pypi.org/simple'";
         assert_eq!(
-            remote_uv_command("pkg.add", true, "~/analyst/my repo-1a2b3c4d", &pk),
-            "cd ~/'analyst/my repo-1a2b3c4d' && ~/.analyst/bin/uv sync"
+            remote_uv_command("pkg.add", true, "~/analyst/my repo-1a2b3c4d", &pk, flag),
+            "cd ~/'analyst/my repo-1a2b3c4d' && ~/.analyst/bin/uv sync --default-index 'https://pypi.org/simple'"
         );
         assert_eq!(
-            remote_uv_command("pkg.add", false, "~/analyst/r", &pk),
-            "cd ~/analyst/r && ~/.analyst/bin/uv pip install -- 'numpy>=2' pandas"
+            remote_uv_command("pkg.add", false, "~/analyst/r", &pk, flag),
+            "cd ~/analyst/r && ~/.analyst/bin/uv pip install --default-index 'https://pypi.org/simple' -- 'numpy>=2' pandas"
+        );
+        assert_eq!(
+            remote_uv_command("pkg.remove", false, "~/analyst/r", &pk, flag),
+            "cd ~/analyst/r && UV_OFFLINE=1 ~/.analyst/bin/uv pip uninstall -- 'numpy>=2' pandas"
         );
     }
 }

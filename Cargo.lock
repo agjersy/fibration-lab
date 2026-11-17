@@ -61,6 +61,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "wb-net",
 ]
 
 [[package]]
@@ -81,7 +82,6 @@ dependencies = [
  "notify",
  "portable-pty",
  "regex",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -93,6 +93,8 @@ dependencies = [
  "trash",
  "uuid",
  "walkdir",
+ "wb-net",
+ "wb-sandbox",
 ]
 
 [[package]]

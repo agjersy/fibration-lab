@@ -4,7 +4,7 @@
 
 use crate::tools::registry::{tool_class, ToolClass};
 use analyst_protocol::config::{
-    AskPolicy, EditPolicy, NetworkPolicy, PolicyConfig, ProjectConfig, RunPolicy, UnsandboxedRuns,
+    AskPolicy, EditPolicy, PolicyConfig, ProjectConfig, RunPolicy, UnsandboxedRuns,
 };
 use analyst_protocol::evals::Mode;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -222,13 +222,8 @@ impl Policy {
             AskPolicy::Auto => "auto",
             AskPolicy::Deny => "denied",
         };
-        let net = match c.network {
-            NetworkPolicy::Deny => "denied",
-            NetworkPolicy::Ask => "ask",
-            NetworkPolicy::Allow => "allowed",
-        };
         let mut s = format!(
-            "Mode: {}. Edits: {edits}. Runs: {runs}. Packages: {}. Shell: {}. Git commits: {}. Network for runs: {net}. Max steps per turn: {}.",
+            "Mode: {}. Edits: {edits}. Runs: {runs}. Packages: {}. Shell: {}. Git commits: {}. Network for runs: never (no setting grants it). Max steps per turn: {}.",
             self.mode,
             ask(c.packages),
             ask(c.shell),
@@ -315,18 +310,15 @@ impl Policy {
     }
 
     fn evaluate_run(&self, args: &Value) -> Evaluation {
-        let wants_network = args
+        // There is no network grant for runs, at any policy setting. A call that still asks
+        // for one is refused outright so the model learns the rule instead of a silent drop.
+        if args
             .get("network")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if wants_network {
-            match self.config.network {
-                NetworkPolicy::Deny => {
-                    return Evaluation::deny("network access is denied by policy")
-                }
-                NetworkPolicy::Ask => return Evaluation::ask("network access requires approval"),
-                NetworkPolicy::Allow => {}
-            }
+            .is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)))
+        {
+            return Evaluation::deny(
+                "runs never have network access; there is no `network` parameter. Read data from the repository or a configured data directory",
+            );
         }
         match self.config.runs {
             RunPolicy::Auto => Evaluation::allow("runs policy is auto"),
@@ -520,6 +512,44 @@ mod tests {
             Decision::Deny
         );
         assert_eq!(p.evaluate("nope", &json!({})).decision, Decision::Deny);
+    }
+
+    /// No policy setting, sandbox state, or argument gives a run network access: a call that
+    /// asks for it is refused, and the tool has no such parameter to begin with.
+    #[test]
+    fn a_run_cannot_be_given_network() {
+        let dir = tempfile::tempdir().unwrap();
+        // The most permissive policy there is, plus a leftover `network = "allow"`.
+        let project: ProjectConfig = toml::from_str(
+            "[policy]\nedits = \"auto\"\nruns = \"auto\"\npackages = \"auto\"\nshell = \"auto\"\ngit = \"auto\"\nnetwork = \"allow\"\nunsandboxed_runs = \"auto\"\n",
+        )
+        .unwrap();
+        let mut p = Policy::for_project(dir.path(), &project, Mode::Build).unwrap();
+        for sandbox in ["bwrap", "sandbox-exec", "limits", "none"] {
+            p.set_sandbox(sandbox);
+            for asked in [json!(true), json!("yes"), json!(1), json!({"allow": true})] {
+                let ev = p.evaluate("run.script", &json!({"script": "s.py", "network": asked}));
+                assert_eq!(ev.decision, Decision::Deny, "{sandbox} {asked}");
+                assert!(ev.reason.contains("never have network"), "{}", ev.reason);
+            }
+            assert_eq!(
+                p.evaluate("run.script", &json!({"script": "s.py", "network": false}))
+                    .decision,
+                Decision::Allow
+            );
+        }
+        assert!(p.summary().contains("Network for runs: never"));
+        // The tool schema offers no way to ask, and rejects unknown parameters.
+        let spec = crate::tools::registry::registry()
+            .into_iter()
+            .find(|t| t.name == "run.script")
+            .unwrap();
+        assert!(spec.parameters["properties"].get("network").is_none());
+        assert_eq!(spec.parameters["additionalProperties"], json!(false));
+        // The kernel request has no such field either: one sent from elsewhere is dropped.
+        let params: analyst_protocol::kernel::RunStartParams =
+            serde_json::from_value(json!({"script": "s.py", "network": true})).unwrap();
+        assert!(!serde_json::to_string(&params).unwrap().contains("network"));
     }
 
     #[test]

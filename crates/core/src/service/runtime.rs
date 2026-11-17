@@ -278,6 +278,9 @@ struct KernelSlot {
     generation: AtomicU64,
     forwarder: Mutex<Option<JoinHandle<()>>>,
     last_failure: Mutex<Option<std::time::Instant>>,
+    /// How the kernel process started last is kept off the network (`bwrap`,
+    /// `sandbox-exec`, `none`); `None` before the first start.
+    net_isolation: Mutex<Option<String>>,
 }
 
 /// A proposal waiting for `proposal_respond`.
@@ -407,6 +410,7 @@ impl SessionRuntime {
                 generation: AtomicU64::new(0),
                 forwarder: Mutex::new(None),
                 last_failure: Mutex::new(None),
+                net_isolation: Mutex::new(None),
             },
             events,
             runs: Mutex::new(HashMap::new()),
@@ -589,7 +593,20 @@ impl SessionRuntime {
         if let Ok(mut s) = self.kernel.state.lock() {
             *s = state;
         }
-        self.emit(SessionEvent::KernelState { state, message });
+        self.emit(SessionEvent::KernelState {
+            state,
+            message,
+            network_isolation: self.kernel_network_isolation(),
+        });
+    }
+
+    /// How the kernel process is kept off the network, once one has been started.
+    pub fn kernel_network_isolation(&self) -> Option<String> {
+        self.kernel
+            .net_isolation
+            .lock()
+            .ok()
+            .and_then(|s| s.clone())
     }
 
     pub fn name(&self) -> String {
@@ -654,6 +671,7 @@ impl SessionRuntime {
             pending_proposals: self.pending_proposals(),
             policy: PolicyView::from(&self.effective_policy()),
             kernel: self.kernel_state(),
+            kernel_network_isolation: self.kernel_network_isolation(),
             sandbox: hello.as_ref().map(|h| h.sandbox.clone()),
             python_abs: Some(match &hello {
                 Some(h) => h.python.clone(),
@@ -756,7 +774,9 @@ impl SessionRuntime {
             .unwrap_or_else(|| resolve_tooling_python_in(&self.global(), &self.home))
     }
 
-    fn transport(&self) -> Box<dyn KernelTransport> {
+    /// `remote_no_network`: wrap a remote kernel in `bwrap --unshare-net` (the host's probe
+    /// said it works). The local kernel is always spawned through the no-network wrapper.
+    fn transport(&self, remote_no_network: bool) -> Box<dyn KernelTransport> {
         let project = self.project();
         let target = self.target();
         let eff = config::effective_project(&project, target.name());
@@ -797,6 +817,7 @@ impl SessionRuntime {
                         sandbox: Some(self.opts.sandbox.clone().unwrap_or_else(|| sandbox.clone())),
                         data_dirs: target.data_dirs().to_vec(),
                     },
+                    no_network: remote_no_network,
                 })
             }
         }
@@ -895,7 +916,25 @@ impl SessionRuntime {
                     .and_then(|r| r.map(|_| (k, false)).map_err(|e| e.to_string()))
             }
             None => {
-                let t = self.transport();
+                let remote_no_network = match &target {
+                    Target::Ssh { host, .. } => {
+                        crate::egress::remote_bwrap_works(host, self.opts.control_dir.as_deref())
+                            .await
+                            .map_err(|e| self.offline_error(format!("kernel unavailable: {e:#}")))?
+                    }
+                    Target::Local => false,
+                };
+                let t = self.transport(remote_no_network);
+                let isolation = t.network_isolation();
+                if isolation == "none" {
+                    tracing::warn!(
+                        "the kernel on `{}` is not isolated from the network (no working bwrap or sandbox-exec)",
+                        target.name()
+                    );
+                }
+                if let Ok(mut s) = self.kernel.net_isolation.lock() {
+                    *s = Some(isolation);
+                }
                 tracing::info!("kernel: {}", t.describe());
                 tokio::time::timeout(
                     Duration::from_secs(90),
@@ -981,6 +1020,7 @@ impl SessionRuntime {
         self.emit(SessionEvent::KernelState {
             state: KernelState::Stopped,
             message: None,
+            network_isolation: self.kernel_network_isolation(),
         });
     }
 
@@ -1073,14 +1113,17 @@ impl SessionRuntime {
         std::fs::create_dir_all(&dist)?;
         logger
             .stream_command(
-                &[
-                    crate::util::tool("uv"),
-                    "build".into(),
-                    "--wheel".into(),
-                    "--out-dir".into(),
-                    dist.to_string_lossy().to_string(),
-                    source.to_string_lossy().to_string(),
-                ],
+                // Building may fetch the build backend, so it names the configured index.
+                &crate::egress::uv_install(
+                    &crate::util::tool("uv"),
+                    &["build"],
+                    &[
+                        "--wheel".to_string(),
+                        "--out-dir".to_string(),
+                        dist.to_string_lossy().to_string(),
+                        source.to_string_lossy().to_string(),
+                    ],
+                ),
                 None,
             )
             .await?;
@@ -1122,7 +1165,8 @@ impl SessionRuntime {
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         logger.log("preparing the session environment");
         let mirror = target.mirror_dir(&self.repo).unwrap_or_default();
-        let cmd = target::bootstrap::session_env_command(&mirror);
+        let index_flag = crate::egress::remote_index_flag("uv sync (remote)")?;
+        let cmd = target::bootstrap::session_env_command(&mirror, &index_flag);
         let line = target::ssh_command(host, control, &cmd);
         logger.stream_command(&line, None).await?;
         Ok(())
@@ -1526,12 +1570,7 @@ impl SessionRuntime {
         self.sync_if_needed().await.map(|_| ())
     }
 
-    pub async fn run_start(
-        &self,
-        script: &str,
-        args: Vec<String>,
-        network: Option<bool>,
-    ) -> ServiceResult<RunView> {
+    pub async fn run_start(&self, script: &str, args: Vec<String>) -> ServiceResult<RunView> {
         let script = normalize_rel_path(script).map_err(ServiceError::invalid)?;
         let script_abs =
             resolve_in_repo(&self.repo, &script, true).map_err(ServiceError::not_found)?;
@@ -1539,13 +1578,6 @@ impl SessionRuntime {
             return Err(ServiceError::not_found(format!(
                 "script `{script}` not found"
             )));
-        }
-        if network.unwrap_or(false)
-            && self.effective_policy().network == analyst_protocol::config::NetworkPolicy::Deny
-        {
-            return Err(ServiceError::policy_denied(
-                "network access for runs is denied by policy",
-            ));
         }
         // A run is an explicit action: wait for the kernel (and, on a remote target, for the
         // target to be prepared) instead of failing while it starts.
@@ -1572,7 +1604,6 @@ impl SessionRuntime {
                 args: Some(args.clone()),
                 env: None,
                 timeout_s: Some(eff.timeout_s as f64),
-                network,
                 tree_hash,
             })
             .await?;
@@ -1918,24 +1949,29 @@ impl SessionRuntime {
             let r: anyhow::Result<()> = async {
                 match &target {
                     Target::Local => {
-                        let mut line = vec![uv];
-                        match (op.as_str(), has_pyproject) {
-                            ("add", true) => line.push("add".into()),
-                            ("remove", true) => line.push("remove".into()),
-                            ("sync", _) => line.push("sync".into()),
-                            ("add", false) => {
-                                line.extend(["pip".into(), "install".into()]);
-                                line.extend(["--python".into(), rt.session_python()]);
-                            }
-                            _ => {
-                                line.extend(["pip".into(), "uninstall".into()]);
-                                line.extend(["--python".into(), rt.session_python()]);
-                            }
+                        // Installs name the configured index (and are authorized when the
+                        // line is spawned); an uninstall needs no index and runs offline.
+                        let mut rest: Vec<String> = Vec::new();
+                        if !has_pyproject {
+                            rest.extend(["--python".into(), rt.session_python()]);
                         }
                         if op != "sync" {
-                            line.push("--".into());
-                            line.extend(packages);
+                            rest.push("--".into());
+                            rest.extend(packages);
                         }
+                        let line = match (op.as_str(), has_pyproject) {
+                            ("add", true) => crate::egress::uv_install(&uv, &["add"], &rest),
+                            ("remove", true) => crate::egress::uv_install(&uv, &["remove"], &rest),
+                            ("sync", _) => crate::egress::uv_install(&uv, &["sync"], &rest),
+                            ("add", false) => {
+                                crate::egress::uv_install(&uv, &["pip", "install"], &rest)
+                            }
+                            _ => {
+                                let mut line = vec![uv, "pip".into(), "uninstall".into()];
+                                line.extend(rest);
+                                line
+                            }
+                        };
                         logger.stream_command(&line, Some(&rt.repo)).await
                     }
                     Target::Ssh { host, .. } => {
@@ -1943,16 +1979,18 @@ impl SessionRuntime {
                         let mirror = target.mirror_dir(&rt.repo).unwrap_or_default();
                         if has_pyproject {
                             // 1. Change the canonical project files locally (no local venv).
-                            let mut line = vec![uv];
-                            match op.as_str() {
-                                "add" => line.extend(["add".into(), "--no-sync".into()]),
-                                "remove" => line.extend(["remove".into(), "--no-sync".into()]),
-                                _ => line.push("lock".into()),
-                            }
+                            let mut rest: Vec<String> = Vec::new();
                             if op != "sync" {
-                                line.push("--".into());
-                                line.extend(packages);
+                                rest.extend(["--no-sync".into(), "--".into()]);
+                                rest.extend(packages);
                             }
+                            let sub = match op.as_str() {
+                                "add" => "add",
+                                "remove" => "remove",
+                                _ => "lock",
+                            };
+                            // Resolving needs the index even when nothing is installed here.
+                            let line = crate::egress::uv_install(&uv, &[sub], &rest);
                             logger.stream_command(&line, Some(&rt.repo)).await?;
                             // 2. Push them, 3. bring the remote environment in line.
                             logger.log("syncing the repository mirror");
@@ -1960,7 +1998,8 @@ impl SessionRuntime {
                             rt.sync_if_needed()
                                 .await
                                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-                            let cmd = target::bootstrap::session_env_command(&mirror);
+                            let index_flag = crate::egress::remote_index_flag("uv sync (remote)")?;
+                            let cmd = target::bootstrap::session_env_command(&mirror, &index_flag);
                             let line = target::ssh_command(host, control, &cmd);
                             logger.stream_command(&line, None).await
                         } else {
@@ -1968,11 +2007,18 @@ impl SessionRuntime {
                             rt.sync_if_needed()
                                 .await
                                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-                            let sub = if op == "add" { "install" } else { "uninstall" };
                             let pkgs: Vec<String> =
                                 packages.iter().map(|p| crate::util::sh_quote(p)).collect();
+                            let uv_call = if op == "add" {
+                                format!(
+                                    "~/.analyst/bin/uv pip install {}",
+                                    crate::egress::remote_index_flag("uv pip install (remote)")?
+                                )
+                            } else {
+                                "UV_OFFLINE=1 ~/.analyst/bin/uv pip uninstall".to_string()
+                            };
                             let remote = format!(
-                                "cd {} && ~/.analyst/bin/uv pip {sub} --python .venv/bin/python -- {}",
+                                "cd {} && {uv_call} --python .venv/bin/python -- {}",
                                 crate::util::sh_quote_path(&mirror),
                                 pkgs.join(" ")
                             );
@@ -2030,7 +2076,11 @@ impl SessionRuntime {
                     rt.prepare_target(&logger).await?;
                     *rt.remote_prepared.lock().await = true;
                 } else if rt.repo.join("pyproject.toml").is_file() && crate::init::has_uv() {
-                    let line = vec![crate::util::tool("uv"), "sync".to_string()];
+                    let line = crate::egress::uv_install::<String>(
+                        &crate::util::tool("uv"),
+                        &["sync"],
+                        &[],
+                    );
                     logger.stream_command(&line, Some(&rt.repo)).await?;
                 }
                 rt.ensure_kernel()

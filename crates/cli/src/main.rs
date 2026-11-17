@@ -68,15 +68,13 @@ enum Command {
         #[command(subcommand)]
         cmd: TargetCmd,
     },
-    /// Run a script on the target and stream its output.
+    /// Run a script on the target and stream its output. Runs have no network access.
     Run {
         script: String,
         #[arg(long)]
         target: Option<String>,
         #[arg(long)]
         timeout_s: Option<f64>,
-        #[arg(long)]
-        network: bool,
         /// Script arguments (after `--`).
         #[arg(last = true)]
         args: Vec<String>,
@@ -114,7 +112,7 @@ enum Command {
         #[arg(long)]
         target: Option<String>,
     },
-    /// Stored provider API keys ($ANALYST_HOME/credentials.toml, mode 0600).
+    /// Stored provider API keys ($ANALYST_HOME/.env, mode 0600).
     Key {
         #[command(subcommand)]
         cmd: KeyCmd,
@@ -197,6 +195,9 @@ impl App {
         std::fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
         let repo = cli.repo.clone().unwrap_or(std::env::current_dir()?);
         let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
+        // The network gate records every decision in `<home>/egress.jsonl`; loading the
+        // config registers the destinations it names (providers, package index, SSH targets).
+        wb_net::init(&home);
         let global = config::load_global(&home)?;
         let project = config::load_project(&repo)?;
         Ok(App {
@@ -228,23 +229,41 @@ impl App {
         }
     }
 
-    fn transport(&self, target: &Target) -> Box<dyn KernelTransport> {
+    /// Whether a remote kernel can be wrapped in `bwrap --unshare-net` on its host.
+    async fn remote_no_network(&self, target: &Target) -> bool {
+        match target {
+            Target::Ssh { host, .. } => {
+                analyst_core::egress::remote_bwrap_works(host, self.control_dir().as_deref())
+                    .await
+                    .unwrap_or(false)
+            }
+            Target::Local => false,
+        }
+    }
+
+    /// The kernel transport. The local kernel is spawned without network access; a remote
+    /// one is when `remote_no_network` (see [`Self::remote_no_network`]).
+    fn transport(&self, target: &Target, remote_no_network: bool) -> Box<dyn KernelTransport> {
         let eff = config::effective_project(&self.project, target.name());
         match target {
             Target::Local => {
                 let runs = self.home.join("runs");
                 let _ = std::fs::create_dir_all(&runs);
-                Box::new(LocalStdio::new(
-                    resolve_tooling_python_in(&self.global, &self.home),
-                    KernelArgs {
-                        python: self.session_python(),
-                        root: self.repo.to_string_lossy().to_string(),
-                        runs_dir: runs.to_string_lossy().to_string(),
-                        out_dir: Some(eff.out_dir),
-                        sandbox: Some(self.sandbox.clone().unwrap_or_else(|| "auto".into())),
-                        data_dirs: vec![],
-                    },
-                ))
+                Box::new(
+                    LocalStdio::new(
+                        resolve_tooling_python_in(&self.global, &self.home),
+                        KernelArgs {
+                            python: self.session_python(),
+                            root: self.repo.to_string_lossy().to_string(),
+                            runs_dir: runs.to_string_lossy().to_string(),
+                            out_dir: Some(eff.out_dir),
+                            sandbox: Some(self.sandbox.clone().unwrap_or_else(|| "auto".into())),
+                            data_dirs: vec![],
+                        },
+                    )
+                    // The kernel and the scripts it runs never see provider API keys.
+                    .without_env(analyst_core::service::terminal::key_env_names(&self.global)),
+                )
             }
             Target::Ssh {
                 host,
@@ -270,6 +289,7 @@ impl App {
                         // User-approved external data directories from the global config.
                         data_dirs: data_dirs.clone(),
                     },
+                    no_network: remote_no_network,
                 })
             }
         }
@@ -279,7 +299,13 @@ impl App {
         if !target.is_remote() {
             self.ensure_local_tooling().await;
         }
-        let t = self.transport(target);
+        let t = self.transport(target, self.remote_no_network(target).await);
+        if t.network_isolation() == "none" {
+            eprintln!(
+                "warning: the kernel on `{}` is not isolated from the network (no working bwrap or sandbox-exec there)",
+                target.name()
+            );
+        }
         tracing::info!("kernel: {}", t.describe());
         KernelClient::connect(t, analyst_core::CORE_VERSION)
             .await
@@ -334,10 +360,10 @@ impl App {
             None => config::default_model(&self.global)?,
         };
         let resolved = config::resolve_model(&self.global, &spec)?;
-        let client = providers::client_for_in(&self.home, &resolved)?;
+        let client = providers::client_for_repo(&self.home, Some(&self.repo), &resolved)?;
         let key = spec.to_string();
         let info_window = if reprobe || capabilities::cached(&self.home, &key).is_none() {
-            providers::model_info_window(&self.home, &resolved).await
+            providers::model_info_window(&self.home, Some(&self.repo), &resolved).await
         } else {
             None
         };
@@ -410,8 +436,12 @@ fn print_diagnostics(diags: &[Diagnostic]) -> usize {
     errors
 }
 
-fn cmd_init(path: Option<PathBuf>) -> Result<()> {
+fn cmd_init(home: Option<PathBuf>, path: Option<PathBuf>) -> Result<()> {
     let root = path.unwrap_or(std::env::current_dir()?);
+    // `uv venv` and `uv sync` install from the configured package index, through the gate.
+    let home = home.unwrap_or_else(config::analyst_home);
+    wb_net::init(&home);
+    config::load_global(&home)?;
     let report = analyst_core::init::init_repo(&root, &analyst_core::init::InitOptions::default())?;
     for rel in &report.kept {
         println!("keep   {rel}");
@@ -446,7 +476,7 @@ async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
                 Target::Ssh { host, .. } => {
                     let mirror = target.mirror_dir(&app.repo).unwrap_or_default();
                     let remote = format!(
-                        "cd {} && ~/.analyst/bin/uv pip list",
+                        "cd {} && UV_OFFLINE=1 ~/.analyst/bin/uv pip list",
                         analyst_core::util::sh_quote_path(&mirror)
                     );
                     print!(
@@ -482,9 +512,9 @@ async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
 }
 
 fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
-    let known = |provider: &str| -> Result<()> {
-        if app.global.providers.iter().any(|p| p.name == provider) {
-            return Ok(());
+    let known = |provider: &str| -> Result<&analyst_protocol::config::ProviderConfig> {
+        if let Some(p) = app.global.providers.iter().find(|p| p.name == provider) {
+            return Ok(p);
         }
         Err(anyhow!(
             "provider `{provider}` is not configured in config.toml (known: {})",
@@ -498,7 +528,7 @@ fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
     };
     match cmd {
         KeyCmd::Set { provider } => {
-            known(&provider)?;
+            let p = known(&provider)?;
             use std::io::IsTerminal;
             if std::io::stdin().is_terminal() {
                 eprint!("API key for `{provider}` (input is read from stdin, then press Enter): ");
@@ -513,28 +543,31 @@ fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
                     "no key given on stdin (use `analyst key remove {provider}` to delete one)"
                 ));
             }
-            config::set_api_key(&app.home, &provider, key)?;
+            config::set_api_key(&app.home, p, key)?;
             println!(
-                "stored the key for `{provider}` in {}",
-                config::credentials_path(&app.home).display()
+                "stored the key for `{provider}` as {} in {}",
+                config::key_env_name(p),
+                config::env_file_path(&app.home).display()
             );
         }
         KeyCmd::Remove { provider } => {
-            config::set_api_key(&app.home, &provider, "")?;
-            println!("removed the stored key for `{provider}`");
+            let p = known(&provider)?;
+            config::set_api_key(&app.home, p, "")?;
+            println!(
+                "removed {} from {}",
+                config::key_env_name(p),
+                config::env_file_path(&app.home).display()
+            );
         }
         KeyCmd::Status => {
             for p in &app.global.providers {
-                let source = match config::api_key_lookup(&app.home, p).map(|(_, s)| s) {
-                    Some(config::KeySource::Env) => "environment",
-                    Some(config::KeySource::Stored) => "stored",
-                    None => "none",
-                };
-                println!(
-                    "{}  key={source}  env={}",
-                    p.name,
-                    p.api_key_env.as_deref().unwrap_or("-")
-                );
+                let source =
+                    match config::api_key_lookup(&app.home, Some(&app.repo), p).map(|(_, s)| s) {
+                        Some(config::KeySource::Env) => "environment",
+                        Some(config::KeySource::Stored) => ".env file",
+                        None => "none",
+                    };
+                println!("{}  key={source}  env={}", p.name, config::key_env_name(p));
             }
         }
     }
@@ -588,16 +621,10 @@ async fn cmd_target(app: &App, cmd: TargetCmd) -> Result<()> {
             }
             if let Target::Ssh { host, .. } = &target {
                 let mirror = target.mirror_dir(&app.repo).unwrap_or_default();
-                println!(
-                    "session env: {}",
-                    target::bootstrap::session_env_command(&mirror)
-                );
-                target::run_ssh(
-                    host,
-                    app.control_dir().as_deref(),
-                    &target::bootstrap::session_env_command(&mirror),
-                )
-                .await?;
+                let index_flag = analyst_core::egress::remote_index_flag("uv sync (remote)")?;
+                let command = target::bootstrap::session_env_command(&mirror, &index_flag);
+                println!("session env: {command}");
+                target::run_ssh(host, app.control_dir().as_deref(), &command).await?;
                 println!("{name}: session environment ready in {mirror}");
             }
         }
@@ -661,7 +688,6 @@ async fn cmd_run(
     args: Vec<String>,
     target: Option<String>,
     timeout_s: Option<f64>,
-    network: bool,
 ) -> Result<i32> {
     let target = app.target(target.as_deref())?;
     let session = app.session(&target, app.global.defaults.model.as_deref().unwrap_or("-"))?;
@@ -681,9 +707,6 @@ async fn cmd_run(
     let mut a = serde_json::json!({"script": script, "args": args});
     if let Some(t) = timeout_s {
         a["timeout_s"] = serde_json::json!(t);
-    }
-    if network {
-        a["network"] = serde_json::json!(true);
     }
     let result = tokio::select! {
         r = ctx.dispatch("cli-run", "run.script", &a) => r,
@@ -1100,7 +1123,7 @@ async fn cmd_eval(
 async fn cmd_kernel(app: &App, target: Option<String>) -> Result<i32> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let target = app.target(target.as_deref())?;
-    let transport = app.transport(&target);
+    let transport = app.transport(&target, app.remote_no_network(&target).await);
     eprintln!("spawning: {}", transport.describe());
     let spawned = transport.spawn().await?;
     let mut child = spawned.child;
@@ -1149,7 +1172,7 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<i32> {
     if let Command::Init { path } = &cli.command {
-        cmd_init(path.clone())?;
+        cmd_init(cli.home.clone(), path.clone())?;
         return Ok(0);
     }
     let app = App::new(&cli)?;
@@ -1162,8 +1185,7 @@ async fn run(cli: Cli) -> Result<i32> {
             args,
             target,
             timeout_s,
-            network,
-        } => cmd_run(&app, script, args, target, timeout_s, network).await,
+        } => cmd_run(&app, script, args, target, timeout_s).await,
         Command::Check { paths, target } => cmd_check(&app, paths, target).await,
         Command::Eq {
             path,

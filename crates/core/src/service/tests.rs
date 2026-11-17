@@ -463,7 +463,19 @@ async fn package_proposal_and_terminal_through_workbench() {
     next_matching(&mut rx, |e| matches!(e, SessionEvent::TurnDone { .. })).await;
 
     // Terminal through the workbench: events arrive on the session channel.
-    let tid = fx.wb.terminal_open(&fx.session, 80, 24).unwrap();
+    // The desktop shell awaits this from a command handler, which needs a `Send` future.
+    fn assert_send<T: Send>(t: T) -> T {
+        t
+    }
+    let opened = assert_send(fx.wb.terminal_open(&fx.session, 80, 24))
+        .await
+        .unwrap();
+    // The isolation state is part of the result, and agrees with what this machine can do.
+    let probe = wb_sandbox::no_network::probe();
+    assert_eq!(opened.network_isolated, probe.is_isolated());
+    assert_eq!(opened.network_isolation, probe.label());
+    assert_eq!(opened.network_isolation_note.is_none(), probe.is_isolated());
+    let tid = opened.terminal_id;
     fx.wb.terminal_write(&tid, "echo work-bench\n").unwrap();
     let data = next_matching(
         &mut rx,
@@ -962,7 +974,7 @@ async fn forwarder_stops_when_the_kernel_is_replaced() {
     let mut ready_seen = 0;
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(SessionEvent::KernelState { state, message })) => {
+            Ok(Ok(SessionEvent::KernelState { state, message, .. })) => {
                 assert!(
                     !matches!(state, KernelState::Error | KernelState::Offline),
                     "stale forwarder reported {state:?}: {message:?}"
@@ -1101,11 +1113,7 @@ async fn run_get_works_after_restart() {
     let fx = fixture_with(fake_kernel).await;
     std::fs::write(fx.rt.repo.join("scripts/quick.py"), QUICK_SCRIPT).unwrap();
     let mut rx = fx.rt.subscribe();
-    let view = fx
-        .rt
-        .run_start("scripts/quick.py", vec![], None)
-        .await
-        .unwrap();
+    let view = fx.rt.run_start("scripts/quick.py", vec![]).await.unwrap();
     assert!(view.conversation.is_none(), "a manual run");
     let run_id = view.meta.run_id.clone();
     next_matching(
@@ -1346,16 +1354,33 @@ api_key_env = "ANALYST_TEST_ENVY_KEY"
         Some("ANALYST_TEST_ACME_KEY_UNSET")
     );
     assert_eq!(row(&rows, "envy").unwrap().source.as_deref(), Some("env"));
-    assert_eq!(row(&rows, "ollama").unwrap().source, None);
+    let ollama = row(&rows, "ollama").unwrap();
+    assert_eq!(ollama.source, None);
+    // Without `api_key_env` the variable name is derived from the provider name.
+    assert_eq!(ollama.api_key_env.as_deref(), Some("OLLAMA_API_KEY"));
 
     wb.provider_key_set("acme", "sk-stored").unwrap();
     let acme = row(&wb.provider_keys_status(), "acme").unwrap();
     assert!(acme.has_key);
     assert_eq!(acme.source.as_deref(), Some("stored"));
-    let creds = home.path().join("credentials.toml");
+    // Stored in the home's `.env` under the provider's variable name; nothing else.
+    let creds = home.path().join(".env");
     assert!(std::fs::read_to_string(&creds)
         .unwrap()
-        .contains("sk-stored"));
+        .contains("ANALYST_TEST_ACME_KEY_UNSET=\"sk-stored\""));
+    assert!(!home.path().join("credentials.toml").exists());
+    wb.provider_key_set("ollama", "sk-derived").unwrap();
+    assert!(std::fs::read_to_string(&creds)
+        .unwrap()
+        .contains("OLLAMA_API_KEY=\"sk-derived\""));
+    assert_eq!(
+        row(&wb.provider_keys_status(), "ollama")
+            .unwrap()
+            .source
+            .as_deref(),
+        Some("stored")
+    );
+    wb.provider_key_set("ollama", "").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1421,6 +1446,8 @@ async fn kernel_processes_do_not_inherit_provider_keys() {
         });
     let names = terminal::key_env_names(&global);
     assert!(names.contains(&"MY_CUSTOM_KEY".to_string()));
+    // The derived name is scrubbed too, in case the key is exported under it.
+    assert!(names.contains(&"X_API_KEY".to_string()));
     assert!(names.contains(&"ANTHROPIC_API_KEY".to_string()));
     std::env::remove_var("OPENROUTER_API_KEY");
 }
@@ -1445,7 +1472,7 @@ async fn kernel_start_waits_for_tooling_and_reports_its_failure() {
     })
     .await;
     assert!(
-        matches!(&e, SessionEvent::KernelState { state: KernelState::Starting, message: Some(m) } if m.contains("tooling")),
+        matches!(&e, SessionEvent::KernelState { state: KernelState::Starting, message: Some(m), .. } if m.contains("tooling")),
         "{e:?}"
     );
     assert!(!start.is_finished());

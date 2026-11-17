@@ -23,7 +23,6 @@ edits = "review"
 runs = "auto"
 packages = "ask"
 shell = "ask"
-network = "deny"
 git = "ask"
 protected = []
 max_steps = 40
@@ -72,7 +71,7 @@ pub fn template_files(name: &str) -> Vec<(&'static str, String)> {
             ".gitignore",
             // `data/*` (not `data/`) so the `.gitkeep` exception can apply: data files are
             // never committed, checkpointed, or synced by default.
-            "out/*\n!out/.gitkeep\ndata/*\n!data/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.analyst/env.sh\n.ruff_cache/\n"
+            "out/*\n!out/.gitkeep\ndata/*\n!data/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.analyst/env.sh\n.ruff_cache/\n.env\n"
                 .into(),
         ),
         (
@@ -117,17 +116,26 @@ pub fn init_repo(root: &Path, opts: &InitOptions) -> Result<InitReport> {
     }
     if opts.run_uv {
         if has_uv() {
-            for args in [vec!["venv", "-q"], vec!["sync", "-q"]] {
-                let st = std::process::Command::new(crate::util::resolve_tool("uv"))
-                    .env("PATH", crate::util::tool_path_env())
-                    .args(&args)
+            for sub in ["venv", "sync"] {
+                // Both may fetch from the package index: they name the configured one and
+                // the gate authorizes it (and records it) before uv starts.
+                let line = crate::egress::uv_install("uv", &[sub], &["-q"]);
+                let guard = match crate::egress::guard(&line) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        report.log.push(format!("uv {sub} -q -> not run: {e}"));
+                        continue;
+                    }
+                };
+                let mut cmd = std::process::Command::new(crate::util::resolve_tool(&line[0]));
+                cmd.env("PATH", crate::util::tool_path_env())
+                    .args(&line[1..])
                     .current_dir(&root)
-                    .stdin(std::process::Stdio::null())
-                    .status()
-                    .with_context(|| format!("running uv {}", args.join(" ")))?;
+                    .stdin(std::process::Stdio::null());
+                guard.apply_std(&mut cmd);
+                let st = cmd.status().with_context(|| format!("running uv {sub}"))?;
                 report.log.push(format!(
-                    "uv {} -> {}",
-                    args.join(" "),
+                    "uv {sub} -q -> {}",
                     if st.success() { "ok" } else { "failed" }
                 ));
             }
@@ -179,6 +187,8 @@ mod tests {
         assert_eq!(again.kept.len(), template_files("x").len());
         let cfg = crate::config::load_project(&root).unwrap();
         assert_eq!(cfg, analyst_protocol::config::ProjectConfig::default());
+        // A project `.env` (API keys) is ignored from the start.
+        std::fs::write(root.join(".env"), "SOME_API_KEY=sk-test\n").unwrap();
         // A8: data files are ignored, the placeholders are tracked.
         std::fs::write(root.join("data/big.csv"), "1,2\n").unwrap();
         std::fs::write(root.join("out/result.txt"), "r\n").unwrap();

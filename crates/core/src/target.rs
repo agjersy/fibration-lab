@@ -18,7 +18,27 @@ pub enum Target {
         python: String,
         sandbox: String,
         data_dirs: Vec<String>,
+        /// A local `uv` binary for this host's platform (`uv_binary` in the target config),
+        /// copied over when the host has no `uv` and the local one does not match.
+        uv_binary: Option<String>,
     },
+}
+
+/// How runs are started on a target (ARCHITECTURE 5.5, decision D17).
+///
+/// This is the extension point for scheduler integration. Only [`Launcher::Direct`] exists
+/// today: the kernel starts each run as a detached process on the target (on a cluster, the
+/// login node). A Slurm launcher would be selected per target here and implemented in the
+/// kernel behind the same run protocol (`submit`, `status`, `cancel`, `output_paths`), so
+/// nothing above the target layer changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Launcher {
+    /// Start the script directly on the target. The only implemented launcher.
+    #[default]
+    Direct,
+    /// NOT IMPLEMENTED. Placeholder for submitting runs through a scheduler such as Slurm.
+    /// No configuration selects it and no code path constructs it.
+    Scheduler,
 }
 
 /// Reject host strings that ssh, rsync, or scp would parse as something else: empty, starting
@@ -60,9 +80,16 @@ impl Target {
                     python: cfg.python.clone().unwrap_or_else(|| "3.12".to_string()),
                     sandbox: cfg.sandbox.clone().unwrap_or_else(|| "auto".to_string()),
                     data_dirs: cfg.data_dirs.clone(),
+                    uv_binary: cfg.uv_binary.clone().filter(|p| !p.is_empty()),
                 })
             }
         }
+    }
+
+    /// The launcher runs use on this target. Always [`Launcher::Direct`] for now; see
+    /// [`Launcher`] for where a scheduler launcher would plug in.
+    pub fn launcher(&self) -> Launcher {
+        Launcher::Direct
     }
 
     pub fn name(&self) -> &str {
@@ -134,14 +161,20 @@ impl Target {
 /// A `tokio` command for a command line; a bare program name is resolved through
 /// [`crate::util::resolve_tool`] so tools are found even when the app was not started from a
 /// shell, and children inherit the widened `PATH`.
+///
+/// Every command line this module runs is built here, so this is where the network gate is
+/// consulted ([`crate::egress::guard`]): `ssh`, `scp`, and `rsync` only reach configured SSH
+/// targets, and `uv` runs offline unless the line installs from the configured package index.
 fn command_for(line: &[String]) -> Result<tokio::process::Command> {
     let (program, args) = line
         .split_first()
         .ok_or_else(|| anyhow!("empty command line"))?;
+    let guard = crate::egress::guard(line)?;
     let mut cmd = tokio::process::Command::new(crate::util::resolve_tool(program));
     cmd.args(args)
         .env("PATH", crate::util::tool_path_env())
         .kill_on_drop(true);
+    guard.apply_tokio(&mut cmd);
     Ok(cmd)
 }
 
@@ -413,6 +446,8 @@ pub mod sync {
         for (p, sha) in to_hash.iter().zip(hash_paths(repo, &to_hash)?) {
             blobs.insert(p.clone(), sha);
         }
+        // A repo's `.env` holds keys for the app, not for code: it never leaves this machine.
+        blobs.remove(wb_net::secrets::ENV_FILE);
         Ok(blobs
             .into_iter()
             .filter(|(p, _)| repo.join(p).is_file())
@@ -803,8 +838,6 @@ pub mod bootstrap {
 
     use super::*;
 
-    pub const UV_INSTALLER: &str = "https://astral.sh/uv/install.sh";
-
     /// Version written to the tooling `VERSION` file: the core version.
     pub fn tooling_version() -> &'static str {
         crate::CORE_VERSION
@@ -815,21 +848,175 @@ pub mod bootstrap {
         "cat ~/.analyst/tooling/VERSION 2>/dev/null || true".to_string()
     }
 
-    /// The remote command sequence, run after the kernel wheel has been copied to
-    /// `wheel_remote` (a path on the host).
-    pub fn commands(python_version: &str, wheel_remote: &str, version: &str) -> Vec<String> {
+    /// Remote command that makes `~/.analyst/bin/uv` point at a `uv` already on the host, if
+    /// there is one, and reports what it found. It prints two lines: `have` (already in
+    /// place), `linked` (found elsewhere and linked), or `missing`; then `uname -sm`.
+    pub fn uv_probe_command() -> String {
+        "mkdir -p ~/.analyst/bin ~/.analyst/tooling; \
+if [ -x ~/.analyst/bin/uv ]; then echo have; else \
+found=; for c in \"$(command -v uv 2>/dev/null)\" ~/.local/bin/uv ~/.cargo/bin/uv /usr/local/bin/uv /opt/homebrew/bin/uv; do \
+if [ -n \"$c\" ] && [ -x \"$c\" ]; then found=$c; break; fi; done; \
+if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; else echo missing; fi; fi; uname -sm"
+            .to_string()
+    }
+
+    /// What [`uv_probe_command`] reported.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct UvProbe {
+        /// `uv` is available at `~/.analyst/bin/uv`.
+        pub present: bool,
+        /// `uname -sm` of the host, e.g. `Linux x86_64`.
+        pub platform: String,
+    }
+
+    pub fn parse_uv_probe(output: &str) -> Result<UvProbe> {
+        let mut lines = output.lines().map(str::trim).filter(|l| !l.is_empty());
+        let state = lines.next().unwrap_or("");
+        let platform = lines.next().unwrap_or("").to_string();
+        match state {
+            "have" | "linked" => Ok(UvProbe {
+                present: true,
+                platform,
+            }),
+            "missing" => Ok(UvProbe {
+                present: false,
+                platform,
+            }),
+            other => Err(anyhow!(
+                "unexpected answer from the host while looking for uv: `{other}`"
+            )),
+        }
+    }
+
+    /// `uname -sm` of this machine, or `None` when it cannot be asked.
+    pub fn local_platform() -> Option<String> {
+        let out = std::process::Command::new("uname")
+            .arg("-sm")
+            .stdin(Stdio::null())
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !s.is_empty()).then_some(s)
+    }
+
+    /// The local file to copy to a host that has no `uv`: the local `uv` when the host is
+    /// the same OS and architecture as this machine, else the target's configured
+    /// `uv_binary`. Nothing is ever downloaded; when neither applies the error says what to
+    /// provide.
+    pub fn uv_binary_for(
+        target_name: &str,
+        remote_platform: &str,
+        local_platform: Option<&str>,
+        local_uv: Option<&Path>,
+        configured: Option<&str>,
+    ) -> Result<PathBuf> {
+        let same = !remote_platform.is_empty() && local_platform == Some(remote_platform);
+        if same {
+            if let Some(uv) = local_uv {
+                return Ok(uv.to_path_buf());
+            }
+        }
+        if let Some(path) = configured {
+            let path = crate::util::expand_tilde(path);
+            if path.is_file() {
+                return Ok(path);
+            }
+            return Err(anyhow!(
+                "`uv_binary` for target `{target_name}` is {}, which is not a file",
+                path.display()
+            ));
+        }
+        let remote = if remote_platform.is_empty() {
+            "an unknown platform"
+        } else {
+            remote_platform
+        };
+        let why = if same {
+            "no local `uv` was found to copy".to_string()
+        } else {
+            format!(
+                "this machine is {}, so its own `uv` cannot be copied",
+                local_platform.unwrap_or("an unknown platform")
+            )
+        };
+        Err(anyhow!(
+            "the host of target `{target_name}` ({remote}) has no `uv`, and {why}. The app does not download it. Place a `uv` binary built for {remote} on this machine and set `uv_binary = \"/path/to/uv\"` for the target in config.toml, or install `uv` on the host yourself"
+        ))
+    }
+
+    /// `scp -q <opts> -- <local uv> <host>:.analyst/bin/uv` (a relative remote path is
+    /// resolved against the home directory).
+    pub fn scp_uv_command(host: &str, uv: &Path, control_dir: Option<&Path>) -> Vec<String> {
+        let mut v = vec!["scp".to_string(), "-q".to_string()];
+        v.extend(crate::kernel::transport::ssh_options(control_dir));
+        v.push("--".into());
+        v.push(uv.display().to_string());
+        v.push(format!("{host}:.analyst/bin/uv"));
+        v
+    }
+
+    /// Make sure `~/.analyst/bin/uv` exists on the host: use a `uv` that is already there,
+    /// else copy one over SSH. No installer is fetched.
+    pub async fn ensure_remote_uv(target: &Target, control_dir: Option<&Path>) -> Result<()> {
+        let Target::Ssh {
+            name,
+            host,
+            uv_binary,
+            ..
+        } = target
+        else {
+            return Ok(());
+        };
+        let probe = parse_uv_probe(&run_ssh(host, control_dir, &uv_probe_command()).await?)?;
+        if probe.present {
+            return Ok(());
+        }
+        let local_uv = crate::util::find_tool("uv");
+        let binary = uv_binary_for(
+            name,
+            &probe.platform,
+            local_platform().as_deref(),
+            local_uv.as_deref(),
+            uv_binary.as_deref(),
+        )?;
+        run_command(&scp_uv_command(host, &binary, control_dir), None)
+            .await
+            .with_context(|| format!("copying {} to {host}", binary.display()))?;
+        run_ssh(
+            host,
+            control_dir,
+            "chmod +x ~/.analyst/bin/uv && ~/.analyst/bin/uv --version",
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "the copied uv ({}) does not run on {host} ({}); set `uv_binary` for target `{name}` to a binary built for that host",
+                binary.display(),
+                probe.platform
+            )
+        })?;
+        Ok(())
+    }
+
+    /// The remote command sequence, run after `uv` is in place ([`ensure_remote_uv`]) and
+    /// the kernel wheel has been copied to `wheel_remote` (a path on the host). `index_flag`
+    /// is the authorized `--default-index '<url>'` from [`crate::egress::remote_index_flag`].
+    pub fn commands(
+        python_version: &str,
+        wheel_remote: &str,
+        version: &str,
+        index_flag: &str,
+    ) -> Vec<String> {
         vec![
             "mkdir -p ~/.analyst/bin ~/.analyst/tooling".to_string(),
-            format!(
-                "test -x ~/.analyst/bin/uv || (curl -LsSf {UV_INSTALLER} | UV_INSTALL_DIR=~/.analyst/bin UV_NO_MODIFY_PATH=1 sh)"
-            ),
+            "test -x ~/.analyst/bin/uv".to_string(),
             format!("~/.analyst/bin/uv python install {}", sh_quote(python_version)),
             format!(
-                "test -x ~/.analyst/tooling/.venv/bin/python || ~/.analyst/bin/uv venv --python {} ~/.analyst/tooling/.venv",
+                "test -x ~/.analyst/tooling/.venv/bin/python || ~/.analyst/bin/uv venv {index_flag} --python {} ~/.analyst/tooling/.venv",
                 sh_quote(python_version)
             ),
             format!(
-                "~/.analyst/bin/uv pip install --python ~/.analyst/tooling/.venv/bin/python {}",
+                "~/.analyst/bin/uv pip install {index_flag} --python ~/.analyst/tooling/.venv/bin/python {}",
                 sh_quote_path(wheel_remote)
             ),
             format!("printf '%s\\n' {} > ~/.analyst/tooling/VERSION", sh_quote(version)),
@@ -837,18 +1024,25 @@ pub mod bootstrap {
     }
 
     /// The whole sequence as one `sh -e` script line (so one ssh round trip).
-    pub fn script(python_version: &str, wheel_remote: &str, version: &str) -> String {
+    pub fn script(
+        python_version: &str,
+        wheel_remote: &str,
+        version: &str,
+        index_flag: &str,
+    ) -> String {
         format!(
             "set -e; {}",
-            commands(python_version, wheel_remote, version).join("; ")
+            commands(python_version, wheel_remote, version, index_flag).join("; ")
         )
     }
 
-    /// Session venv setup in the mirror: `uv sync` when a pyproject exists, else venv + requirements.
-    pub fn session_env_command(mirror: &str) -> String {
+    /// Session venv setup in the mirror: `uv sync` when a pyproject exists, else venv +
+    /// requirements. Installs come from the configured index only (`index_flag`, see
+    /// [`commands`]).
+    pub fn session_env_command(mirror: &str, index_flag: &str) -> String {
         let m = sh_quote_path(mirror);
         format!(
-            "cd {m} && if [ -f pyproject.toml ]; then ~/.analyst/bin/uv sync; else ~/.analyst/bin/uv venv && (test -f requirements.txt && ~/.analyst/bin/uv pip install -r requirements.txt || true); fi"
+            "cd {m} && if [ -f pyproject.toml ]; then ~/.analyst/bin/uv sync {index_flag}; else ~/.analyst/bin/uv venv {index_flag} && (test -f requirements.txt && ~/.analyst/bin/uv pip install {index_flag} -r requirements.txt || true); fi"
         )
     }
 
@@ -902,12 +1096,8 @@ pub mod bootstrap {
                 "no kernel wheel found; build one with `uv build` in python/kernel (dist/*.whl)"
             )
         })?;
-        run_ssh(
-            host,
-            control_dir,
-            "mkdir -p ~/.analyst/bin ~/.analyst/tooling",
-        )
-        .await?;
+        ensure_remote_uv(target, control_dir).await?;
+        let index_flag = crate::egress::remote_index_flag("tooling bootstrap (remote)")?;
         let scp = scp_wheel_command(host, wheel, control_dir);
         run_command(&scp, None).await?;
         let remote_wheel = scp
@@ -915,7 +1105,12 @@ pub mod bootstrap {
             .and_then(|s| s.split_once(':'))
             .map(|(_, p)| format!("~/{p}"))
             .unwrap_or_default();
-        run_ssh(host, control_dir, &script(python, &remote_wheel, want)).await?;
+        run_ssh(
+            host,
+            control_dir,
+            &script(python, &remote_wheel, want, &index_flag),
+        )
+        .await?;
         Ok(Outcome::Installed(want.to_string()))
     }
 
@@ -948,7 +1143,7 @@ pub mod bootstrap {
         }
         let uv = crate::util::find_tool("uv").ok_or_else(|| {
             anyhow!(
-                "`uv` was not found (looked on PATH, in ~/.local/bin, ~/.cargo/bin, /opt/homebrew/bin, /usr/local/bin); install it from https://docs.astral.sh/uv/ to set up the tooling environment"
+                "`uv` was not found (looked on PATH, in ~/.local/bin, ~/.cargo/bin, /opt/homebrew/bin, /usr/local/bin); install uv to set up the tooling environment (the app does not download it)"
             )
         })?;
         if !kernel_source_dir.exists() {
@@ -968,28 +1163,30 @@ pub mod bootstrap {
             std::fs::remove_dir_all(&venv)
                 .with_context(|| format!("removing {}", venv.display()))?;
         }
+        // Both steps may fetch from the package index (the kernel's dependencies), so both
+        // name the configured index and are authorized by the gate when spawned.
         run_command(
-            &[
-                uv.clone(),
-                "venv".into(),
-                "-q".into(),
-                venv.to_string_lossy().to_string(),
-            ],
+            &crate::egress::uv_install(
+                &uv,
+                &["venv"],
+                &["-q".to_string(), venv.to_string_lossy().to_string()],
+            ),
             Some(&tooling),
         )
         .await
         .context("creating the tooling environment")?;
         let python = local_tooling_python(home);
         run_command(
-            &[
-                uv,
-                "pip".into(),
-                "install".into(),
-                "-q".into(),
-                "--python".into(),
-                python.to_string_lossy().to_string(),
-                kernel_source_dir.to_string_lossy().to_string(),
-            ],
+            &crate::egress::uv_install(
+                &uv,
+                &["pip", "install"],
+                &[
+                    "-q".to_string(),
+                    "--python".to_string(),
+                    python.to_string_lossy().to_string(),
+                    kernel_source_dir.to_string_lossy().to_string(),
+                ],
+            ),
             Some(&tooling),
         )
         .await
@@ -1082,6 +1279,7 @@ mod tests {
             python: "3.12".into(),
             sandbox: "auto".into(),
             data_dirs: vec![],
+            uv_binary: None,
         }
     }
 
@@ -1206,30 +1404,132 @@ mod tests {
             python: None,
             sandbox: None,
             data_dirs: vec![],
+            uv_binary: None,
         };
         assert!(Target::from_config(&cfg).is_err());
     }
 
+    /// uv reaches a host by being there already or by being copied, never by download.
+    #[test]
+    fn remote_uv_is_found_or_copied() {
+        use bootstrap::{parse_uv_probe, uv_binary_for, UvProbe};
+        assert_eq!(
+            parse_uv_probe("have\nLinux x86_64\n").unwrap(),
+            UvProbe {
+                present: true,
+                platform: "Linux x86_64".into()
+            }
+        );
+        assert!(parse_uv_probe("linked\nLinux aarch64").unwrap().present);
+        let missing = parse_uv_probe("missing\nLinux aarch64\n").unwrap();
+        assert!(!missing.present);
+        assert_eq!(missing.platform, "Linux aarch64");
+        assert!(parse_uv_probe("bash: weird").is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("uv");
+        let other = dir.path().join("uv-aarch64");
+        std::fs::write(&local, b"x").unwrap();
+        std::fs::write(&other, b"y").unwrap();
+        let other_s = other.to_string_lossy().to_string();
+        // Same platform: the local uv.
+        assert_eq!(
+            uv_binary_for(
+                "lab",
+                "Linux x86_64",
+                Some("Linux x86_64"),
+                Some(&local),
+                Some(&other_s)
+            )
+            .unwrap(),
+            local
+        );
+        // Another platform: the configured binary, never the local one.
+        assert_eq!(
+            uv_binary_for(
+                "lab",
+                "Linux aarch64",
+                Some("Darwin arm64"),
+                Some(&local),
+                Some(&other_s)
+            )
+            .unwrap(),
+            other
+        );
+        // Neither applies: an error that says what to do, and no URL.
+        let err = uv_binary_for(
+            "lab",
+            "Linux aarch64",
+            Some("Darwin arm64"),
+            Some(&local),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("uv_binary") && err.contains("Linux aarch64") && err.contains("lab"),
+            "{err}"
+        );
+        assert!(!err.contains("http"), "{err}");
+        assert!(uv_binary_for("lab", "Linux x86_64", Some("Linux x86_64"), None, None).is_err());
+        assert!(uv_binary_for(
+            "lab",
+            "Linux aarch64",
+            Some("Linux x86_64"),
+            Some(&local),
+            Some("/nonexistent/uv")
+        )
+        .is_err());
+
+        let scp = bootstrap::scp_uv_command("me@lab", &local, None);
+        assert_eq!(scp[..2], ["scp", "-q"]);
+        assert_eq!(
+            scp[scp.len() - 3..],
+            [
+                "--".to_string(),
+                local.display().to_string(),
+                "me@lab:.analyst/bin/uv".to_string()
+            ]
+        );
+        assert_eq!(ssh_target("~/analyst").launcher(), Launcher::Direct);
+        assert_eq!(Target::Local.launcher(), Launcher::default());
+    }
+
     #[test]
     fn bootstrap_commands() {
+        let flag = "--default-index 'https://pypi.org/simple'";
         let cmds = bootstrap::commands(
             "3.12",
             "~/.analyst/tooling/analyst_kernel-0.0.1-py3-none-any.whl",
             "0.0.1",
+            flag,
         );
         assert_eq!(cmds[0], "mkdir -p ~/.analyst/bin ~/.analyst/tooling");
-        assert!(cmds[1].contains("UV_INSTALL_DIR=~/.analyst/bin"));
+        // uv is provided before the script runs; the script only checks it and never
+        // downloads an installer.
+        assert_eq!(cmds[1], "test -x ~/.analyst/bin/uv");
         assert_eq!(cmds[2], "~/.analyst/bin/uv python install 3.12");
-        assert!(cmds[3].contains("uv venv --python 3.12 ~/.analyst/tooling/.venv"));
+        assert!(cmds[3].contains(
+            "uv venv --default-index 'https://pypi.org/simple' --python 3.12 ~/.analyst/tooling/.venv"
+        ));
         assert!(cmds[4].starts_with(
-            "~/.analyst/bin/uv pip install --python ~/.analyst/tooling/.venv/bin/python ~/.analyst/tooling/analyst_kernel"
+            "~/.analyst/bin/uv pip install --default-index 'https://pypi.org/simple' --python ~/.analyst/tooling/.venv/bin/python ~/.analyst/tooling/analyst_kernel"
         ));
         assert_eq!(cmds[5], "printf '%s\\n' 0.0.1 > ~/.analyst/tooling/VERSION");
-        assert!(bootstrap::script("3.12", "w", "v").starts_with("set -e; mkdir -p"));
-        assert!(
-            bootstrap::session_env_command("~/analyst/repo").starts_with("cd ~/analyst/repo && ")
-        );
-        assert!(bootstrap::session_env_command("~/analyst/my repo")
+        let script = bootstrap::script("3.12", "w", "v", flag);
+        assert!(script.starts_with("set -e; mkdir -p"));
+        for text in [script.as_str(), &bootstrap::uv_probe_command()] {
+            assert!(
+                !text.contains("http://") && !text.contains("curl") && !text.contains("wget"),
+                "{text}"
+            );
+            assert_eq!(text.matches("https://").count(), text.matches(flag).count());
+        }
+        let env = bootstrap::session_env_command("~/analyst/repo", flag);
+        assert!(env.starts_with("cd ~/analyst/repo && "));
+        assert!(env.contains(&format!("uv sync {flag};")), "{env}");
+        assert!(env.contains(&format!("uv pip install {flag} -r")), "{env}");
+        assert!(bootstrap::session_env_command("~/analyst/my repo", flag)
             .starts_with("cd ~/'analyst/my repo' && "));
         let scp = bootstrap::scp_wheel_command("lab", Path::new("/w/k.whl"), None);
         assert_eq!(scp[..2], ["scp", "-q"]);
@@ -1437,8 +1737,10 @@ mod tests {
             python: None,
             sandbox: None,
             data_dirs: vec!["/data".into()],
+            uv_binary: Some("~/uv/linux-arm64/uv".into()),
         };
         let t = Target::from_config(&cfg).unwrap();
+        assert!(matches!(&t, Target::Ssh { uv_binary: Some(p), .. } if p == "~/uv/linux-arm64/uv"));
         let a = t.mirror_dir(Path::new("/home/u/proj")).unwrap();
         let b = t.mirror_dir(Path::new("/home/u/other/proj")).unwrap();
         assert!(a.starts_with("~/analyst/proj-"), "{a}");

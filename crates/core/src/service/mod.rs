@@ -84,9 +84,13 @@ pub struct Workbench {
 }
 
 impl Workbench {
-    /// Load the global config from `opts.home` (missing file = defaults).
+    /// Load the global config from `opts.home` (missing file = defaults). This is service
+    /// startup: the network gate's ledger is pointed at `<home>/egress.jsonl` here, and
+    /// loading the config registers the destinations it names (provider endpoints, the
+    /// package index, SSH targets) with the gate.
     pub fn new(opts: WorkbenchOptions) -> ServiceResult<Workbench> {
         std::fs::create_dir_all(&opts.home)?;
+        wb_net::init(&opts.home);
         let global =
             config::load_global(&opts.home).map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
         let kernel_source = opts.kernel_source.clone();
@@ -582,7 +586,8 @@ impl Workbench {
         let client = crate::providers::client_for_in(&self.opts.home, &resolved)
             .map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
         let key = spec.to_string();
-        let info_window = crate::providers::model_info_window(&self.opts.home, &resolved).await;
+        let info_window =
+            crate::providers::model_info_window(&self.opts.home, None, &resolved).await;
         capabilities::ensure(
             &self.opts.home,
             &key,
@@ -598,36 +603,40 @@ impl Workbench {
     }
 
     /// One row per configured provider: whether a key is available and where it comes from
-    /// (`"env"`, `"stored"`, or null). Key values never leave the backend.
+    /// (`"env"`: the process environment; `"stored"`: `$ANALYST_HOME/.env`; or null). A
+    /// key that only a repo's own `.env` provides is not listed here: it belongs to that
+    /// session. Key values never leave the backend.
     pub fn provider_keys_status(&self) -> Vec<ProviderKeyStatus> {
         let global = self.reload_global().unwrap_or_else(|_| self.global());
         global
             .providers
             .iter()
             .map(|p| {
-                let source = config::api_key_lookup(&self.opts.home, p).map(|(_, s)| match s {
-                    config::KeySource::Env => "env".to_string(),
-                    config::KeySource::Stored => "stored".to_string(),
-                });
+                let source =
+                    config::api_key_lookup(&self.opts.home, None, p).map(|(_, s)| match s {
+                        config::KeySource::Env => "env".to_string(),
+                        config::KeySource::Stored => "stored".to_string(),
+                    });
                 ProviderKeyStatus {
                     provider: p.name.clone(),
                     has_key: source.is_some(),
                     source,
-                    api_key_env: p.api_key_env.clone(),
+                    api_key_env: Some(config::key_env_name(p)),
                 }
             })
             .collect()
     }
 
-    /// Store a provider's key in `$ANALYST_HOME/credentials.toml` (mode 0600); an empty key
-    /// removes it. Conversations pick the change up on their next turn.
+    /// Store a provider's key in `$ANALYST_HOME/.env` (mode 0600) under the provider's
+    /// `api_key_env` name, or the derived `<PROVIDER NAME>_API_KEY` when none is configured;
+    /// an empty key removes it. Conversations pick the change up on their next turn.
     pub fn provider_key_set(&self, provider: &str, key: &str) -> ServiceResult<()> {
         let global = self.reload_global().unwrap_or_else(|_| self.global());
-        if !global.providers.iter().any(|p| p.name == provider) {
+        let Some(provider) = global.providers.iter().find(|p| p.name == provider) else {
             return Err(ServiceError::not_found(format!(
                 "provider `{provider}` is not configured"
             )));
-        }
+        };
         if key.contains(['\n', '\r']) {
             return Err(ServiceError::invalid("the key must be a single line"));
         }
@@ -731,12 +740,32 @@ impl Workbench {
 
     // ---- terminals ----
 
-    pub fn terminal_open(&self, session: &str, cols: u16, rows: u16) -> ServiceResult<TerminalId> {
+    /// Open a terminal in the session's repo (or its mirror on a remote target). The shell
+    /// has no network access where the platform can enforce that: the result says whether
+    /// it is isolated and how, and the renderer shows it.
+    pub async fn terminal_open(
+        &self,
+        session: &str,
+        cols: u16,
+        rows: u16,
+    ) -> ServiceResult<TerminalOpened> {
         let rt = self.session(session)?;
         let id = format!("term-{}", crate::util::stamped_id());
+        let target = rt.target();
+        // A remote shell is wrapped with bwrap on the host when the host's probe says it
+        // works there. A failed probe is not fatal: the shell opens, reported as unisolated.
+        let remote_no_network = match &target {
+            Target::Ssh { host, .. } => {
+                crate::egress::remote_bwrap_works(host, self.control_dir().as_deref())
+                    .await
+                    .unwrap_or(false)
+            }
+            Target::Local => false,
+        };
         let spec = TerminalSpec {
             repo: rt.repo.clone(),
-            target: rt.target(),
+            target,
+            remote_no_network,
             control_dir: self.control_dir(),
             capture: CaptureEnv::new(&rt.repo, &rt.out_dir(), self.mpl_dir()),
             shell: None,
@@ -745,8 +774,17 @@ impl Workbench {
             rows,
         };
         let t = Terminal::open(id.clone(), session, &spec, rt.hub())?;
+        let opened = TerminalOpened {
+            terminal_id: id,
+            network_isolated: t.isolation.is_isolated(),
+            network_isolation: t.isolation.label().to_string(),
+            network_isolation_note: match &t.isolation {
+                wb_sandbox::no_network::NetIsolation::None(why) => Some(why.clone()),
+                _ => None,
+            },
+        };
         self.terminals.insert(t);
-        Ok(id)
+        Ok(opened)
     }
 
     pub fn terminal_write(&self, terminal_id: &str, data: &str) -> ServiceResult<()> {

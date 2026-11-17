@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 analyst-core = { path = "../core" }
 analyst-protocol = { path = "../protocol" }
+wb-net = { path = "../wb-net" }
 clap.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
