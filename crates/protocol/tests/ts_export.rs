@@ -14,6 +14,7 @@ use present_protocol::kernel::{
 };
 use present_protocol::template::{TemplateDescription, TemplateSidecar};
 use present_protocol::transcript::Event;
+use present_protocol::ui;
 use std::path::Path;
 use ts_rs::TS;
 
@@ -62,6 +63,26 @@ fn export_typescript_bindings() {
     SnapshotLogRecord::export_all(&cfg).unwrap();
     Event::export_all(&cfg).unwrap();
     AuditRecord::export_all(&cfg).unwrap();
+    // Desktop IPC (IPC.md).
+    ui::IpcError::export_all(&cfg).unwrap();
+    ui::AppInfo::export_all(&cfg).unwrap();
+    ui::ProjectInfo::export_all(&cfg).unwrap();
+    ui::PolicyPatch::export_all(&cfg).unwrap();
+    ui::DeckView::export_all(&cfg).unwrap();
+    ui::RefView::export_all(&cfg).unwrap();
+    ui::SourcePassage::export_all(&cfg).unwrap();
+    ui::SearchHit::export_all(&cfg).unwrap();
+    ui::ProposalDecision::export_all(&cfg).unwrap();
+    ui::ExportView::export_all(&cfg).unwrap();
+    ui::SnapshotView::export_all(&cfg).unwrap();
+    ui::ModelEntry::export_all(&cfg).unwrap();
+    ui::SkillView::export_all(&cfg).unwrap();
+    ui::AnalystItem::export_all(&cfg).unwrap();
+    ui::AssetView::export_all(&cfg).unwrap();
+    ui::FileContent::export_all(&cfg).unwrap();
+    ui::WriteResult::export_all(&cfg).unwrap();
+    ui::ChatAttachments::export_all(&cfg).unwrap();
+    ui::ProjectEvent::export_all(&cfg).unwrap();
 
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()

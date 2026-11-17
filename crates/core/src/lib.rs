@@ -10,6 +10,7 @@ pub mod index;
 pub mod kernel;
 pub mod project;
 pub mod refs;
+pub mod service;
 pub mod session;
 pub mod snapshots;
 pub mod util;

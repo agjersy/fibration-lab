@@ -27,6 +27,7 @@ pub mod rpc;
 pub mod schema;
 pub mod template;
 pub mod transcript;
+pub mod ui;
 
 /// The kernel protocol version both sides must agree on (`kernel.hello`).
 pub const PROTOCOL_VERSION: u32 = 1;
