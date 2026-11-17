@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "mode": "structured",
+  "title": "Programme status (long)",
+  "template": "template/placeholder.pptx",
+  "sections": [
+    {
+      "title": "",
+      "slides": [
+        "s-st01",
+        "s-st02",
+        "s-st03",
+        "s-st04",
+        "s-st05",
+        "s-st06",
+        "s-st07",
+        "s-st08",
+        "s-st09",
+        "s-st10",
+        "s-st11",
+        "s-st12",
+        "s-st13",
+        "s-st14",
+        "s-st15"
+      ]
+    }
+  ]
+}

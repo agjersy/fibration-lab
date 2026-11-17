@@ -1,0 +1,31 @@
+[task]
+name = "email-thread-brief"
+mode = "build"
+timeout_s = 900
+max_steps = 40
+prompt = """
+Turn the email thread in the references (and its attached deck where useful) into a three-slide status brief for Thursday's steering committee: where the migration stands, budget against scope, and the decision that is needed. Cite the email for every figure. When the slides are done, export the outline as Markdown.
+"""
+
+[[checks]]
+kind = "checker_clean"
+
+[[checks]]
+kind = "slide_count"
+exact = 3
+
+[[checks]]
+kind = "citation_coverage"
+min = 0.9
+
+[[checks]]
+kind = "numbers_verified"
+min = 0.9
+
+[[checks]]
+kind = "text_matches"
+regex = "(?i)250,?000"
+
+[[checks]]
+kind = "export_exists"
+format = "md"

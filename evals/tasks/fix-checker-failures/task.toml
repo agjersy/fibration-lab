@@ -1,0 +1,23 @@
+[task]
+name = "fix-checker-failures"
+mode = "build"
+timeout_s = 900
+max_steps = 40
+prompt = """
+The deck checker reports problems on this deck. Run it, fix every error and warning it reports, and leave slides that have no findings alone.
+"""
+
+[[checks]]
+kind = "opens_clean"
+
+[[checks]]
+kind = "checker_clean"
+max_warnings = 0
+
+[[checks]]
+kind = "text_matches"
+slide = "s-fx04"
+regex = "Nothing to fix here"
+
+[[checks]]
+kind = "edits_within_scope"

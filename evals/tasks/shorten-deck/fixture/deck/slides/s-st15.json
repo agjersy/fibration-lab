@@ -1,0 +1,52 @@
+{
+  "id": "s-st15",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst15",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Next steps is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst15",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Next steps point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Next steps point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

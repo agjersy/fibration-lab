@@ -17,9 +17,50 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Kernel environment (core integration tests drive the real kernel)
+        run: cd python/kernel && uv sync
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+        env:
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/vendor/fonts
+
+  loop:
+    runs-on: ${{ matrix.os }}
+    needs: [rust, python]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install LibreOffice (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress
+      - run: cd python/kernel && uv sync
+      - run: cargo build -p present-cli -p wb-sandbox
+      - name: CLI walk-through against the scripted model server
+        shell: bash
+        run: tools/cli_walkthrough.sh
+      - name: Scripted evaluation tasks
+        shell: bash
+        env:
+          PRESENT_HOME: ${{ runner.temp }}/present-home
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/vendor/fonts
+        run: |
+          mkdir -p "$PRESENT_HOME"
+          printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8765/v1"\nauth = "none"\nlocation = "internal"\n' > "$PRESENT_HOME/config.toml"
+          python evals/fake_model_server.py --port 8765 &
+          sleep 2
+          ./target/debug/present eval run --task spreadsheet-to-charts --results "$PRESENT_HOME/results"
+          ./target/debug/present eval run --task fix-checker-failures --results "$PRESENT_HOME/results"
 
   python:
     runs-on: ${{ matrix.os }}
@@ -40,6 +81,14 @@ jobs:
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run pytest -q
+        env:
+          PRESENT_TEST_ARTIFACTS: ${{ runner.temp }}/present-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.project == 'python/kernel' && runner.os == 'Linux'
+        with:
+          name: rendered-diagrams
+          path: ${{ runner.temp }}/present-artifacts
+          if-no-files-found: ignore
 
   licenses:
     runs-on: ubuntu-latest

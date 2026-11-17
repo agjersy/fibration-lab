@@ -1,0 +1,52 @@
+{
+  "id": "s-st13",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst13",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Dependencies is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst13",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Dependencies point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Dependencies point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

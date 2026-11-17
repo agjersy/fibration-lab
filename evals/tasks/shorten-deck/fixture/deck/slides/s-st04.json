@@ -1,0 +1,52 @@
+{
+  "id": "s-st04",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst04",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Budget is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst04",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Budget point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Budget point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

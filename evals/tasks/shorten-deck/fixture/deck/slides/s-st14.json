@@ -1,0 +1,52 @@
+{
+  "id": "s-st14",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst14",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Decisions is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst14",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Decisions point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Decisions point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

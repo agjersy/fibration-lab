@@ -1,0 +1,52 @@
+{
+  "id": "s-st08",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst08",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Quality is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst08",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Quality point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Quality point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

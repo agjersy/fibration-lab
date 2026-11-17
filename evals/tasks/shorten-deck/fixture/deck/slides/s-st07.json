@@ -1,0 +1,52 @@
+{
+  "id": "s-st07",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst07",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Vendors is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst07",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Vendors point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Vendors point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

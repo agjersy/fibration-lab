@@ -1,0 +1,38 @@
+{
+  "id": "s-fx04",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tfx04",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "A slide that is already fine"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bfx04",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Nothing to fix here"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

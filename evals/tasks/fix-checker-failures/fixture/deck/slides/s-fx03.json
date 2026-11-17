@@ -1,0 +1,50 @@
+{
+  "id": "s-fx03",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tfx03",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Pale emphasis is hard to read on a white slide"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bfx03",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Costs are "
+              },
+              {
+                "t": "under control",
+                "color": "lt2",
+                "b": true
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Schedule is unchanged"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

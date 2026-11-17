@@ -1,0 +1,29 @@
+{
+  "id": "s-fx02",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tfx02",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "The site photo has no description"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "image",
+      "id": "e-img02",
+      "asset": "assets/site.png",
+      "alt": ""
+    }
+  },
+  "elements": []
+}

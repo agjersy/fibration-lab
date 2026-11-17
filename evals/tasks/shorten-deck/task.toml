@@ -1,0 +1,26 @@
+[task]
+name = "shorten-deck"
+mode = "build"
+timeout_s = 900
+max_steps = 50
+prompt = """
+Cut this 15-slide status deck to exactly 6 slides for a ten-minute slot. Keep the summary, timeline, budget, risks, decisions, and next steps; merge anything essential from the slides you remove into the ones you keep.
+"""
+
+[[checks]]
+kind = "checker_clean"
+
+[[checks]]
+kind = "slide_count"
+exact = 6
+
+[[checks]]
+kind = "text_matches"
+regex = "(?i)budget"
+
+[[checks]]
+kind = "text_matches"
+regex = "(?i)risk"
+
+[[checks]]
+kind = "edits_within_scope"

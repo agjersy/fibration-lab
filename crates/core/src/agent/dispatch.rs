@@ -1140,36 +1140,37 @@ async fn prepare_inner(
                     .unwrap_or("deck/build.py"),
             )?;
             let original = std::fs::read_to_string(ws.project.root.join(&path)).ok();
-            let proposed =
-                if let Some(content) = args.get("content").and_then(|c| c.as_str()) {
-                    content.to_string()
-                } else if let Some(edits) = args.get("edits").and_then(|e| e.as_array()) {
-                    let mut text = original.clone().ok_or_else(|| {
-                        format!("{path} does not exist; give `content` to create it")
-                    })?;
-                    for (i, edit) in edits.iter().enumerate() {
-                        let (old, new) = (
-                            edit["old"].as_str().unwrap_or(""),
-                            edit["new"].as_str().unwrap_or(""),
-                        );
-                        match text.matches(old).count() {
-                            1 => text = text.replacen(old, new, 1),
-                            0 => {
-                                return Err(format!(
-                                    "edit {}: `old` was not found in {path}; read the file again",
-                                    i + 1
-                                ))
-                            }
-                            n => return Err(format!(
+            let proposed = if let Some(content) = args.get("content").and_then(|c| c.as_str()) {
+                content.to_string()
+            } else if let Some(edits) = args.get("edits").and_then(|e| e.as_array()) {
+                let mut text = original
+                    .clone()
+                    .ok_or_else(|| format!("{path} does not exist; give `content` to create it"))?;
+                for (i, edit) in edits.iter().enumerate() {
+                    let (old, new) = (
+                        edit["old"].as_str().unwrap_or(""),
+                        edit["new"].as_str().unwrap_or(""),
+                    );
+                    match text.matches(old).count() {
+                        1 => text = text.replacen(old, new, 1),
+                        0 => {
+                            return Err(format!(
+                                "edit {}: `old` was not found in {path}; read the file again",
+                                i + 1
+                            ))
+                        }
+                        n => {
+                            return Err(format!(
                                 "edit {}: `old` matches {n} times in {path}; include more context",
                                 i + 1
-                            )),
+                            ))
                         }
                     }
-                    text
-                } else {
-                    return Err("give either `edits` or `content`".into());
-                };
+                }
+                text
+            } else {
+                return Err("give either `edits` or `content`".into());
+            };
             if original.as_deref() == Some(proposed.as_str()) {
                 return Err("the proposed content is identical to the current file".into());
             }
