@@ -1,0 +1,66 @@
+{
+ "kind": "xlsx",
+ "title": "Q3, Data Log",
+ "pages": null,
+ "outline": [
+  {
+   "title": "Q3",
+   "loc": "Q3!A1:D6",
+   "children": [
+    {
+     "title": "Totals",
+     "loc": "name:Totals",
+     "children": []
+    }
+   ]
+  },
+  {
+   "title": "Data Log",
+   "loc": "Data Log!B2:D62",
+   "children": []
+  }
+ ],
+ "chunks": [
+  {
+   "loc": "Q3!A1:D6",
+   "heading_path": [
+    "Q3"
+   ],
+   "text": "Region\tQ1\tQ2\tQ3\nNorth\t120\t135\t150\nSouth\t80\t82\t91\nEast\t64\t70\t77\nWest\t101\t99\t113\nTotal\t365\t386\t431"
+  },
+  {
+   "loc": "Data Log!B2:D37",
+   "heading_path": [
+    "Data Log"
+   ],
+   "text": "id\tlabel\tvalue\n1\titem 1 outlook headcount\t806.69\n2\titem 2 invoice retention\t174.69\n3\titem 3 guidance churn\t110.16\n4\titem 4 margin partner\t384.17\n5\titem 5 headcount backlog\t859.7\n6\titem 6 utilization variance\t137.54\n7\titem 7 growth inventory\t812.61\n8\titem 8 pricing supplier\t882.81\n9\titem 9 guidance volume\t331.04\n10\titem 10 forecast region\t309.2\n11\titem 11 customer supply\t939.78\n12\titem 12 freight supplier\t682.61\n13\titem 13 headcount supply\t919.98\n14\titem 14 margin productivity\t372.19\n15\titem 15 growth order\t50.3\n16\titem 16 freight invoice\t580.08\n17\titem 17 revenue variance\t238.95\n18\titem 18 volume partner\t526.92\n19\titem 19 invoice growth\t267.2\n20\titem 20 churn pricing\t747.52\n21\titem 21 guidance inventory\t250.17\n22\titem 22 capacity order\t318.88\n23\titem 23 shipment pipeline\t909.04\n24\titem 24 churn shipment\t9.76\n25\titem 25 order margin\t467.16\n26\titem 26 churn freight\t633.1\n27\titem 27 pricing capacity\t258.08\n28\titem 28 demand margin\t621.06\n29\titem 29 outlook inventory\t403.01\n30\titem 30 variance renewal\t195.65\n31\titem 31 backlog supplier\t676.31\n32\titem 32 volume growth\t842.02\n33\titem 33 guidance capacity\t804.94\n34\titem 34 utilization utilization\t49.44\n35\titem 35 headcount customer\t691.33"
+  },
+  {
+   "loc": "Data Log!B38:D62",
+   "heading_path": [
+    "Data Log"
+   ],
+   "text": "36\titem 36 capacity backlog\t657.45\n37\titem 37 variance freight\t75.02\n38\titem 38 customer guidance\t636.5\n39\titem 39 partner channel\t532.28\n40\titem 40 backlog contract\t801.37\n41\titem 41 growth demand\t586.41\n42\titem 42 demand channel\t553.98\n43\titem 43 outlook logistics\t77.4\n44\titem 44 warehouse volume\t229.06\n45\titem 45 utilization pricing\t969.76\n46\titem 46 margin outlook\t422.68\n47\titem 47 shipment contract\t929.76\n48\titem 48 channel utilization\t367.95\n49\titem 49 volume capacity\t433.82\n50\titem 50 logistics customer\t518.64\n51\titem 51 outlook revenue\t192.09\n52\titem 52 renewal logistics\t463.64\n53\titem 53 supply inventory\t536.25\n54\titem 54 freight logistics\t12.1\n55\titem 55 backlog renewal\t987.81\n56\titem 56 warehouse shipment\t751.98\n57\titem 57 volume growth\t267.17\n58\titem 58 outlook revenue\t27.56\n59\titem 59 freight capacity\t612.26\n60\titem 60 pipeline margin\t455.36"
+  }
+ ],
+ "tables": [
+  {
+   "loc": "Q3!A1:D6",
+   "rows": 6,
+   "cols": 4,
+   "title": "Q3"
+  },
+  {
+   "loc": "Data Log!B2:D62",
+   "rows": 61,
+   "cols": 3,
+   "title": "Data Log"
+  },
+  {
+   "loc": "name:Totals",
+   "rows": 1,
+   "cols": 4,
+   "title": "Totals"
+  }
+ ]
+}

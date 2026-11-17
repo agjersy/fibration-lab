@@ -38,7 +38,10 @@ def project(tmp_path):
 
 def test_clean_deck_has_no_findings(kernel_for, project):
     diags = check(kernel_for, project([good_slide(1), good_slide(2)], classification=None))
-    assert [d for d in diags if d["severity"] != "info"] == []
+    # The corpus citation points at a reference that is not in this project; that finding is expected.
+    dangling = rules_of(diags, "src.dangling")
+    assert len(dangling) == 2 and all(d["severity"] == "error" for d in dangling)
+    assert [d for d in diags if d["severity"] != "info" and d["rule"] != "src.dangling"] == []
 
 
 def test_overflow_fails_and_short_text_passes(kernel_for, project):

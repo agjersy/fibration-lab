@@ -1,0 +1,14 @@
+{
+ "kind": "msg",
+ "title": "RTF only",
+ "pages": null,
+ "outline": [],
+ "chunks": [
+  {
+   "loc": "c0-157",
+   "heading_path": [],
+   "text": "Subject: RTF only\nFrom: Eli Stone <eli@example.invalid>\nTo: Ben Okoro\nDate: 2026-11-04T11:32:00Z\n\nBudget approved for café refit.\nSecond line with bold text."
+  }
+ ],
+ "tables": []
+}

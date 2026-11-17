@@ -1,0 +1,30 @@
+{
+ "kind": "msg",
+ "title": "Units for October",
+ "pages": null,
+ "outline": [
+  {
+   "title": "units.csv",
+   "loc": "att1/r1-41",
+   "children": []
+  },
+  {
+   "title": "big.txt",
+   "loc": "att2/c0-9090",
+   "children": []
+  }
+ ],
+ "chunks": [
+  {
+   "loc": "c0-1100",
+   "heading_path": [],
+   "text": "Subject: Units for October\nFrom: Carla Rossi <carla@example.invalid>\nTo: Ben Okoro <ben@example.invalid>; Dana Lee <dana@example.invalid>\nDate: 2026-11-04T11:32:00Z\n\nHello team,\n\nPlease find the units attached.\n\nSupply quarter invoice logistics outlook pipeline warehouse retention budget. Logistics supplier growth customer headcount region guidance retention invoice productivity invoice quarter outlook volume. Headcount region revenue revenue supply invoice region channel margin utilization order outlook contract margin revenue volume. Channel supply capacity quarter retention churn volume freight supplier volume churn growth. Logistics pipeline revenue churn partner customer logistics inventory shipment order margin pipeline supplier region contract.\n\nPartner outlook retention freight margin renewal guidance retention inventory volume forecast contract productivity outlook guidance revenue. Churn region growth channel contract variance logistics utilization region pricing customer capacity quarter. Partner logistics demand order churn quarter guidance pricing capacity revenue churn."
+  },
+  {
+   "loc": "c951-1770",
+   "heading_path": [],
+   "text": "logistics utilization region pricing customer capacity quarter. Partner logistics demand order churn quarter guidance pricing capacity revenue churn. Margin backlog logistics channel shipment order volume invoice forecast invoice demand region logistics contract customer retention. Quarter demand supplier quarter utilization warehouse customer demand renewal supplier invoice pricing contract.\n\nChannel utilization region contract pipeline churn freight channel pipeline margin. Invoice revenue contract shipment freight guidance region guidance region. Channel variance partner growth headcount demand churn contract outlook margin warehouse guidance. Region supplier partner demand warehouse logistics invoice partner contract forecast supplier. Backlog freight shipment contract supplier inventory freight quarter."
+  }
+ ],
+ "tables": []
+}
