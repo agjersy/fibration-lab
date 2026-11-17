@@ -22,6 +22,7 @@ Every dependency added to the project is recorded here in the same commit.
 | keyring (optional feature `keychain`) | MIT OR Apache-2.0 | API keys in the OS keychain |
 | windows-sys (Windows only) | MIT OR Apache-2.0 | AppContainer, ACLs, job objects in the sandbox helper |
 | libc (Unix only) | MIT OR Apache-2.0 | resource limits in the sandbox helper fallback |
+| tauri, tauri-build, tauri-plugin-dialog | MIT OR Apache-2.0 | desktop shell, native dialogs (links the system WebView: WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) |
 | rcgen, tokio-rustls (dev only) | MIT OR Apache-2.0 | TLS and proxy tests of the provider layer |
 
 ## Python (fixed bundled set, PROTOCOL 1.3)
