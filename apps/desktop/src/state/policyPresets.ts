@@ -1,6 +1,6 @@
 // The three policy presets of IPC.md section 8, expressed in the fields
-// `session_set_policy` takes. A preset sets only these five keys; network,
-// protected globs and the step limit are left as they are.
+// `session_set_policy` takes. A preset sets only these five keys; protected
+// globs and the step limit are left as they are.
 import type { PolicyView } from "../ipc";
 
 export type PolicyPreset = "review" | "auto" | "read-only";

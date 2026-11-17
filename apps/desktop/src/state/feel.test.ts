@@ -134,7 +134,7 @@ describe("index fetches", () => {
       return next();
     };
     for (let i = 0; i < 10; i++) applyEvent(S, { type: "index_changed" });
-    applyEvent(S, { type: "kernel_state", state: "ready", message: null });
+    applyEvent(S, { type: "kernel_state", state: "ready", message: null, network_isolation: null });
     expect(count()).toBe(1);
     release();
     await waitFor(() => useFiles.getState().indexStale[S] === false, 4000, "index refreshed");
@@ -248,7 +248,7 @@ describe("package list cache", () => {
 });
 
 describe("policy presets", () => {
-  const base: PolicyView = { edits: "review", runs: "auto", packages: "ask", shell: "ask", network: "deny", git: "ask", protected: [".env"], max_steps: 40 };
+  const base: PolicyView = { edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask", protected: [".env"], max_steps: 40 };
 
   it("map onto the session_set_policy fields of IPC.md section 8", () => {
     expect(presetPatch("review")).toEqual({ edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask" });
@@ -258,14 +258,14 @@ describe("policy presets", () => {
     expect(POLICY_PRESETS.map((p) => p.id)).toEqual(["review", "auto", "read-only"]);
   });
 
-  it("a preset never touches network, protected globs or the step limit", () => {
+  it("a preset never touches protected globs or the step limit", () => {
     for (const p of POLICY_PRESETS) expect(Object.keys(presetPatch(p.id)).sort()).toEqual(["edits", "git", "packages", "runs", "shell"]);
   });
 
   it("recognises the preset a policy amounts to, and custom combinations as none", () => {
     expect(presetOf(base)).toBe("review");
     for (const p of POLICY_PRESETS) expect(presetOf({ ...base, ...presetPatch(p.id) })).toBe(p.id);
-    const otherKeys: PolicyView = { ...base, network: "allow", max_steps: 5 };
+    const otherKeys: PolicyView = { ...base, max_steps: 5 };
     expect(presetOf(otherKeys)).toBe("review");
     expect(presetOf({ ...base, edits: "auto-new-files" })).toBeNull();
     expect(presetOf({ ...base, runs: "ask" })).toBeNull();
@@ -280,7 +280,7 @@ describe("policy presets", () => {
     const before = useSessions.getState().infos[S]!.policy;
     const after = await b.invoke("session_set_policy", { session: S, policy: presetPatch("read-only") });
     expect(presetOf(after)).toBe("read-only");
-    expect(after).toMatchObject({ network: before.network, protected: before.protected, max_steps: before.max_steps });
+    expect(after).toMatchObject({ protected: before.protected, max_steps: before.max_steps });
     await waitFor(() => presetOf(useSessions.getState().infos[S]!.policy) === "read-only", 4000, "session_changed");
   });
 });

@@ -211,7 +211,7 @@ def test_mplconfigdir_is_one_directory_per_runs_dir(kernel: Kernel, repo: Path, 
     for name in ("repl", "eqcheck"):
         assert kernel._tool_env(name)["MPLCONFIGDIR"] == str(shared)
         assert shared in kernel._tool_spec(name).writable_dirs()
-    assert shared in kernel.runs.sandbox_spec(tmp_path / "runs" / "x", repo / "out" / "x", False).writable_dirs()
+    assert shared in kernel.runs.sandbox_spec(tmp_path / "runs" / "x", repo / "out" / "x").writable_dirs()
     # it is not a run
     assert all(r["run_id"] != "_mplconfig" for r in kernel.call("runs.list")["runs"])
     snippet = kernel.call("exec.snippet", {"code": "import os; os.environ['MPLCONFIGDIR']"})
