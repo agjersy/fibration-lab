@@ -158,7 +158,7 @@ mod tests {
                 "bwrap",
                 "--unshare-net",
                 "--die-with-parent",
-                "--bind",
+                "--dev-bind",
                 "/",
                 "/",
                 "--",
