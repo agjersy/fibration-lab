@@ -39,15 +39,29 @@ uv run pytest -q                 # kernel and SDK behaviour (renderer, checker, 
 uv run ruff check . ../sdk
 cd ../..
 
-# Rust
-cargo build --workspace
-cargo test --workspace           # core integration tests start the real kernel from python/kernel/.venv
-cargo clippy --workspace --all-targets -- -D warnings
+# Rust (everything except the desktop shell, which needs a system WebView toolkit on Linux)
+cargo build --workspace --exclude present-desktop
+cargo test --workspace --exclude present-desktop    # core integration tests start the real kernel from python/kernel/.venv
+cargo clippy --workspace --exclude present-desktop --all-targets -- -D warnings
 cargo fmt --all -- --check
 
 # The whole headless stack against a scripted model
 tools/cli_walkthrough.sh
 ```
+
+## Desktop shell
+
+`apps/desktop/src-tauri` is the Tauri 2 shell: thin commands over `present_core::service`, one per row of [IPC.md](IPC.md) section 4. A test reads that table and fails when the shell and the document differ.
+
+```sh
+# Linux only: the WebView toolkit Tauri builds against
+sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libsoup-3.0-dev
+
+cargo test -p present-desktop
+cargo build -p present-desktop
+```
+
+The service layer itself needs no window and is tested in `crates/core/tests/service.rs` against the real kernel with a scripted model. `PRESENT_HOME`, `PRESENT_ENGINE`, `PRESENT_SANDBOX`, and `PRESENT_PYTHON` override the home directory, the rendering engine, the sandbox kind, and the kernel's interpreter.
 
 Regenerating committed artifacts:
 
@@ -58,6 +72,7 @@ uv run python ../../evals/make_fixtures.py              # evals/tasks/*/fixture
 uv run pytest -q --update-golden                        # golden slide XML, template descriptions, reference extracts
 cd ../..
 PRESENT_UPDATE_SCHEMAS=1 cargo test -p present-protocol --test schemas   # schemas/*.json
+cargo test -p present-protocol --test ts_export                          # apps/desktop/src/ipc/generated
 ```
 
 ## Running the CLI in development

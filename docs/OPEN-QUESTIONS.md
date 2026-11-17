@@ -61,12 +61,19 @@ Recorded while implementing phase 0 (BUILD-SPEC rule 10). Each lists what was bu
 | Transcript | Events gain `compaction` and `decision.modified`; `proposal` writes `targets` (reads `slides`) | Needed to replay a compacted conversation and to record accept-with-edits |
 | Evaluation fixtures | A fixture is `TEMPLATE` + `sources/` + optional `deck/`, `assets/`, `project.toml`, built into a fresh project by the harness | Avoids committing copied templates and pre-ingested references |
 | Proxy auto-configuration | System proxy settings are honored through environment variables, the Windows registry, and macOS system configuration; PAC scripts are not evaluated | Not supported by the HTTP library in use |
+| Project events | `project_subscribe` has no matching unsubscribe; the channel ends when the project or the window closes, and subscribing again from the same window replaces the earlier channel | One channel per project per window is all the renderer needs |
+| Fidelity thumbnails | `render_fidelity` renders the whole deck in one pass whatever `slides` says | The engines convert a file at a time; per-slide renders would cost the same |
+| Persisted policy | `project_set_policy` with `persist: true` rewrites `.present/project.toml` from its parsed form, which drops comments | No comment-preserving TOML writer in use |
+| Export presets | `export_run` accepts `preset` and `options` and ignores them | They arrive with the export dialog (BUILD-SPEC D8) |
+| Scratch render | Checks, slide renders, and builds take a per-project lock around the shared scratch `.pptx` | Two checks running at once read each other's half-written file |
+| Sandbox environment (Windows) | Sandboxed code keeps the standard Windows folder variables (`LOCALAPPDATA`, `APPDATA`, `PROGRAMDATA`, and similar) | Windows refuses to start an AppContainer process without them; they name folders, not secrets |
 | Combination charts | Bar-plus-line charts share one value axis; `axis: "secondary"` is accepted but not yet rendered | Not implemented yet |
 
 ### Not verified in this environment
 
-- **Windows AppContainer sandbox.** The launcher type-checks for Windows targets but has not run on Windows. The isolation tests (BUILD-SPEC S1 a to e) run on the Windows CI job. Launch latency with a bundled runtime is unmeasured; the note in `docs/notes/sandbox-spike.md` explains the likely mitigation (a permanent read ACE on the runtime at install time).
-- **macOS `sandbox-exec`.** Ported and unit-tested for profile shape; the escape tests run on the macOS CI job.
+- **Windows AppContainer sandbox.** The launcher now runs on the Windows CI job. Two faults found there were fixed (a system fonts folder whose permissions cannot be changed; a scrubbed environment Windows would not start a process with). Whether the isolation tests (BUILD-SPEC S1 a to e) pass there is recorded in the CI run for the latest commit, not here. Launch latency with a bundled runtime is unmeasured; `docs/notes/sandbox-spike.md` explains the likely mitigation (a permanent read entry on the runtime at install time).
+- **macOS `sandbox-exec`.** The escape tests pass on the macOS CI job.
+- **Linux `bwrap`.** The escape tests pass locally and on the Linux CI job. Inside the sandbox the home directory is a private, discarded tmpfs, so a write there succeeds in the sandbox and never reaches the host.
 - **PowerPoint.** Both automation paths are tested with a mocked runner only. No exported file has been opened in PowerPoint; the phase 0 exit check needs a person with PowerPoint on Windows and macOS.
 - **ECMA-376 schema validation.** The checker validates when the XSDs are present under `vendor/ooxml-schemas`; they have not been fetched, pending confirmation that they may be redistributed.
 - **Embedding model.** No model could be downloaded here. The runner is tested against a tiny hand-built ONNX model; the candidate (`multilingual-e5-small`, int8 build) and its license, size, and quality are unconfirmed. Search works without it (full-text only).
