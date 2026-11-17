@@ -71,7 +71,7 @@ Recorded while implementing phase 0 (BUILD-SPEC rule 10). Each lists what was bu
 - **ECMA-376 schema validation.** The checker validates when the XSDs are present under `vendor/ooxml-schemas`; they have not been fetched, pending confirmation that they may be redistributed.
 - **Embedding model.** No model could be downloaded here. The runner is tested against a tiny hand-built ONNX model; the candidate (`multilingual-e5-small`, int8 build) and its license, size, and quality are unconfirmed. Search works without it (full-text only).
 - **Real models.** Every agent test uses a scripted model. No run against Claude or an open-weight model has been made; six of the eight evaluation tasks need one.
-- **Runtime bundling.** `tools/bundle_runtime.py` (BUILD-SPEC W3) is not written yet; development uses the `uv` environment.
+- **Runtime bundling.** `tools/bundle_runtime.py` builds a self-contained runtime and the CLI walk-through passes on it, on Linux only (about 555 MB before compression, of which pandas, onnxruntime, numpy, and matplotlib are about 190 MB). It has not been run on Windows or macOS, and it is not yet part of CI.
 
 ### Decisions to confirm
 
