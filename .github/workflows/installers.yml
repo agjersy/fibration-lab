@@ -1,0 +1,81 @@
+name: installers
+
+# Builds the Windows and macOS installers with the Python runtime bundled inside. Heavy, so it
+# runs on demand, on version tags, and when the packaging itself changes.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+    paths:
+      - ".github/workflows/installers.yml"
+      - "apps/desktop/src-tauri/bundle/**"
+      - "apps/desktop/src-tauri/tauri.conf.json"
+      - "tools/bundle_runtime.py"
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            config: windows
+          - os: macos-latest
+            config: macos
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Bundle the Python runtime (interpreter, packages, kernel, SDK, schemas, skills)
+        run: uv run --no-project --python 3.12 python tools/bundle_runtime.py --out dist-runtime
+
+      - name: Sandbox launcher
+        if: runner.os == 'Windows'
+        run: cargo build --release -p wb-sandbox
+
+      - name: Frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --dir apps/desktop build
+
+      - name: Installer
+        run: pnpm --dir apps/desktop tauri build --config src-tauri/bundle/${{ matrix.config }}.json
+
+      - name: macOS installer package
+        if: runner.os == 'macOS'
+        run: |
+          app="target/release/bundle/macos/Personal Present.app"
+          productbuild --component "$app" /Applications "target/release/bundle/Personal-Present.pkg"
+
+      - name: The bundled kernel starts from inside the built app, with no network
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            res="target/release/bundle/macos/Personal Present.app/Contents/Resources"
+          else
+            res="target/release"
+          fi
+          test -f "$res/runtime/runtime.json"
+          py="$res/runtime/$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['interpreter'])" "$res/runtime/runtime.json")"
+          export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9
+          "$py" -I -m present_kernel --version
+          test -d "$res/runtime/skills/storyline"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.config }}
+          if-no-files-found: error
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/*.pkg
