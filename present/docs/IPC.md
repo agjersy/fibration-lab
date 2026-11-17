@@ -76,7 +76,7 @@ interface ExportView { id: string; format: string; preset: string | null; path: 
 interface SnapshotView { id: SnapshotId; created: string; reason: string; label: string | null; turn: TurnId | null; slides: number; thumb: string | null }
 
 interface ModelEntry { name: string /* provider/id */; provider: string; location: "internal" | "external";
-  capabilities: { context_window: number; tools: "native" | "text-protocol" | "none"; vision: boolean; documents: boolean; caching: boolean; probed_at: string | null };
+  capabilities: { context_window: number; tools: "native" | "none"; vision: boolean; documents: boolean; caching: boolean; probed_at: string | null };
   degraded: boolean; degraded_reasons: string[] }
 
 interface SkillView { name: string; description: string; source: "builtin" | "user" | "project" | "managed"; has_scripts: boolean; enabled: boolean }

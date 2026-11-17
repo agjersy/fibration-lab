@@ -298,7 +298,7 @@ export interface ModelEntry {
   id: string;
   kind: "openai-compatible" | "anthropic";
   local: boolean;
-  capabilities: { context_window: number; tools: "native" | "text-protocol" | "none"; vision: boolean } | null;
+  capabilities: { context_window: number; tools: "native" | "none"; vision: boolean } | null;
 }
 
 export interface TargetInfo {

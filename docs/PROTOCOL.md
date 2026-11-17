@@ -233,7 +233,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 provider = "ollama-lab"
 id = "some-model"
 context_window = 65536                 # optional override; otherwise probed or default 32768
-tools = "native"                       # optional override: native | text-protocol | none
+tools = "native"                       # optional override: native (required for use) | none
 vision = false                         # optional override
 
 [[targets]]
@@ -350,9 +350,9 @@ type ModelEvent =
   | { type: "stop", reason: "end"|"tool_calls"|"max_tokens"|"error", message?: string }
 ```
 
-**Capability probe.** A tool-calling probe sends one message with a single tool `echo_probe {token: string}` and the instruction to call it with a given token; `tools: "native"` if a tool_call event with the right token arrives, else `"text-protocol"`. Context window comes from the model info endpoint when available, else the config override, else 32768. Results are cached in `~/.analyst/capabilities.json` keyed by `provider/model`.
+**Capability probe.** A tool-calling probe sends one message with a single tool `echo_probe {token: string}` and the instruction to call it with a given token; `tools: "native"` if a tool_call event with the right token arrives, else `"none"`. Native tool calling is required: a model whose record would be `none` is rejected with an error naming the model and the `[[models]] tools = "native"` override, and nothing is cached for it. A probe that fails (request or provider error) is an error too and is not cached. Old cache entries and config files that say `text-protocol` load as `none`; such a cache entry is probed again. Context window comes from the model info endpoint when available, else the config override, else 32768. Results are cached in `~/.analyst/capabilities.json` keyed by `provider/model`.
 
-**Text protocol** (degraded tier): the system prompt instructs the model to emit tool calls as a fenced block starting with ` ```tool_call ` containing `{"name": ..., "arguments": {...}}`; the core parses these from text and feeds results back as user messages prefixed `tool_result <name>:`.
+There is no text-protocol tier: tool calls are only ever taken from the provider's native tool-calling interface.
 
 ## 5. Transcript events
 

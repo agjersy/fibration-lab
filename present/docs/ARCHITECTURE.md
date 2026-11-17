@@ -21,7 +21,7 @@
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Decided (shared) |
 | P14 | Code sharing with Analyst | A third repository of shared Rust crates and a UI package, consumed by both apps as pinned git dependencies, extracted gradually starting with the provider layer and policy engine. One skill format (Agent Skills `SKILL.md`) across both apps | Decided (OQ-P11) |
 | P15 | Name | "Personal Present": binary `present`, config `~/.present` (`%APPDATA%\Present` on Windows), bundle id `dev.personal-present.app` | Decided (OQ-P12) |
-| P16 | Model baseline | Tool calling, streaming, >=128k context, vision; models below it run as a flagged degraded tier | Decided (OQ-P13) |
+| P16 | Model baseline | Tool calling (required: a model without it is rejected), streaming, >=128k context, vision; models below the context or vision baseline run as a flagged degraded tier | Decided (OQ-P13) |
 
 ## 2. System overview
 
@@ -208,7 +208,7 @@ A project is in one of two modes, chosen at creation and switchable later.
 
 ## 7. Agent loop
 
-**(shared)** Structure, pause-on-ask semantics, compaction, pinned facts, capability probing, and the text-protocol fallback follow Analyst section 5.7. Deck-specific parts:
+**(shared)** Structure, pause-on-ask semantics, compaction, pinned facts, and capability probing follow Analyst section 5.7. Deck-specific parts:
 
 ### 7.1 Context assembly
 
@@ -334,7 +334,7 @@ Features that differ by platform are probed or configured, not assumed. Relevant
 - **Provider-hosted skills and code execution are not used.** Anthropic's server-side Agent Skills, code execution, Files API, and web tools exist only on Anthropic's own API (and not on Bedrock, Vertex, or Azure-hosted Foundry); gateways and open-weight servers have none of them. Running skills in the app (section 12) is what makes the same behavior possible on every endpoint.
 - **Document blocks with citations, prompt caching, and structured outputs** are used when the endpoint supports them, as probed; the loop works without them.
 
-**Capability baseline (decided, OQ-P13):** native tool calling, streaming, a context window of at least 128k tokens, and vision (image input). Checked by the capability probe on first use. A model below the baseline can still be selected but runs as a flagged, degraded tier (no self-review without vision, aggressive compaction below 128k, the text-protocol fallback without native tools), which the evaluation suite does not certify; a managed configuration can forbid it. Certification targets for the evaluation suite: Claude through the Anthropic API or your internal gateway, and at least one open-weight model on your internal servers that meets the baseline.
+**Capability baseline (decided, OQ-P13):** native tool calling, streaming, a context window of at least 128k tokens, and vision (image input). Checked by the capability probe on first use. Native tool calling is required: a model that fails the tool-calling probe is rejected with a clear error. A model below the context or vision baseline can still be selected but runs as a flagged, degraded tier (no self-review without vision, aggressive compaction below 128k), which the evaluation suite does not certify; a managed configuration can forbid it. Certification targets for the evaluation suite: Claude through the Anthropic API or your internal gateway, and at least one open-weight model on your internal servers that meets the baseline.
 
 **Locality and audit.** The chat header names the provider, region, and whether the endpoint is internal or external. Every request writes an audit record locally: time, provider, model, token counts, and the list of reference excerpts and images included (by reference id and location, not content). The audit log can be exported for compliance review.
 

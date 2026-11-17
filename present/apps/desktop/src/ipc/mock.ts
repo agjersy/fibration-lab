@@ -109,9 +109,9 @@ export const MOCK_MODELS: ModelEntry[] = [
     name: "local/open-weights-32b",
     provider: "local",
     location: "internal",
-    capabilities: { context_window: 32_768, tools: "text-protocol", vision: false, documents: false, caching: false, probed_at: "2026-11-10T09:00:00Z" },
+    capabilities: { context_window: 32_768, tools: "native", vision: false, documents: false, caching: false, probed_at: "2026-11-10T09:00:00Z" },
     degraded: true,
-    degraded_reasons: ["no vision: slide images are not shown to the model", "tools through the text protocol", "context window below 100k tokens"],
+    degraded_reasons: ["no vision: slide images are not shown to the model", "context window below 100k tokens"],
   },
 ];
 

@@ -10,7 +10,7 @@ use crate::model::{
 use crate::probe_media;
 use crate::wire::{FIELD_CACHE_CONTROL, FIELD_DOCUMENT};
 use crate::{collect, ModelClient};
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -166,9 +166,53 @@ pub async fn probe_documents(client: &dyn ModelClient) -> bool {
         && mentions_number(&c.text, &code)
 }
 
+/// Apply the `[[models]]` config overrides on top of a capability record. Overrides always
+/// win, whether the record was just probed or came from the cache.
+pub fn apply_overrides(
+    mut caps: ModelCapabilities,
+    overrides: Option<&ModelConfig>,
+) -> ModelCapabilities {
+    if let Some(o) = overrides {
+        if let Some(t) = o.tools {
+            caps.tools = t;
+        }
+        if let Some(c) = o.context_window {
+            caps.context_window = c;
+        }
+        if let Some(v) = o.vision {
+            caps.vision = v;
+        }
+        caps.recompute_degraded();
+    }
+    caps
+}
+
+/// Why a model without native tool calling cannot be used, in words a user can act on.
+pub fn not_native_message(key: &str) -> String {
+    format!(
+        "model `{key}` does not support native tool calling, which this app requires: it did \
+         not call the tool the capability probe asked for. Choose a model with tool calling. \
+         If this model does support it, set `tools = \"native\"` for it under [[models]] in \
+         config.toml"
+    )
+}
+
+/// Refuse a capability record without native tool calling.
+pub fn require_native_tools(key: &str, caps: &ModelCapabilities) -> Result<()> {
+    if caps.tools == ToolSupport::Native {
+        Ok(())
+    } else {
+        Err(anyhow!(not_native_message(key)))
+    }
+}
+
 /// Probe a model: native tool calling, vision, documents, caching. `context_window` comes
 /// from the override or the model-info value when given, else the default. Overrides in the
 /// `[[models]]` entry win over probe results (and skip the corresponding request).
+///
+/// A probe that could not be completed (request or provider error) is an `Err`: it says
+/// nothing about the model and must not be recorded. A model that answered without calling
+/// the probe tool gets `tools: none`; `ensure` rejects such a record.
 ///
 /// The probe sends every optional request feature the adapter's wire format has; endpoints
 /// that reject one trigger the unknown-field downgrade, which is how `caching` and the
@@ -177,7 +221,7 @@ pub async fn probe(
     client: &dyn ModelClient,
     overrides: Option<&ModelConfig>,
     info_context_window: Option<u32>,
-) -> ModelCapabilities {
+) -> Result<ModelCapabilities> {
     let wire = client.wire_features();
     // Start optimistic and with no recorded rejections, so a re-probe notices an endpoint
     // that has since learned a field.
@@ -195,19 +239,24 @@ pub async fn probe(
             "Call the echo_probe tool with token \"{token}\". Do not reply with text."
         ))],
         tools: vec![probe_tool()],
-        max_tokens: Some(200),
+        max_tokens: Some(1024),
         temperature: None,
         audit_tag: Some("probe:tools".into()),
     };
     let c = collect(client.stream(req)).await;
-    let answered = c.stop.is_some() && c.stop != Some(StopReason::Error);
+    if c.stop.is_none() || c.stop == Some(StopReason::Error) {
+        return Err(anyhow!(
+            "capability probe failed: {}",
+            c.stop_message.unwrap_or_else(|| "no response".into())
+        ));
+    }
     let native = c.tool_calls.iter().any(|(_, name, args)| {
         name == "echo_probe" && args.get("token").and_then(Value::as_str) == Some(token.as_str())
     });
     let tools = match overrides.and_then(|o| o.tools) {
         Some(t) => t,
         None if native => ToolSupport::Native,
-        None => ToolSupport::TextProtocol,
+        None => ToolSupport::None,
     };
     let context_window = overrides
         .and_then(|o| o.context_window)
@@ -222,8 +271,7 @@ pub async fn probe(
     let mut unsupported_fields = client.unsupported_fields();
     unsupported_fields.sort();
     // The tool probe carried the caching markers (system prompt and tool definition).
-    let caching =
-        wire.caching && answered && !unsupported_fields.iter().any(|f| f == FIELD_CACHE_CONTROL);
+    let caching = wire.caching && !unsupported_fields.iter().any(|f| f == FIELD_CACHE_CONTROL);
     let mut caps = ModelCapabilities {
         context_window,
         tools,
@@ -237,7 +285,7 @@ pub async fn probe(
     };
     caps.recompute_degraded();
     client.apply_capabilities(&caps);
-    caps
+    Ok(caps)
 }
 
 /// Pull a context window out of a model-info JSON document from either provider family
@@ -278,8 +326,14 @@ pub fn context_window_from_info(info: &Value, model_id: &str) -> Option<u32> {
     scan(info)
 }
 
-/// Capabilities for a model, from cache or by probing; the result is cached and applied to
-/// the client.
+/// Capabilities for a model, from cache or by probing. Config overrides are applied on top
+/// in both cases, and the result is applied to the client.
+///
+/// Only a completed probe of a model with native tool calling is cached. A model without it
+/// is rejected with an error, and so is a probe that fails (the next call probes again),
+/// unless the config already says the model takes tools natively: then an unreachable
+/// provider does not block anything and an uncached record built from the overrides is
+/// returned.
 pub async fn ensure(
     home: &Path,
     key: &str,
@@ -288,13 +342,39 @@ pub async fn ensure(
     info_context_window: Option<u32>,
     force: bool,
 ) -> Result<ModelCapabilities> {
+    if let Some(o) = overrides {
+        if o.tools.is_some_and(|t| t != ToolSupport::Native) {
+            return Err(anyhow!(not_native_message(key)));
+        }
+    }
     if !force {
-        if let Some(c) = cached(home, key).filter(|c| !c.probed_at.is_empty()) {
+        // A stub (empty `probed_at`) is not a probe result, and a record without native
+        // tools (written by an earlier version) is probed again rather than trusted.
+        let hit =
+            cached(home, key).filter(|c| !c.probed_at.is_empty() && c.tools == ToolSupport::Native);
+        if let Some(c) = hit {
+            let c = apply_overrides(c, overrides);
             client.apply_capabilities(&c);
             return Ok(c);
         }
     }
-    let caps = probe(client, overrides, info_context_window).await;
+    let caps = match probe(client, overrides, info_context_window).await {
+        Ok(caps) => caps,
+        Err(_) if overrides.is_some_and(|o| o.tools == Some(ToolSupport::Native)) => {
+            let caps = apply_overrides(
+                ModelCapabilities {
+                    context_window: info_context_window.unwrap_or(DEFAULT_CONTEXT_WINDOW),
+                    unsupported_fields: client.unsupported_fields(),
+                    ..ModelCapabilities::default()
+                },
+                overrides,
+            );
+            client.apply_capabilities(&caps);
+            return Ok(caps);
+        }
+        Err(e) => return Err(e),
+    };
+    require_native_tools(key, &caps)?;
     store(home, key, &caps)?;
     Ok(caps)
 }
@@ -358,45 +438,158 @@ mod tests {
     use futures::StreamExt;
 
     #[tokio::test]
-    async fn probe_detects_native_and_text_protocol() {
-        let native = ScriptedModelClient::new(vec![]);
-        // The scripted client cannot know the token in advance, so emulate by inspecting the
-        // request after the fact: run once with a wrong token (text-protocol) and once with a
-        // client that echoes whatever it is asked.
-        let caps = probe(&native, None, None).await;
-        assert_eq!(caps.tools, ToolSupport::TextProtocol);
+    async fn probe_detects_native_tools_and_ensure_rejects_the_rest() {
+        // The scripted client answers in prose: it never calls the probe tool.
+        let prose = ScriptedModelClient::new(vec![]);
+        let caps = probe(&prose, None, None).await.unwrap();
+        assert_eq!(caps.tools, ToolSupport::None);
         assert_eq!(caps.context_window, DEFAULT_CONTEXT_WINDOW);
         assert!(!caps.vision && !caps.documents && !caps.caching);
-        assert!(caps.degraded);
         assert_eq!(
             caps.degraded_reasons,
             vec![REASON_TOOLS, REASON_CONTEXT, REASON_VISION]
         );
         assert_eq!(
-            native.calls(),
+            prose.calls(),
             2,
             "tool probe and vision probe; no document probe"
         );
 
-        let caps = probe(&Echo { vision: false }, None, Some(65536)).await;
+        // `ensure` refuses such a model with an explanation and remembers nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let err = ensure(dir.path(), "p/prose", &prose, None, None, false)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("p/prose") && err.contains("native tool calling"),
+            "{err}"
+        );
+        assert!(cached(dir.path(), "p/prose").is_none());
+
+        let caps = probe(&Echo { vision: false }, None, Some(65536))
+            .await
+            .unwrap();
         assert_eq!(caps.tools, ToolSupport::Native);
         assert_eq!(caps.context_window, 65536);
         assert!(!caps.vision);
         assert_eq!(caps.degraded_reasons, vec![REASON_CONTEXT, REASON_VISION]);
 
-        let dir = tempfile::tempdir().unwrap();
         store(dir.path(), "p/m", &caps).unwrap();
         let back = cached(dir.path(), "p/m").unwrap();
         assert_eq!(back, caps);
-        let ensured = ensure(dir.path(), "p/m", &native, None, None, false)
+        let ensured = ensure(dir.path(), "p/m", &prose, None, None, false)
             .await
             .unwrap();
         assert_eq!(ensured.tools, ToolSupport::Native, "cache wins");
     }
 
+    /// Records written before the text-protocol tier was removed still load; they are not
+    /// trusted, so the model is probed again.
+    #[tokio::test]
+    async fn legacy_text_protocol_records_load_and_are_probed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            cache_path(dir.path()),
+            r#"{"p/m": {"context_window": 32768, "tools": "text-protocol", "vision": false, "probed_at": "2026-01-01T00:00:00Z"}}"#,
+        )
+        .unwrap();
+        assert_eq!(cached(dir.path(), "p/m").unwrap().tools, ToolSupport::None);
+        let caps = ensure(
+            dir.path(),
+            "p/m",
+            &Echo { vision: false },
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(caps.tools, ToolSupport::Native);
+        assert_eq!(
+            cached(dir.path(), "p/m").unwrap().tools,
+            ToolSupport::Native
+        );
+        // A `[[models]]` entry that still says `text-protocol` is refused before any request.
+        let o: ModelConfig =
+            serde_json::from_value(json!({"provider": "p", "id": "x", "tools": "text-protocol"}))
+                .unwrap();
+        let client = ScriptedModelClient::new(vec![]);
+        let err = ensure(dir.path(), "p/x", &client, Some(&o), None, false).await;
+        assert!(err.unwrap_err().to_string().contains("native tool calling"));
+        assert_eq!(client.calls(), 0);
+    }
+
+    struct Failing;
+    impl ModelClient for Failing {
+        fn stream(&self, req: ChatRequest) -> futures::stream::BoxStream<'static, ModelEvent> {
+            assert!(req.temperature.is_none(), "probes send no temperature");
+            Box::pin(futures::stream::iter(vec![ModelEvent::Stop {
+                reason: StopReason::Error,
+                message: Some("HTTP 529: overloaded".into()),
+            }]))
+        }
+        fn model_id(&self) -> &str {
+            "failing"
+        }
+    }
+
+    /// B5: a failed probe is not remembered, and overrides beat the cache.
+    #[tokio::test]
+    async fn failed_probe_is_not_cached_and_overrides_always_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = ensure(dir.path(), "p/m", &Failing, None, None, false).await;
+        assert!(err.unwrap_err().to_string().contains("overloaded"));
+        assert!(
+            cached(dir.path(), "p/m").is_none(),
+            "failure must not be cached"
+        );
+        // The next attempt probes again and succeeds.
+        let ok = ensure(
+            dir.path(),
+            "p/m",
+            &Echo { vision: false },
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok.tools, ToolSupport::Native);
+        assert!(!ok.vision);
+        // An override wins over the cached record without re-probing.
+        let o = ModelConfig {
+            provider: "p".into(),
+            id: "m".into(),
+            context_window: Some(200_000),
+            tools: Some(ToolSupport::Native),
+            vision: Some(true),
+            max_output_tokens: Some(8000),
+        };
+        let with = ensure(dir.path(), "p/m", &Failing, Some(&o), None, false)
+            .await
+            .unwrap();
+        assert_eq!(with.context_window, 200_000);
+        assert!(with.vision && !with.degraded);
+        let stored = cached(dir.path(), "p/m").unwrap();
+        assert_eq!(stored.context_window, DEFAULT_CONTEXT_WINDOW);
+        assert!(!stored.vision);
+        // With `tools` configured, an unreachable provider does not block anything, and
+        // nothing is cached from the failure.
+        let fresh = tempfile::tempdir().unwrap();
+        let caps = ensure(fresh.path(), "p/m", &Failing, Some(&o), None, false)
+            .await
+            .unwrap();
+        assert_eq!(caps.tools, ToolSupport::Native);
+        assert_eq!(caps.context_window, 200_000);
+        assert!(cached(fresh.path(), "p/m").is_none());
+    }
+
     #[tokio::test]
     async fn baseline_model_is_not_degraded() {
-        let caps = probe(&Echo { vision: true }, None, Some(200_000)).await;
+        let caps = probe(&Echo { vision: true }, None, Some(200_000))
+            .await
+            .unwrap();
         assert!(caps.vision);
         assert_eq!(caps.tools, ToolSupport::Native);
         assert!(!caps.degraded, "{:?}", caps.degraded_reasons);
@@ -415,7 +608,7 @@ mod tests {
             vision: Some(true),
             max_output_tokens: None,
         };
-        let caps = probe(&client, Some(&overrides), Some(4096)).await;
+        let caps = probe(&client, Some(&overrides), Some(4096)).await.unwrap();
         assert_eq!(client.calls(), 1);
         assert_eq!(caps.context_window, 1_000_000);
         assert!(caps.vision && !caps.degraded);
@@ -433,12 +626,20 @@ mod tests {
         );
         assert!(stub.probed_at.is_empty());
 
-        let client = ScriptedModelClient::new(vec![]);
-        let caps = ensure(dir.path(), "p/m", &client, None, None, false)
-            .await
-            .unwrap();
-        assert!(client.calls() > 0, "a stub does not suppress the probe");
-        assert!(!caps.probed_at.is_empty());
+        let caps = ensure(
+            dir.path(),
+            "p/m",
+            &Echo { vision: false },
+            None,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !caps.probed_at.is_empty(),
+            "a stub does not suppress the probe"
+        );
         assert_eq!(cached(dir.path(), "p/m").unwrap(), caps);
     }
 

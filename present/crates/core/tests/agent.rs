@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use wb_policy::{EditGate, Level, Policy};
-use wb_providers::model::{ContentPart, ModelCapabilities, ModelEvent, StopReason, ToolSupport};
+use wb_providers::model::{ContentPart, ModelCapabilities, ModelEvent, StopReason};
 use wb_providers::ScriptedModelClient;
 use wb_transcript::TranscriptStore;
 
@@ -825,20 +825,20 @@ async fn max_steps_bounds_the_loop_and_model_errors_surface() {
 }
 
 #[tokio::test]
-async fn text_protocol_fallback_and_resume_from_transcript() {
+async fn a_conversation_resumes_from_its_transcript() {
     let Some(rig) = rig("plain").await else {
         return;
     };
     seed(&rig, "s-aaaa", "Slide A", false);
-    let fenced =
-        "Reading the deck.\n```tool_call\n{\"name\": \"deck_outline\", \"arguments\": {}}\n```\n";
     let model = Arc::new(ScriptedModelClient::new(vec![
-        vec![text(fenced)],
+        vec![
+            text("Reading the deck."),
+            call("t1", "deck_outline", json!({})),
+            stop_tools(),
+        ],
         vec![text("The deck has one slide.")],
     ]));
-    let mut degraded = caps(false);
-    degraded.tools = ToolSupport::TextProtocol;
-    let config = AgentConfig::new(Mode::Build, "scripted/model", degraded.clone(), 6);
+    let config = AgentConfig::new(Mode::Build, "scripted/model", caps(false), 6);
     let mut agent = Agent::new(
         model.clone(),
         rig.ws.clone(),
@@ -850,16 +850,9 @@ async fn text_protocol_fallback_and_resume_from_transcript() {
     );
     let summary = agent.run_turn("What is in the deck?").await.unwrap();
     assert_eq!(summary.tool_calls, 1);
-    assert!(
-        model.recorded()[0].tools.is_empty()
-            && model.recorded()[0]
-                .system
-                .clone()
-                .unwrap()
-                .contains("tool_call")
-    );
-    let last = model.recorded()[1].messages.last().unwrap().text();
-    assert!(last.contains("tool_result") && last.contains("s-aaaa"));
+    assert!(!model.recorded()[0].tools.is_empty());
+    let results = tool_results(&model, 1);
+    assert!(results[0].0 && results[0].1.to_string().contains("s-aaaa"));
     // A new agent on the same conversation rebuilds its history from the transcript.
     let model2 = Arc::new(ScriptedModelClient::new(vec![vec![text(
         "Still one slide.",
@@ -877,5 +870,12 @@ async fn text_protocol_fallback_and_resume_from_transcript() {
     resumed.run_turn("And now?").await.unwrap();
     let history = &model2.recorded()[0].messages;
     assert!(history.len() >= 4 && history[0].text().contains("What is in the deck?"));
+    assert!(
+        history[1]
+            .content
+            .iter()
+            .any(|p| matches!(p, ContentPart::ToolCall { name, .. } if name == "deck_outline")),
+        "the replayed history carries native tool calls"
+    );
     assert!(history.last().unwrap().text().contains("And now?"));
 }

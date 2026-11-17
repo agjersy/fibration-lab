@@ -76,7 +76,7 @@ interface EqCheck {
 }
 interface PackageInfo { name: string; version: string; locked: boolean }
 interface ModelEntry { name: string; provider: string; id: string; kind: "openai-compatible" | "anthropic"; local: boolean;
-                       capabilities: { context_window: number; tools: "native" | "text-protocol" | "none"; vision: boolean } | null }
+                       capabilities: { context_window: number; tools: "native" | "none"; vision: boolean } | null }
 interface TargetInfo { name: string; kind: "local" | "ssh"; host: string | null; remote_root: string | null; sandbox: string; data_dirs: string[]; bootstrapped: boolean | null }
 
 interface ProposalView {

@@ -669,7 +669,9 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         },
     )
     .unwrap();
-    let caps = capabilities::probe(client.as_ref(), None, Some(32_000)).await;
+    let caps = capabilities::probe(client.as_ref(), None, Some(32_000))
+        .await
+        .unwrap();
     assert!(caps.caching && caps.documents && !caps.vision);
     assert!(caps.unsupported_fields.is_empty());
     assert!(caps.degraded);
@@ -683,7 +685,7 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         .body_text()
         .contains("cache_control"));
 
-    // A chat-completions model that answers in prose: text protocol, no documents/caching.
+    // A chat-completions model that answers in prose: no native tools, no documents/caching.
     let server = TestServer::start(|_, _| Reply::sse(OPENAI_TEXT)).await;
     let mut p = provider(ProviderKind::OpenAiCompatible, server.url());
     p.auth = Some(AuthKind::None);
@@ -697,8 +699,10 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         },
     )
     .unwrap();
-    let caps = capabilities::probe(client.as_ref(), None, None).await;
-    assert_eq!(caps.tools, ToolSupport::TextProtocol);
+    let caps = capabilities::probe(client.as_ref(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(caps.tools, ToolSupport::None);
     assert!(!caps.vision && !caps.documents && !caps.caching);
     assert_eq!(
         caps.degraded_reasons,

@@ -1,12 +1,11 @@
 //! Model provider layer (PROTOCOL 4, ARCHITECTURE 5.10): one `ModelClient` trait, two wire
-//! adapters, SSE parsing, capability probing, and the text-protocol fallback.
+//! adapters, SSE parsing, and capability probing (native tool calling is required).
 
 pub mod anthropic;
 pub mod capabilities;
 pub mod names;
 pub mod openai_compat;
 pub mod sse;
-pub mod text_protocol;
 
 use crate::config::ResolvedModel;
 use analyst_protocol::config::ProviderKind;

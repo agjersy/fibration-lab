@@ -355,7 +355,7 @@ pub struct SnapshotView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CapabilitiesView {
     pub context_window: u32,
-    /// `native` | `text-protocol` | `none`.
+    /// `native` | `none` (a model without native tool calling cannot be used).
     pub tools: String,
     pub vision: bool,
     pub documents: bool,

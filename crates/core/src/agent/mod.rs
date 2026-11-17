@@ -21,13 +21,12 @@ pub use approver::{
 
 use crate::checkpoint;
 use crate::policy::{Decision as PolicyDecision, Policy, ScopeChange};
-use crate::providers::text_protocol;
 use crate::providers::ModelClient;
 use crate::tools::proposals::{self, Proposal};
 use crate::tools::registry::{self, ToolClass};
 use crate::tools::ToolContext;
 use crate::util::{estimate_tokens, now_rfc3339, truncate_bytes};
-use analyst_protocol::config::{ToolSupport, DEFAULT_MAX_OUTPUT_TOKENS};
+use analyst_protocol::config::DEFAULT_MAX_OUTPUT_TOKENS;
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::{Diagnostic, Severity};
 use analyst_protocol::model::{
@@ -216,7 +215,6 @@ impl Agent {
     /// finished) the declared scope from a stored transcript, so a reopened conversation
     /// continues where it stopped (A11). Replaces any state the agent had.
     pub fn rehydrate(&mut self, events: &[Event]) {
-        let text_protocol = self.uses_text_protocol();
         let mut history: Vec<Message> = Vec::new();
         let mut pinned: Vec<String> = Vec::new();
         let mut scope: Option<Vec<String>> = None;
@@ -258,19 +256,10 @@ impl Agent {
                 } => {
                     calls.insert(id.clone(), (name.clone(), arguments.clone()));
                     self.used_call_ids.insert(id.clone());
-                    let part = if text_protocol {
-                        ContentPart::Text {
-                            text: format!(
-                                "```tool_call\n{}\n```",
-                                json!({"name": name, "arguments": arguments})
-                            ),
-                        }
-                    } else {
-                        ContentPart::ToolCall {
-                            id: id.clone(),
-                            name: name.clone(),
-                            arguments: arguments.clone(),
-                        }
+                    let part = ContentPart::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
                     };
                     push(&mut history, Role::Assistant, part);
                 }
@@ -297,16 +286,10 @@ impl Agent {
                             _ => {}
                         }
                     }
-                    let part = if text_protocol {
-                        ContentPart::Text {
-                            text: text_protocol::format_result(name, result),
-                        }
-                    } else {
-                        ContentPart::ToolResult {
-                            tool_call_id: id.clone(),
-                            content: serde_json::to_string(result).unwrap_or_default(),
-                            is_error: !*ok,
-                        }
+                    let part = ContentPart::ToolResult {
+                        tool_call_id: id.clone(),
+                        content: serde_json::to_string(result).unwrap_or_default(),
+                        is_error: !*ok,
                     };
                     push(&mut history, Role::User, part);
                 }
@@ -331,10 +314,6 @@ impl Agent {
         self.mid_turn = false;
         self.touched.clear();
         self.compact_floor = 0;
-    }
-
-    fn uses_text_protocol(&self) -> bool {
-        !matches!(self.config.caps.tools, ToolSupport::Native)
     }
 
     fn record(&self, event: Event) -> Result<()> {
@@ -365,12 +344,6 @@ impl Agent {
                 s.push('\n');
             }
         }
-        if self.uses_text_protocol() {
-            s.push_str("\n\n");
-            s.push_str(&text_protocol::instructions(&registry::defs_for_mode(
-                self.config.mode,
-            )));
-        }
         s
     }
 
@@ -379,11 +352,7 @@ impl Agent {
             model: self.model.model_id().to_string(),
             system: Some(self.system_prompt()),
             messages: self.history.clone(),
-            tools: if self.uses_text_protocol() {
-                vec![]
-            } else {
-                registry::defs_for_mode(self.config.mode)
-            },
+            tools: registry::defs_for_mode(self.config.mode),
             max_tokens: Some(self.config.effective_max_tokens()),
         }
     }
@@ -569,24 +538,8 @@ impl Agent {
                 return Err(anyhow!("model error: {msg}"));
             }
 
-            let (clean_text, mut calls) = if self.uses_text_protocol() {
-                let (t, parsed) = text_protocol::parse_tool_calls(&c.text);
-                let calls = parsed
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        (
-                            format!("tc-{}-{}-{i}", self.turn_counter, st.summary.steps),
-                            p.name,
-                            p.arguments,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                (t, calls)
-            } else {
-                (c.text.clone(), vec![])
-            };
-            calls.extend(c.calls.clone());
+            let clean_text = c.text.clone();
+            let mut calls = c.calls.clone();
             // Ids key the results in the next request and in the transcript.
             for (i, call) in calls.iter_mut().enumerate() {
                 if call.0.is_empty() || !self.used_call_ids.insert(call.0.clone()) {
@@ -610,13 +563,7 @@ impl Agent {
                 })?;
                 st.last_text = clean_text.clone();
             }
-            if self.uses_text_protocol() {
-                if !c.text.trim().is_empty() {
-                    assistant_parts.push(ContentPart::Text {
-                        text: c.text.clone(),
-                    });
-                }
-            } else if has_text {
+            if has_text {
                 assistant_parts.push(ContentPart::Text {
                     text: clean_text.clone(),
                 });
@@ -628,13 +575,11 @@ impl Agent {
                     name: name.clone(),
                     arguments: args.clone(),
                 })?;
-                if !self.uses_text_protocol() {
-                    assistant_parts.push(ContentPart::ToolCall {
-                        id: id.clone(),
-                        name: name.clone(),
-                        arguments: args.clone(),
-                    });
-                }
+                assistant_parts.push(ContentPart::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                });
             }
             if assistant_parts.is_empty() {
                 assistant_parts.push(ContentPart::Text {
@@ -677,17 +622,11 @@ impl Agent {
                 }
                 // The result goes into the history before anything that can fail, so a call
                 // is never left without its result.
-                if self.uses_text_protocol() {
-                    result_parts.push(ContentPart::Text {
-                        text: text_protocol::format_result(model_name, &outcome.result),
-                    });
-                } else {
-                    result_parts.push(ContentPart::ToolResult {
-                        tool_call_id: id.clone(),
-                        content: serde_json::to_string(&outcome.result).unwrap_or_default(),
-                        is_error: !outcome.ok,
-                    });
-                }
+                result_parts.push(ContentPart::ToolResult {
+                    tool_call_id: id.clone(),
+                    content: serde_json::to_string(&outcome.result).unwrap_or_default(),
+                    is_error: !outcome.ok,
+                });
                 if let Err(e) = self.record(Event::ToolResult {
                     ts: now_rfc3339(),
                     id: id.clone(),
@@ -1034,12 +973,8 @@ impl Agent {
     /// Tokens the request spends before any history: system prompt plus tool definitions.
     fn overhead_tokens(&self) -> usize {
         let mut n = estimate_tokens(&self.system_prompt());
-        if !self.uses_text_protocol() {
-            for d in registry::defs_for_mode(self.config.mode) {
-                n += estimate_tokens(&d.description)
-                    + estimate_tokens(&d.parameters.to_string())
-                    + 10;
-            }
+        for d in registry::defs_for_mode(self.config.mode) {
+            n += estimate_tokens(&d.description) + estimate_tokens(&d.parameters.to_string()) + 10;
         }
         n
     }
@@ -1697,32 +1632,6 @@ mod tests {
         assert!(s.stopped_by_max_steps);
         assert_eq!(model.calls(), 3);
         assert!(s.open_issues.iter().any(|i| i.contains("max_steps")));
-    }
-
-    #[tokio::test]
-    async fn text_protocol_fallback_parses_fenced_calls() {
-        let (_h, _r, ctx, policy) = setup(EditPolicy::Review, Mode::Plan);
-        let model = Arc::new(ScriptedModelClient::new(vec![
-            vec![ModelEvent::Text { delta: "Let me look.\n```tool_call\n{\"name\": \"fs_read\", \"arguments\": {\"path\": \"scripts/a.py\"}}\n```\n".into() }],
-            vec![ModelEvent::Text { delta: "It prints hello.".into() }],
-        ]));
-        let mut a = agent(model.clone(), ctx, policy, Arc::new(RejectAllApprover), 10);
-        a.config.caps.tools = ToolSupport::TextProtocol;
-        let s = a.run_turn("what does a.py do").await.unwrap();
-        assert_eq!(s.tool_calls, 1);
-        assert_eq!(s.tool_errors, 0);
-        assert_eq!(s.text, "It prints hello.");
-        let reqs = model.recorded();
-        assert!(reqs[0].tools.is_empty());
-        assert!(reqs[0].system.as_ref().unwrap().contains("```tool_call"));
-        let res = &reqs[1].messages[2];
-        match &res.content[0] {
-            ContentPart::Text { text } => {
-                assert!(text.starts_with("tool_result fs_read:"));
-                assert!(text.contains("hello"));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
     }
 
     #[tokio::test]

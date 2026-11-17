@@ -356,7 +356,7 @@ Pausing on "ask" is a real pause: the model's partial turn is held, the user act
 
 **Reuse before writing.** The system prompt requires the agent to consult `lib.index` and `fs.search` before defining a new function, and to extend or call an existing library function when one covers the need. The checker enforces the result (5.13).
 
-**Capability baseline and fallback.** The loop targets models with native tool calling, streaming, and a context window of at least 32k tokens; this is the definition of a "performant model" for this product. Models that fail the tool-calling probe (5.10) can run through a text protocol (fenced JSON blocks) that the core parses. It is a degraded tier, flagged in the UI, not a supported mode for the eval suite.
+**Capability baseline.** The loop requires models with native tool calling and targets streaming and a context window of at least 32k tokens; this is the definition of a "performant model" for this product. A model that fails the tool-calling probe (5.10) is rejected with an error that says so; there is no text-protocol fallback.
 
 ### 5.8 Policy engine and edit gating (D7)
 

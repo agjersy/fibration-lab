@@ -118,7 +118,7 @@ pub async fn probe(
             tools: if native {
                 ToolSupport::Native
             } else {
-                ToolSupport::TextProtocol
+                ToolSupport::None
             },
             vision: false,
             probed_at: crate::util::now_rfc3339(),
@@ -166,6 +166,12 @@ pub fn context_window_from_info(info: &Value, model_id: &str) -> Option<u32> {
     scan(info)
 }
 
+fn not_native(key: &str) -> anyhow::Error {
+    anyhow!(
+        "model `{key}` does not support native tool calling, which this app requires: it did not call the tool the capability probe asked for. Choose a model with tool calling. If this model does support it, set `tools = \"native\"` for it under [[models]] in config.toml"
+    )
+}
+
 /// Capabilities for a model, from cache or by probing. Config overrides are applied on top in
 /// both cases. Only a completed probe is cached; when the probe fails the error is returned
 /// (unless the config already says how the model takes tools, in which case no probe is
@@ -178,8 +184,12 @@ pub async fn ensure(
     info_context_window: Option<u32>,
     force: bool,
 ) -> Result<ModelCapabilities> {
+    if overrides.is_some_and(|o| o.tools.is_some_and(|t| t != ToolSupport::Native)) {
+        return Err(not_native(key));
+    }
     if !force {
-        if let Some(c) = cached(home, key) {
+        // A record without native tools (from an earlier version) is probed again.
+        if let Some(c) = cached(home, key).filter(|c| c.tools == ToolSupport::Native) {
             return Ok(apply_overrides(c, overrides));
         }
     }
@@ -195,6 +205,9 @@ pub async fn ensure(
         ));
     }
     let caps = probe(client, None, info_context_window).await?;
+    if caps.tools != ToolSupport::Native {
+        return Err(not_native(key));
+    }
     store(home, key, &caps)?;
     Ok(apply_overrides(caps, overrides))
 }
@@ -206,13 +219,13 @@ mod tests {
     use analyst_protocol::model::ModelEvent;
 
     #[tokio::test]
-    async fn probe_detects_native_and_text_protocol() {
+    async fn probe_detects_native_tools() {
         let native = ScriptedModelClient::new(vec![]);
         // The scripted client cannot know the token in advance, so emulate by inspecting the
         // request after the fact: run once with a wrong token (text-protocol) and once with a
         // client that echoes whatever it is asked.
         let caps = probe(&native, None, None).await.unwrap();
-        assert_eq!(caps.tools, ToolSupport::TextProtocol);
+        assert_eq!(caps.tools, ToolSupport::None);
         assert_eq!(caps.context_window, DEFAULT_CONTEXT_WINDOW);
 
         struct Echo;
@@ -286,18 +299,21 @@ mod tests {
             cached(dir.path(), "p/m").is_none(),
             "failure must not be cached"
         );
-        // The next attempt probes again and succeeds.
-        let ok = ensure(
+        // The next attempt probes again; a model that answers in prose is rejected, and that
+        // is not cached either.
+        let prose = ScriptedModelClient::new(vec![]);
+        let err = ensure(dir.path(), "p/m", &prose, None, None, false).await;
+        assert!(err.unwrap_err().to_string().contains("native tool calling"));
+        assert!(cached(dir.path(), "p/m").is_none());
+        store(
             dir.path(),
             "p/m",
-            &ScriptedModelClient::new(vec![]),
-            None,
-            None,
-            false,
+            &ModelCapabilities {
+                probed_at: "t".into(),
+                ..Default::default()
+            },
         )
-        .await
         .unwrap();
-        assert_eq!(ok.tools, ToolSupport::TextProtocol);
         // An override wins over the cached record without re-probing.
         let o = ModelConfig {
             provider: "p".into(),
@@ -314,10 +330,7 @@ mod tests {
         assert_eq!(with.context_window, 200_000);
         assert!(with.vision);
         assert_eq!(with.max_output_tokens, Some(8000));
-        assert_eq!(
-            cached(dir.path(), "p/m").unwrap().tools,
-            ToolSupport::TextProtocol
-        );
+        assert_eq!(cached(dir.path(), "p/m").unwrap().context_window, 32768);
         // With `tools` configured, an unreachable provider does not block anything.
         let fresh = tempfile::tempdir().unwrap();
         let caps = ensure(fresh.path(), "p/m", &Failing, Some(&o), None, false)

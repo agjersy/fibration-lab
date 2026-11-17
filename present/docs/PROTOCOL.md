@@ -472,7 +472,7 @@ deck.save()                                    # writes to the output path provi
 
 ### 6.1 Model wire mapping
 
-Identical to Analyst PROTOCOL section 4 (tool name mapping `.` to `_` and `mcp.<server>.<tool>` to `mcp__<server>__<tool>`, both adapters, the internal `ModelEvent` stream, the text-protocol fallback), with these additions:
+Identical to Analyst PROTOCOL section 4 (tool name mapping `.` to `_` and `mcp.<server>.<tool>` to `mcp__<server>__<tool>`, both adapters, the internal `ModelEvent` stream; native tool calling is required and a model that fails the tool-calling probe is rejected), with these additions:
 
 - **Auth and headers:** `auth = "bearer"` sends `Authorization: Bearer <key>` instead of `x-api-key`; `headers` are added to every request.
 - **Network:** every request is built by the network gate (`wb_net::gate().request`), which refuses any host and port that is not a configured provider `base_url` and records the decision in `<home>/egress.jsonl`. Connections are direct (no proxy) and verified against the bundled web trust roots (no custom CA bundle).

@@ -105,7 +105,7 @@ const MODELS: ModelEntry[] = [
     id: "qwen2.5-coder:32b",
     kind: "openai-compatible",
     local: true,
-    capabilities: { context_window: 32768, tools: "text-protocol", vision: false },
+    capabilities: { context_window: 32768, tools: "native", vision: false },
   },
   {
     name: "claude-sonnet-4-5",

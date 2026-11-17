@@ -349,7 +349,7 @@ mod tests {
         assert!(!c.degraded, "exactly 131072 meets the baseline");
 
         c.context_window = BASELINE_CONTEXT_WINDOW - 1;
-        c.tools = ToolSupport::TextProtocol;
+        c.tools = ToolSupport::None;
         c.vision = false;
         c.recompute_degraded();
         assert!(c.degraded);

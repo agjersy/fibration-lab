@@ -4,7 +4,7 @@
 // `ModelClient` gains optional capability hooks; `collect` gathers citations.
 //! Shared-to-be crate `wb-providers` (BUILD-SPEC section 4): one `ModelClient` trait, two
 //! wire adapters (OpenAI-compatible chat completions and Anthropic Messages), SSE parsing,
-//! capability probing, the text-protocol fallback, and gateway support: configurable auth,
+//! capability probing (native tool calling is required), and gateway support: configurable auth,
 //! extra headers, key lookup, the unknown-field downgrade, and an audit hook (Present
 //! PROTOCOL 4.1, 6.1, 10).
 //!
@@ -27,7 +27,6 @@ pub mod names;
 pub mod openai_compat;
 pub mod probe_media;
 pub mod sse;
-pub mod text_protocol;
 pub mod wire;
 
 pub use audit::{AuditRecord, AuditSink, AuditStatus};
