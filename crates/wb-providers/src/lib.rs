@@ -1,12 +1,17 @@
 // Ported from Personal Analyst `crates/core/src/providers/mod.rs` at commit f229e4d.
 // Adapted: a self-contained crate (owns its request, event, and config types); `client_for`
-// takes the provider entry plus network, key store, audit sink, and capability cache;
+// takes the provider entry plus key store, audit sink, and capability cache;
 // `ModelClient` gains optional capability hooks; `collect` gathers citations.
 //! Shared-to-be crate `wb-providers` (BUILD-SPEC section 4): one `ModelClient` trait, two
 //! wire adapters (OpenAI-compatible chat completions and Anthropic Messages), SSE parsing,
 //! capability probing, the text-protocol fallback, and gateway support: configurable auth,
-//! extra headers, proxy and trust store, key storage, the unknown-field downgrade, and an
-//! audit hook (Present PROTOCOL 4.1, 6.1, 10).
+//! extra headers, key lookup, the unknown-field downgrade, and an audit hook (Present
+//! PROTOCOL 4.1, 6.1, 10).
+//!
+//! This crate builds no HTTP client. Every request is built by the network gate
+//! (`wb_net::gate().request`), which refuses any destination that is not an allowed model
+//! endpoint; `client_for` allows the provider's `base_url` there. Keys are read from the
+//! process environment or a `.env` file (`keys`).
 //!
 //! Must not depend on Present-specific crates. Nothing here is conditioned on a model or
 //! provider name; behavior follows the provider `kind` (wire format) and the capability
@@ -19,7 +24,6 @@ pub mod config;
 pub mod keys;
 pub mod model;
 pub mod names;
-pub mod network;
 pub mod openai_compat;
 pub mod probe_media;
 pub mod sse;
@@ -27,11 +31,8 @@ pub mod text_protocol;
 pub mod wire;
 
 pub use audit::{AuditRecord, AuditSink, AuditStatus};
-pub use config::{
-    AuthKind, CaBundle, Location, ModelConfig, NetworkConfig, ProviderConfig, ProviderKind,
-    ProxySetting, ToolSupport,
-};
-pub use keys::{EnvKeyStore, KeyError, KeyRef, KeyStore, KeyStores};
+pub use config::{AuthKind, Location, ModelConfig, ProviderConfig, ProviderKind, ToolSupport};
+pub use keys::{KeyError, KeyRef, KeyStores};
 pub use model::{
     ChatRequest, ContentPart, Message, ModelCapabilities, ModelEvent, Role, StopReason, ToolDef,
 };
@@ -63,7 +64,6 @@ pub trait ModelClient: Send + Sync {
 
 /// What `client_for` needs besides the provider entry.
 pub struct ClientOptions<'a> {
-    pub network: &'a NetworkConfig,
     pub keys: &'a KeyStores,
     pub audit: Option<Arc<dyn AuditSink>>,
     /// The application home holding `capabilities.json`. When given, the cached capability
@@ -77,15 +77,20 @@ pub fn capability_key(provider: &str, model_id: &str) -> String {
     format!("{provider}/{model_id}")
 }
 
-/// Build the client for a model on a configured provider.
+/// Build the client for a model on a configured provider. The provider's base URL becomes
+/// an allowed model endpoint at the network gate: this is how the allowlist is filled from
+/// the user's configuration.
 pub fn client_for(
     provider: &ProviderConfig,
     model_id: &str,
     opts: &ClientOptions<'_>,
 ) -> anyhow::Result<Arc<dyn ModelClient>> {
     let key = opts.keys.resolve(provider)?;
-    let http = network::build_http_client(opts.network)?;
-    let mut cfg = EndpointConfig::from_provider(provider, key, model_id, http);
+    let base_url = provider.effective_base_url();
+    wb_net::gate()
+        .allow_model_endpoint(&base_url)
+        .map_err(|e| anyhow::anyhow!("provider `{}`: invalid base_url: {e}", provider.name))?;
+    let mut cfg = EndpointConfig::from_provider(provider, key, model_id);
     cfg.audit = opts.audit.clone();
     if let Some(home) = opts.home {
         let cache_key = capability_key(&provider.name, model_id);

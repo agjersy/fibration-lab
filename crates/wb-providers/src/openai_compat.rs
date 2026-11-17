@@ -336,8 +336,8 @@ pub struct OpenAiCompatClient {
 }
 
 impl OpenAiCompatClient {
-    /// A client with bearer auth when a key is given and default network settings
-    /// (Analyst's constructor).
+    /// A client with bearer auth when a key is given (Analyst's constructor). The caller
+    /// allows `base_url` at the network gate (`wb_net::gate().allow_model_endpoint`).
     pub fn new(base_url: String, api_key: Option<String>, model: String) -> anyhow::Result<Self> {
         Self::from_endpoint(EndpointConfig {
             provider: String::new(),
@@ -351,7 +351,6 @@ impl OpenAiCompatClient {
             key: api_key,
             headers: BTreeMap::new(),
             model,
-            http: reqwest::Client::builder().build()?,
             audit: None,
             capabilities: None,
             capability_cache: None,
@@ -374,7 +373,7 @@ impl OpenAiCompatClient {
 
     /// `GET {base_url}/models`, raw JSON.
     pub async fn list_models(&self) -> anyhow::Result<Value> {
-        self.ep.get_json(self.models_url(), &[]).await
+        self.ep.get_json(self.models_url(), "probe", &[]).await
     }
 }
 

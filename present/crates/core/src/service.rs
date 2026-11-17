@@ -106,6 +106,8 @@ fn project_id(path: &Path) -> String {
 impl Workbench {
     pub fn new(home: &Path) -> Workbench {
         let _ = std::fs::create_dir_all(home);
+        // Every network decision from here on is recorded in `<home>/egress.jsonl`.
+        wb_net::init(home);
         Workbench {
             home: home.to_path_buf(),
             open: Mutex::new(HashMap::new()),

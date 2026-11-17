@@ -260,6 +260,8 @@ async fn main() {
 async fn run(cli: &Cli) -> Result<i32> {
     let home = cli.home.clone().unwrap_or_else(default_home);
     std::fs::create_dir_all(&home)?;
+    // Every network decision from here on is recorded in `<home>/egress.jsonl`.
+    wb_net::init(&home);
     match &cli.command {
         Command::Init {
             dir,
