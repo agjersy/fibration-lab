@@ -17,6 +17,8 @@ Every dependency added to the project is recorded here in the same commit.
 | schemars, ts-rs | MIT | schema and TypeScript generation |
 | rusqlite (bundled SQLite) | MIT (SQLite: public domain) | index |
 | zstd | MIT (zstd: BSD-3-Clause) | snapshot store |
+| keyring (optional feature `keychain`) | MIT OR Apache-2.0 | API keys in the OS keychain |
+| rcgen, tokio-rustls (dev only) | MIT OR Apache-2.0 | TLS and proxy tests of the provider layer |
 
 ## Python (fixed bundled set, PROTOCOL 1.3)
 
