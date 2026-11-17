@@ -1,4 +1,6 @@
-//! Shared-to-be crate `wb-sandbox` (BUILD-SPEC section 4). Must not depend on Present-specific crates.
+//! Shared crate `wb-sandbox`. Must not depend on workbench-specific crates.
+//!
+//! [`no_network`] wraps a long-lived process (a kernel, the terminal) so it has no network.
 //!
 //! Launches one command inside the code sandbox described in PROTOCOL.md section 9.
 //!
@@ -22,6 +24,7 @@ use std::time::Duration;
 
 pub mod cli;
 pub mod journal;
+pub mod no_network;
 pub mod quote;
 
 #[cfg(unix)]
