@@ -5,6 +5,18 @@ export interface TerminalTab {
   id: TerminalId;
   title: string;
   exit: number | null | undefined; // undefined = running
+  /** Whether the shell runs without network access, and how ("bwrap", "sandbox-exec", "none"). */
+  networkIsolated: boolean;
+  networkIsolation: string;
+  /** Why it is not isolated, when it is not. */
+  networkNote: string | null;
+}
+
+/** What `terminal_open` reports about a new shell's network isolation. */
+export interface TerminalIsolation {
+  isolated: boolean;
+  kind: string;
+  note: string | null;
 }
 
 interface TerminalsState {
@@ -12,7 +24,7 @@ interface TerminalsState {
   active: Record<SessionId, TerminalId | null>;
   /** Next "Terminal N" number per session, so titles are not reused after a close. */
   counter: Record<SessionId, number>;
-  add(session: SessionId, id: TerminalId): void;
+  add(session: SessionId, id: TerminalId, isolation: TerminalIsolation): void;
   remove(session: SessionId, id: TerminalId): void;
   setActive(session: SessionId, id: TerminalId | null): void;
   exited(id: TerminalId, code: number | null): void;
@@ -23,11 +35,11 @@ export const useTerminals = create<TerminalsState>((set, get) => ({
   terminals: {},
   active: {},
   counter: {},
-  add: (session, id) =>
+  add: (session, id, isolation) =>
     set((s) => {
       const n = (s.counter[session] ?? 0) + 1;
       return {
-        terminals: { ...s.terminals, [session]: [...(s.terminals[session] ?? []), { id, title: `Terminal ${n}`, exit: undefined }] },
+        terminals: { ...s.terminals, [session]: [...(s.terminals[session] ?? []), { id, title: `Terminal ${n}`, exit: undefined, networkIsolated: isolation.isolated, networkIsolation: isolation.kind, networkNote: isolation.note }] },
         active: { ...s.active, [session]: id },
         counter: { ...s.counter, [session]: n },
       };

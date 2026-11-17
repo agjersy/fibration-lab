@@ -8,7 +8,12 @@ import type { TargetKind } from "./TargetKind";
 /**
  * `SessionInfo extends SessionSummary`.
  */
-export type SessionInfo = { policy: PolicyView, kernel: KernelState, sandbox: string | null, python_abs: string | null, conversations: Array<ConversationSummary>, active_conversation: string, target_kind: TargetKind, target_host: string | null, 
+export type SessionInfo = { policy: PolicyView, kernel: KernelState, 
+/**
+ * How the kernel process is kept off the network: `"bwrap"`, `"sandbox-exec"`, or
+ * `"none"` (not isolated); null until a kernel has been started.
+ */
+kernel_network_isolation: string | null, sandbox: string | null, python_abs: string | null, conversations: Array<ConversationSummary>, active_conversation: string, target_kind: TargetKind, target_host: string | null, 
 /**
  * Proposals still awaiting a decision, so a reloaded renderer can show them again.
  */

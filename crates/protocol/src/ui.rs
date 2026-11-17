@@ -4,8 +4,7 @@
 //! `apps/desktop/src/ipc/generated/` together with an `index.ts` that re-exports them.
 
 use crate::config::{
-    AskPolicy, EditPolicy, NetworkPolicy, PolicyConfig, ProviderKind, RunPolicy, TargetKind,
-    ToolSupport,
+    AskPolicy, EditPolicy, PolicyConfig, ProviderKind, RunPolicy, TargetKind, ToolSupport,
 };
 use crate::evals::Mode;
 use crate::kernel::{Artifact, Diagnostic, FigureSidecar, LibFunction, RunMeta, ScriptInfo};
@@ -172,7 +171,6 @@ pub struct PolicyView {
     pub runs: RunPolicy,
     pub packages: AskPolicy,
     pub shell: AskPolicy,
-    pub network: NetworkPolicy,
     pub git: AskPolicy,
     pub protected: Vec<String>,
     pub max_steps: u32,
@@ -185,7 +183,6 @@ impl From<&PolicyConfig> for PolicyView {
             runs: c.runs,
             packages: c.packages,
             shell: c.shell,
-            network: c.network,
             git: c.git,
             protected: c.protected.clone(),
             max_steps: c.max_steps,
@@ -200,7 +197,6 @@ impl From<&PolicyView> for PolicyConfig {
             runs: v.runs,
             packages: v.packages,
             shell: v.shell,
-            network: v.network,
             git: v.git,
             protected: v.protected.clone(),
             max_steps: v.max_steps,
@@ -226,9 +222,6 @@ pub struct PolicyPatch {
     pub shell: Option<AskPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub network: Option<NetworkPolicy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
     pub git: Option<AskPolicy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -252,9 +245,6 @@ impl PolicyPatch {
         }
         if let Some(v) = self.shell {
             c.shell = v;
-        }
-        if let Some(v) = self.network {
-            c.network = v;
         }
         if let Some(v) = self.git {
             c.git = v;
@@ -286,6 +276,10 @@ pub struct SessionInfo {
     pub summary: SessionSummary,
     pub policy: PolicyView,
     pub kernel: KernelState,
+    /// How the kernel process is kept off the network: `"bwrap"`, `"sandbox-exec"`, or
+    /// `"none"` (not isolated); null until a kernel has been started.
+    #[serde(default)]
+    pub kernel_network_isolation: Option<String>,
     pub sandbox: Option<String>,
     pub python_abs: Option<String>,
     pub conversations: Vec<ConversationSummary>,
@@ -617,6 +611,9 @@ pub enum SessionEvent {
     KernelState {
         state: KernelState,
         message: Option<String>,
+        /// See `SessionInfo.kernel_network_isolation`.
+        #[serde(default)]
+        network_isolation: Option<String>,
     },
     PackagesChanged,
     TaskLog {
@@ -708,6 +705,7 @@ mod tests {
         // Root types; dependencies are exported alongside.
         AppInfo::export_all(&cfg).unwrap();
         ProviderKeyStatus::export_all(&cfg).unwrap();
+        TerminalOpened::export_all(&cfg).unwrap();
         SessionSummary::export_all(&cfg).unwrap();
         SessionInfo::export_all(&cfg).unwrap();
         PolicyView::export_all(&cfg).unwrap();
@@ -773,12 +771,27 @@ mod tests {
     }
 }
 
+/// Result of `terminal_open`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct TerminalOpened {
+    pub terminal_id: TerminalId,
+    /// Whether the shell runs without network access.
+    pub network_isolated: bool,
+    /// How: `"bwrap"`, `"sandbox-exec"`, or `"none"`.
+    pub network_isolation: String,
+    /// Why the shell is not isolated, when it is not.
+    pub network_isolation_note: Option<String>,
+}
+
 /// Where a provider's API key comes from (result rows of `provider_keys_status`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct ProviderKeyStatus {
     pub provider: String,
     pub has_key: bool,
-    /// `"env"` (the provider's `api_key_env` is set), `"stored"` (saved through the app), or null.
+    /// `"env"` (the variable is set in the app's environment), `"stored"` (found in
+    /// `$ANALYST_HOME/.env`, where keys saved through the app go), or null.
     pub source: Option<String>,
+    /// The variable that names the key: the provider's `api_key_env`, or the derived default
+    /// `<PROVIDER NAME>_API_KEY`.
     pub api_key_env: Option<String>,
 }

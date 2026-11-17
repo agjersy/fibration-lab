@@ -42,6 +42,7 @@ import type {
   TargetInfo,
   TaskId,
   TerminalId,
+  TerminalOpened,
   TranscriptEvent,
   TurnId,
 } from "./types";
@@ -135,7 +136,6 @@ const DEFAULT_POLICY: PolicyView = {
   runs: "auto",
   packages: "ask",
   shell: "ask",
-  network: "deny",
   git: "ask",
   protected: ["data/**", ".analyst/**"],
   max_steps: 40,
@@ -382,6 +382,7 @@ export class MockBackend implements Backend {
         open: true,
         policy: { ...DEFAULT_POLICY, protected: [...DEFAULT_POLICY.protected] },
         kernel: "starting",
+        kernel_network_isolation: t.sandbox === "bwrap" ? "bwrap" : "none",
         sandbox: t.sandbox,
         python_abs: t.kind === "local" ? `${repo}/.venv/bin/python` : `${t.remote_root}/${basename(repo)}/.venv/bin/python`,
         conversations: [conv.summary],
@@ -423,11 +424,11 @@ export class MockBackend implements Backend {
     void (async () => {
       await this.stream(20);
       if (!s.info.open || s.kernelEpoch !== epoch) return;
-      this.emit(s.info.id, { type: "kernel_state", state: "starting", message: null });
+      this.emit(s.info.id, { type: "kernel_state", state: "starting", message: null, network_isolation: this.netIsolation(s.info.id) });
       await this.stream(280);
       if (!s.info.open || s.kernelEpoch !== epoch) return;
       s.info.kernel = "ready";
-      this.emit(s.info.id, { type: "kernel_state", state: "ready", message: null });
+      this.emit(s.info.id, { type: "kernel_state", state: "ready", message: null, network_isolation: this.netIsolation(s.info.id) });
     })();
   }
 
@@ -908,6 +909,11 @@ export class MockBackend implements Backend {
 
   // ---- terminals ----
 
+  /** The isolation label of a session's kernel, as `kernel_state` events carry it. */
+  private netIsolation(session: SessionId): string | null {
+    return this.sessions.get(session)?.info.kernel_network_isolation ?? null;
+  }
+
   private termWrite(id: TerminalId, data: string): void {
     this.emit(this.terminals.get(id)?.session ?? "", { type: "terminal_data", terminal_id: id, data });
   }
@@ -1065,7 +1071,7 @@ export class MockBackend implements Backend {
           this.terminals.delete(id);
         }
       }
-      this.emit(session, { type: "kernel_state", state: "stopped", message: null });
+      this.emit(session, { type: "kernel_state", state: "stopped", message: null, network_isolation: this.netIsolation(session) });
       // Subscriptions end with the session; a later unsubscribe finds nothing.
       this.subscribers.delete(session);
       return null;
@@ -1090,7 +1096,7 @@ export class MockBackend implements Backend {
       const t = TARGETS.find((x) => x.name === target);
       if (!t) throw ipcError("not_found", `target ${target} not configured`);
       s.info.kernel = "starting";
-      this.emit(session, { type: "kernel_state", state: "starting", message: `binding to ${target}` });
+      this.emit(session, { type: "kernel_state", state: "starting", message: `binding to ${target}`, network_isolation: this.netIsolation(session) });
       return this.task(
         s,
         t.kind === "ssh" ? [`Connecting to ${t.host}...`, "Checking uv on target...", "Syncing mirror (rsync)...", "Creating venv..."] : ["Binding local environment...", "Syncing venv..."],
@@ -1099,8 +1105,9 @@ export class MockBackend implements Backend {
           s.info.target_kind = t.kind;
           s.info.target_host = t.host;
           s.info.sandbox = t.sandbox;
+          s.info.kernel_network_isolation = t.sandbox === "bwrap" ? "bwrap" : "none";
           s.info.kernel = "ready";
-          this.emit(session, { type: "kernel_state", state: "ready", message: null });
+          this.emit(session, { type: "kernel_state", state: "ready", message: null, network_isolation: this.netIsolation(session) });
           this.emit(session, { type: "session_changed", info: this.infoOf(s) });
         },
       );
@@ -1445,16 +1452,24 @@ export class MockBackend implements Backend {
       });
     },
 
-    terminal_open: ({ session }) => {
+    terminal_open: ({ session }): TerminalOpened => {
       const s = this.requireOpen(session);
       const id: TerminalId = `term${++this.seq}`;
+      // As the real backend: a local shell has no network; a remote one only where the
+      // host can run bubblewrap (the mock's cluster target cannot).
+      const isolated = s.info.kernel_network_isolation !== "none";
       this.terminals.set(id, { session, line: "", busy: false });
       void (async () => {
         await this.stream(150);
         this.termWrite(id, `Personal Analyst shell on ${s.info.target} (${s.info.repo_abs}), venv active\r\n`);
         this.prompt(id);
       })();
-      return id;
+      return {
+        terminal_id: id,
+        network_isolated: isolated,
+        network_isolation: isolated ? "bwrap" : "none",
+        network_isolation_note: isolated ? null : `bubblewrap is not usable on ${s.info.target}, so the remote shell keeps that host's network access`,
+      };
     },
 
     terminal_write: ({ terminal_id, data }) => {

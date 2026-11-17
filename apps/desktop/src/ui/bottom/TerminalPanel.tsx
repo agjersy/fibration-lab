@@ -34,6 +34,20 @@ export function TerminalPanel() {
         </button>
         <span className="grow" />
         {current ? (
+          // The shell's network state, as the backend reported it when the terminal opened.
+          <span
+            className={`badge ${current.networkIsolated ? "success" : "warning"}`}
+            data-testid="terminal-network"
+            title={
+              current.networkIsolated
+                ? `This shell and everything started from it have no network access (${current.networkIsolation}).`
+                : `This shell can reach the network: ${current.networkNote ?? "no network isolation is available on this machine"}.`
+            }
+          >
+            {current.networkIsolated ? "no network" : "network not isolated"}
+          </span>
+        ) : null}
+        {current ? (
           <button type="button" className="ghost small" onClick={() => void closeTerminal(session, current.id)} aria-label="Close terminal">
             ×
           </button>

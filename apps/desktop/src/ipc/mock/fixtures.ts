@@ -12,7 +12,6 @@ edits = "review"
 runs = "auto"
 packages = "ask"
 shell = "ask"
-network = "deny"
 git = "ask"
 protected = ["data/**", ".analyst/**"]
 max_steps = 40

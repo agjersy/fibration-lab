@@ -197,7 +197,7 @@ async fn real_kernel_session_index_check_run_figures_equations() {
 
     // Run it and collect the run events.
     let view = rt
-        .run_start("scripts/decay_sim.py", vec!["--n".into(), "7".into()], None)
+        .run_start("scripts/decay_sim.py", vec!["--n".into(), "7".into()])
         .await
         .unwrap();
     assert_eq!(view.meta.status, RunStatus::Running);

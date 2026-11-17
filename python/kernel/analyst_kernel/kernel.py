@@ -154,7 +154,6 @@ class Kernel:
             support_dirs=[self.mpl_dir / "analyst_mpl"],
             tooling_dir=tooling_dir(),
             derived_dir=derived if derived.is_dir() else None,
-            network=False,
             rlimit_as=self.config.rlimit_as(),
             rlimit_nofile=self.config.open_files,
         )
@@ -246,9 +245,10 @@ class Kernel:
         if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
             raise invalid_params("env must be an object of strings")
         timeout_s = _opt(params, "timeout_s", (int, float))
-        network = bool(_opt(params, "network", (bool,), False))
+        if params.get("network"):
+            raise invalid_params("runs never have network access; there is no `network` parameter")
         tree_hash = _opt(params, "tree_hash", (str,))
-        return self.runs.start(script, args, env, timeout_s, network, tree_hash)
+        return self.runs.start(script, args, env, timeout_s, tree_hash)
 
     def _run_id(self, params: dict[str, Any]) -> str:
         rid = params.get("run_id")

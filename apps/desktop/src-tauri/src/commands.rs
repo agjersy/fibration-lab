@@ -319,10 +319,9 @@ pub async fn run_start(
     session: String,
     script: String,
     args: Vec<String>,
-    network: Option<bool>,
 ) -> R<RunView> {
     rt_of(&state, &session)?
-        .run_start(&script, args, network)
+        .run_start(&script, args)
         .await
         .map_err(Into::into)
 }
@@ -593,7 +592,7 @@ pub async fn provider_keys_status(state: State<'_, AppState>) -> R<Vec<ProviderK
     Ok(state.workbench.provider_keys_status())
 }
 
-/// Store (or, with an empty key, remove) a provider's key in `$ANALYST_HOME/credentials.toml`.
+/// Store (or, with an empty key, remove) a provider's key in `$ANALYST_HOME/.env`.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn provider_key_set(state: State<'_, AppState>, provider: String, key: String) -> R<()> {
     state
@@ -624,10 +623,11 @@ pub async fn terminal_open(
     session: String,
     cols: u16,
     rows: u16,
-) -> R<TerminalId> {
+) -> R<TerminalOpened> {
     state
         .workbench
         .terminal_open(&session, cols, rows)
+        .await
         .map_err(Into::into)
 }
 

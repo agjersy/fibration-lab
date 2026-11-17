@@ -44,7 +44,6 @@ DEFAULT_POLICY: dict[str, Any] = {
     "runs": "auto",
     "packages": "ask",
     "shell": "ask",
-    "network": "deny",
     "git": "ask",
     "protected": [],
     "max_steps": 40,
@@ -181,6 +180,9 @@ def config_from_dict(data: dict[str, Any]) -> ProjectConfig:
     policy = dict(DEFAULT_POLICY)
     if isinstance(data.get("policy"), dict):
         policy.update(data["policy"])
+        # Older project files carry `network = ...`. Runs never have network access, so the
+        # key is dropped rather than reported back as if it meant something.
+        policy.pop("network", None)
     targets = data.get("targets", {}) if isinstance(data.get("targets"), dict) else {}
     limits = data.get("limits", {}) if isinstance(data.get("limits"), dict) else {}
 

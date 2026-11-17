@@ -100,7 +100,7 @@ export function ProviderKeys() {
           {rows.map((r) => (
             <ProviderRow key={r.provider} row={r} onChanged={refresh} />
           ))}
-          <div className="help">Keys are stored on this machine in the app's credentials file, readable only by you. They are never shown again.</div>
+          <div className="help">Keys are stored on this machine in the app's <code>.env</code> file (in the Analyst home directory), readable only by you. They are never shown again.</div>
         </div>
       )}
     </>

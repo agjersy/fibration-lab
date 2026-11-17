@@ -76,6 +76,9 @@ impl TaskLogger {
             .split_first()
             .ok_or_else(|| anyhow!("empty command line"))?;
         self.log(format!("$ {}", line.join(" ")));
+        // The network gate: ssh only to configured targets, uv offline unless it installs
+        // from the configured index.
+        let guard = crate::egress::guard(line)?;
         // Bare tool names resolve through the widened search path (apps started from a
         // launcher have a minimal PATH), and children inherit it.
         let mut cmd = tokio::process::Command::new(crate::util::resolve_tool(program));
@@ -85,6 +88,7 @@ impl TaskLogger {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        guard.apply_tokio(&mut cmd);
         if let Some(d) = cwd {
             cmd.current_dir(d);
         }

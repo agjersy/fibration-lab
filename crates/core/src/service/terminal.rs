@@ -4,6 +4,12 @@
 //! A reader thread forwards output as `terminal_data` (lossy UTF-8) and the exit as
 //! `terminal_exit`, both on the hub's terminal path (bounded and coalescing, see `events`).
 //! The shell never inherits provider API keys (U11), and its `PATH` is the widened tool path.
+//!
+//! A terminal has no network access. The local shell is spawned through
+//! `wb_sandbox::no_network::wrap` (`bwrap --unshare-net` on Linux, `sandbox-exec` on macOS);
+//! the remote shell is wrapped with `bwrap --unshare-net` on the host when the host's probe
+//! says that works. Where no isolation is available the shell still opens, and
+//! [`Terminal::isolation`] says so for the renderer to show.
 
 use super::error::{ServiceError, ServiceResult};
 use super::events::EventHub;
@@ -15,6 +21,8 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use wb_sandbox::no_network::NetIsolation;
+
 /// The figure-capture environment exported into every terminal (PROTOCOL 1.4 and 1.6).
 #[derive(Debug, Clone)]
 pub struct CaptureEnv {
@@ -43,14 +51,18 @@ pub const COMMON_KEY_VARS: &[&str] = &[
     "DEEPSEEK_API_KEY",
 ];
 
-/// Every variable to scrub for a global config: the common ones plus each provider's
-/// `api_key_env`.
+/// Every variable to scrub for a global config: the common ones plus the variable that
+/// names each provider's key (its `api_key_env`, or the derived `<NAME>_API_KEY`). Keys in
+/// a `.env` file are read by the core and never placed in any process environment.
 pub fn key_env_names(global: &analyst_protocol::config::GlobalConfig) -> Vec<String> {
     let mut v: Vec<String> = COMMON_KEY_VARS.iter().map(|s| s.to_string()).collect();
     for p in &global.providers {
-        if let Some(n) = &p.api_key_env {
-            if !n.is_empty() && !v.contains(n) {
-                v.push(n.clone());
+        for n in [
+            crate::config::key_env_name(p),
+            crate::config::default_key_env_name(&p.name),
+        ] {
+            if !v.contains(&n) {
+                v.push(n);
             }
         }
     }
@@ -113,8 +125,13 @@ impl CaptureEnv {
     }
 
     /// The remote shell command for `ssh -t`: enter the mirror, export the environment, exec a
-    /// login shell.
-    pub fn remote_command(&self, mirror: &str) -> String {
+    /// login shell. With `no_network` the shell runs under `bwrap --unshare-net` on the host.
+    pub fn remote_command(&self, mirror: &str, no_network: bool) -> String {
+        let wrapper = if no_network {
+            crate::egress::remote_bwrap_prefix()
+        } else {
+            String::new()
+        };
         let m = sh_quote_path(mirror);
         let stamp = self
             .out_dir
@@ -128,7 +145,7 @@ impl CaptureEnv {
 MPLBACKEND=module://analyst_mpl ANALYST_ROOT=\"$PWD\" ANALYST_OUT_DIR=\"$PWD\"/{out_rel} \
 ANALYST_RUN_ID={run_id} PYTHONUNBUFFERED=1 \
 PYTHONPATH=\"$($HOME/.analyst/tooling/.venv/bin/python -c 'import analyst_mpl,os;print(os.path.dirname(os.path.dirname(analyst_mpl.__file__)))' 2>/dev/null):$PWD\"; \
-exec \"${{SHELL:-/bin/sh}}\" -l",
+exec {wrapper}\"${{SHELL:-/bin/sh}}\" -l",
             run_id = sh_quote(&self.run_id),
         )
     }
@@ -176,6 +193,9 @@ pub fn find_mpl_dir(tooling_python: &str) -> Option<PathBuf> {
 pub struct TerminalSpec {
     pub repo: PathBuf,
     pub target: Target,
+    /// Remote targets: wrap the shell in `bwrap --unshare-net` on the host (the host's probe
+    /// said it works, see `egress::remote_bwrap_works`).
+    pub remote_no_network: bool,
     /// SSH control directory for multiplexing (remote targets).
     pub control_dir: Option<PathBuf>,
     pub capture: CaptureEnv,
@@ -197,6 +217,8 @@ pub struct Terminal {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pub out_dir: PathBuf,
     pub run_id: String,
+    /// How the shell is kept off the network (`None(..)`: it is not).
+    pub isolation: NetIsolation,
 }
 
 impl Terminal {
@@ -216,22 +238,28 @@ impl Terminal {
                 pixel_height: 0,
             })
             .map_err(|e| ServiceError::internal(format!("opening pty: {e}")))?;
-        let mut cmd = match &spec.target {
+        let (mut cmd, isolation) = match &spec.target {
             Target::Local => {
                 let shell = spec
                     .shell
                     .clone()
                     .or_else(|| std::env::var("SHELL").ok().filter(|s| !s.is_empty()))
                     .unwrap_or_else(|| "/bin/sh".to_string());
-                let mut c = CommandBuilder::new(&shell);
+                let mut line = vec![shell.clone()];
                 if shell.ends_with("bash") || shell.ends_with("zsh") || shell.ends_with("fish") {
-                    c.arg("-l");
+                    line.push("-l".into());
                 }
+                // No network for the shell and everything started from it. The wrapper adds
+                // no new session, so the pty stays the shell's controlling terminal and job
+                // control works as before.
+                let wrapped = wb_sandbox::no_network::wrap(line);
+                let mut c = CommandBuilder::new(&wrapped.argv[0]);
+                c.args(&wrapped.argv[1..]);
                 c.cwd(&spec.repo);
                 for (k, v) in spec.capture.local_vars(&spec.repo) {
                     c.env(k, v);
                 }
-                c
+                (c, wrapped.isolation)
             }
             Target::Ssh { host, .. } => {
                 let mirror = spec.target.mirror_dir(&spec.repo).unwrap_or_default();
@@ -239,13 +267,23 @@ impl Terminal {
                     crate::kernel::transport::ssh_prefix(host, spec.control_dir.as_deref());
                 // `-t` forces a tty; BatchMode stays so a missing key fails fast.
                 line.insert(1, "-t".to_string());
-                line.push(spec.capture.remote_command(&mirror));
+                line.push(spec.capture.remote_command(&mirror, spec.remote_no_network));
                 crate::target::validate_host(host)
                     .map_err(|e| ServiceError::invalid(e.to_string()))?;
+                // The gate: only a configured SSH target, and the connection is recorded.
+                crate::egress::guard(&line)
+                    .map_err(|e| ServiceError::policy_denied(format!("{e:#}")))?;
                 let mut c = CommandBuilder::new(crate::util::resolve_tool(&line[0]));
                 c.args(&line[1..]);
                 c.cwd(&spec.repo);
-                c
+                let isolation = if spec.remote_no_network {
+                    NetIsolation::Bubblewrap
+                } else {
+                    NetIsolation::None(format!(
+                        "bubblewrap is not usable on {host}, so the remote shell keeps that host's network access"
+                    ))
+                };
+                (c, isolation)
             }
         };
         for name in COMMON_KEY_VARS {
@@ -283,6 +321,7 @@ impl Terminal {
             killer: Mutex::new(killer),
             out_dir: spec.capture.out_dir.clone(),
             run_id: spec.capture.run_id.clone(),
+            isolation,
         })
     }
 
@@ -452,6 +491,7 @@ mod tests {
         let spec = TerminalSpec {
             repo: repo.path().to_path_buf(),
             target: Target::Local,
+            remote_no_network: false,
             control_dir: None,
             capture: CaptureEnv::new(repo.path(), "out", None),
             shell: Some("/bin/sh".into()),
@@ -491,23 +531,113 @@ mod tests {
         }
         assert_eq!(code, Some(Some(3)));
     }
+
+    /// The local shell, and anything started from it, cannot open an outbound connection.
+    #[tokio::test]
+    async fn local_terminal_has_no_network() {
+        if !wb_sandbox::no_network::probe().is_isolated() {
+            eprintln!("skipped: {:?}", wb_sandbox::no_network::probe());
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        let hub = EventHub::new();
+        let mut rx = hub.subscribe();
+        let spec = TerminalSpec {
+            repo: repo.path().to_path_buf(),
+            target: Target::Local,
+            remote_no_network: false,
+            control_dir: None,
+            capture: CaptureEnv::new(repo.path(), "out", None),
+            shell: Some("/bin/sh".into()),
+            env_remove: vec![],
+            cols: 200,
+            rows: 24,
+        };
+        let t = Terminal::open("tn".into(), "s1", &spec, hub.clone()).unwrap();
+        assert!(t.isolation.is_isolated());
+        // A UDP "connect" needs a route but sends nothing; without a network it fails. The
+        // result words are assembled by the script so the echoed command never matches. The
+        // shell must also still be attached to its terminal.
+        std::fs::write(
+            repo.path().join("probe.py"),
+            "import socket\ns=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\ntry:\n s.connect(('192.0.2.1',9)); print('net'+'=ROUTED')\nexcept OSError:\n print('net'+'=NONE')\n",
+        )
+        .unwrap();
+        t.write("python3 probe.py; test -t 0 && echo tty''=yes || echo tty''=no\n")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = String::new();
+        while Instant::now() < deadline && !seen.contains("tty=") {
+            if let Ok(Ok(SessionEvent::TerminalData { data, .. })) =
+                tokio::time::timeout(Duration::from_secs(1), rx.recv()).await
+            {
+                seen.push_str(&data);
+            }
+        }
+        assert!(seen.contains("net=NONE"), "{seen:?}");
+        assert!(!seen.contains("net=ROUTED"), "{seen:?}");
+        assert!(seen.contains("tty=yes"), "{seen:?}");
+        t.close();
+    }
 }
 
 #[cfg(test)]
 mod remote_tests {
     use super::*;
 
+    /// A terminal to a host that is not a configured SSH target is not opened.
+    #[test]
+    fn remote_terminal_needs_a_configured_target() {
+        let repo = tempfile::tempdir().unwrap();
+        let host = format!("unconfigured-{}", crate::util::short_rand().to_lowercase());
+        let spec = TerminalSpec {
+            repo: repo.path().to_path_buf(),
+            target: Target::Ssh {
+                name: "x".into(),
+                host: host.clone(),
+                remote_root: "~/analyst".into(),
+                python: "3.12".into(),
+                sandbox: "auto".into(),
+                data_dirs: vec![],
+                uv_binary: None,
+            },
+            remote_no_network: true,
+            control_dir: None,
+            capture: CaptureEnv::new(repo.path(), "out", None),
+            shell: None,
+            env_remove: vec![],
+            cols: 80,
+            rows: 24,
+        };
+        let err = match Terminal::open("t".into(), "s", &spec, EventHub::new()) {
+            Ok(_) => panic!("an unconfigured host was contacted"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, analyst_protocol::ui::IpcErrorCode::PolicyDenied);
+        assert!(err.message.contains(&host), "{}", err.message);
+    }
+
     #[test]
     fn remote_command_uses_the_configured_out_dir_and_quotes_paths() {
         let repo = std::path::Path::new("/r");
         let c = CaptureEnv::new(repo, "results dir", None);
-        let cmd = c.remote_command("~/analyst/my repo");
+        let cmd = c.remote_command("~/analyst/my repo", false);
         assert!(cmd.starts_with("cd ~/'analyst/my repo' && "), "{cmd}");
         assert!(
             cmd.contains("ANALYST_OUT_DIR=\"$PWD\"/'results dir/terminal/"),
             "{cmd}"
         );
         assert!(!cmd.contains("$PWD/out/terminal"), "{cmd}");
+        assert!(cmd.ends_with("exec \"${SHELL:-/bin/sh}\" -l"), "{cmd}");
+        // With a working bwrap on the host, the login shell runs without network there.
+        let wrapped = c.remote_command("~/analyst/my repo", true);
+        assert!(
+            wrapped.ends_with(&format!(
+                "exec {}\"${{SHELL:-/bin/sh}}\" -l",
+                crate::egress::remote_bwrap_prefix()
+            )),
+            "{wrapped}"
+        );
         let names = key_env_names(&Default::default());
         assert!(names.iter().any(|n| n == "ANTHROPIC_API_KEY"));
     }

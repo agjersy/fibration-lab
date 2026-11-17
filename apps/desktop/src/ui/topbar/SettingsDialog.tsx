@@ -13,7 +13,6 @@ const POLICY_FIELDS: { key: keyof Omit<PolicyView, "protected" | "max_steps">; o
   { key: "runs", options: ["auto", "ask"], label: "Runs" },
   { key: "packages", options: ["ask", "auto", "deny"], label: "Packages" },
   { key: "shell", options: ["ask", "auto", "deny"], label: "Shell" },
-  { key: "network", options: ["deny", "ask", "allow"], label: "Network" },
   { key: "git", options: ["ask", "auto", "deny"], label: "Git" },
 ];
 

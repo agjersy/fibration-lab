@@ -1,12 +1,13 @@
 //! OpenAI-compatible chat completions adapter (PROTOCOL 4).
 
 use super::{
-    channel_stream, generated_call_id, http_client, normalize_messages, pump, send_with_retry,
-    unparsed_arguments, HttpPolicy, ModelClient, SendFailure, SseState,
+    channel_stream, egress_message, gated, generated_call_id, normalize_messages, pump,
+    send_with_retry, unparsed_arguments, HttpPolicy, ModelClient, SendFailure, SseState,
 };
 use analyst_protocol::model::{ChatRequest, ContentPart, ModelEvent, Role, StopReason};
 use futures::stream::BoxStream;
 use serde_json::{json, Value};
+use wb_net::reqwest;
 
 /// Build the JSON request body (with `stream_options`).
 pub fn build_body(req: &ChatRequest) -> Value {
@@ -352,7 +353,6 @@ pub fn parse_sse_document(doc: &str) -> Vec<ModelEvent> {
 }
 
 pub struct OpenAiCompatClient {
-    http: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
     model: String,
@@ -369,7 +369,6 @@ impl OpenAiCompatClient {
     pub fn new(base_url: String, api_key: Option<String>, model: String) -> anyhow::Result<Self> {
         let policy = HttpPolicy::default();
         Ok(OpenAiCompatClient {
-            http: http_client(&policy)?,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key,
             model,
@@ -387,7 +386,8 @@ impl OpenAiCompatClient {
 
     /// `GET {base_url}/models`, raw JSON.
     pub async fn list_models(&self) -> anyhow::Result<Value> {
-        let mut r = self.http.get(self.models_url());
+        let mut r = gated(reqwest::Method::GET, &self.models_url(), "probe")
+            .map_err(|e| anyhow::anyhow!(egress_message(&e)))?;
         if let Some(k) = &self.api_key {
             r = r.bearer_auth(k);
         }
@@ -397,21 +397,20 @@ impl OpenAiCompatClient {
 
 impl ModelClient for OpenAiCompatClient {
     fn stream(&self, req: ChatRequest) -> BoxStream<'static, ModelEvent> {
-        let http = self.http.clone();
         let url = self.chat_url();
         let api_key = self.api_key.clone();
         let policy = self.policy.clone();
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         tokio::spawn(async move {
             let send = |body: Value| {
-                let (http, url, api_key, policy) = (&http, &url, &api_key, &policy);
+                let (url, api_key, policy) = (&url, &api_key, &policy);
                 async move {
                     let make = || {
-                        let r = http.post(url).json(&body);
-                        match api_key {
+                        let r = gated(reqwest::Method::POST, url, "chat")?.json(&body);
+                        Ok(match api_key {
                             Some(k) => r.bearer_auth(k),
                             None => r,
-                        }
+                        })
                     };
                     send_with_retry(make, policy).await
                 }

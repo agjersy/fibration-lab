@@ -40,12 +40,13 @@ interface SessionSummary {
 interface PolicyView {
   edits: "review" | "auto-new-files" | "auto"; runs: "auto" | "ask";
   packages: "ask" | "auto" | "deny"; shell: "ask" | "auto" | "deny";
-  network: "deny" | "ask" | "allow"; git: "ask" | "auto" | "deny";
+  git: "ask" | "auto" | "deny";   // no network setting: runs never have network
   protected: string[]; max_steps: number;
 }
 interface ConversationSummary { id: ConversationId; title: string; model: string | null; mode: Mode; created_at: string; turns: number; busy: boolean }
 interface SessionInfo extends SessionSummary {
   policy: PolicyView; kernel: KernelState; sandbox: string | null; python_abs: string | null;
+  kernel_network_isolation: string | null;   // "bwrap" | "sandbox-exec" | "none"; null before the first kernel start
   conversations: ConversationSummary[]; active_conversation: ConversationId;
   target_kind: "local" | "ssh"; target_host: string | null;
 }
@@ -121,7 +122,7 @@ type SessionEvent =
   | { type: "index_changed" }
   | { type: "terminal_data"; terminal_id: TerminalId; data: string }        // UTF-8 text; invalid sequences replaced
   | { type: "terminal_exit"; terminal_id: TerminalId; code: number | null }
-  | { type: "kernel_state"; state: KernelState; message: string | null }
+  | { type: "kernel_state"; state: KernelState; message: string | null; network_isolation: string | null }
   | { type: "packages_changed" }
   | { type: "task_log"; task_id: TaskId; line: string }
   | { type: "task_done"; task_id: TaskId; ok: boolean; message: string | null }
@@ -157,7 +158,7 @@ Argument names are exact. `session` is always a `SessionId`.
 | `fs_search` | `{ session, pattern, glob?, max_results? }` | `SearchHit[]` | ripgrep |
 | `index_get` | `{ session }` | `IndexResult` | cached; refreshed on `files_changed` of .py files |
 | `check_run` | `{ session, paths? }` | `Diagnostic[]` | contract + lint; also emits `diagnostics` |
-| `run_start` | `{ session, script, args, network? }` | `RunView` | syncs mirror on remote targets first |
+| `run_start` | `{ session, script, args }` | `RunView` | syncs mirror on remote targets first |
 | `run_cancel` | `{ session, run_id }` | `null` | |
 | `runs_list` | `{ session, limit? }` | `RunView[]` | newest first |
 | `run_get` | `{ session, run_id }` | `RunView & { stdout: string; stderr: string }` | |
@@ -183,7 +184,7 @@ Argument names are exact. `session` is always a `SessionId`.
 | `model_probe` | `{ model }` | `ModelEntry` | runs the capability probe |
 | `targets_list` | `{}` | `TargetInfo[]` | |
 | `target_bootstrap` | `{ target }` | `TaskId` | |
-| `terminal_open` | `{ session, cols, rows }` | `TerminalId` | local: `$SHELL` in the repo with the venv on PATH and the figure-capture env; remote: `ssh -t` into the mirror with the same |
+| `terminal_open` | `{ session, cols, rows }` | `TerminalOpened` | local: `$SHELL` in the repo with the venv on PATH and the figure-capture env, started without network access; remote: `ssh -t` into the mirror with the same, under `bwrap --unshare-net` when the host supports it. `TerminalOpened { terminal_id, network_isolated: boolean, network_isolation: "bwrap" | "sandbox-exec" | "none", network_isolation_note: string | null }`; the terminal panel shows "no network" or "network not isolated" |
 | `terminal_write` | `{ terminal_id, data }` | `null` | |
 | `terminal_resize` | `{ terminal_id, cols, rows }` | `null` | |
 | `terminal_close` | `{ terminal_id }` | `null` | |
@@ -220,7 +221,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 - `OptionInfo` gains `nargs: string | number | null`, `const: any`, and `positional: boolean`. The run form sends positionals as bare values in declaration order, splits list values for `nargs`, and handles `store_true`, `store_false`, `store_const`, `count`, and `BooleanOptionalAction`; anything else gets a raw "extra arguments" field.
 - `RunView` gains `conversation: ConversationId | null`: the conversation whose agent turn started the run, null for manual and terminal runs. Chat run cards attach by this field, not by "whichever conversation is busy".
 - `SessionInfo` gains `pending_proposals: ProposalView[]`, so a renderer that reloads mid-approval shows the cards again.
-- `ProviderKeyStatus { provider, has_key, source: "env" | "stored" | null, api_key_env: string | null }`.
+- `ProviderKeyStatus { provider, has_key, source: "env" | "stored" | null, api_key_env: string | null }`. `"stored"` means `$ANALYST_HOME/.env`; `api_key_env` is the variable that names the key (configured, or the derived `<PROVIDER NAME>_API_KEY`).
 
 **Events**
 
@@ -232,7 +233,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 | command | args | result | notes |
 |---|---|---|---|
 | `provider_keys_status` | `{}` | `ProviderKeyStatus[]` | one row per configured provider |
-| `provider_key_set` | `{ provider, key }` | `null` | stores the key in `$ANALYST_HOME/credentials.toml` (mode 0600); an empty key removes it. The environment variable named by `api_key_env` takes precedence when set |
+| `provider_key_set` | `{ provider, key }` | `null` | stores the key in `$ANALYST_HOME/.env` (mode 0600) under `api_key_env`, or the derived `<PROVIDER NAME>_API_KEY` when none is configured; an empty key removes it. The same variable in the process environment takes precedence when set |
 
 **Ordering and lifecycle rules**
 

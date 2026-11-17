@@ -71,7 +71,8 @@ interface LibFunction {
 
 // ---- runs ----
 "run.start": { script: string, args?: string[], env?: Record<string,string>, timeout_s?: number,
-               network?: boolean, tree_hash?: string|null }
+               tree_hash?: string|null }          // no network parameter: runs never have network;
+                                                  // `network: true` is rejected with -32602
   -> { run_id: string, out_dir: string }      // out_dir relative to root, e.g. "out/fit_decay/20261016-181502-3fa2c1"
 "run.attach": { run_id: string, stdout_offset?: number, stderr_offset?: number }
   -> { status: RunStatus, exit_code: number|null }   // then replays run.stdout/run.stderr from offsets and re-emits run.artifact for existing artifacts, then run.done if finished
@@ -183,7 +184,7 @@ The script sees a plain Python process. It needs no import from the app.
 |---|---|---|
 | read | `--ro-bind / /`, `--tmpfs $HOME` then `--ro-bind` the repo root, the venv, the session interpreter's base installation (resolved through the venv's `python` symlink and `pyvenv.cfg`, since `uv` keeps it under `~/.local/share/uv/python`), `~/.analyst/tooling`, and each configured data dir | `(deny default)`, `(allow file-read* (subpath "/"))`, `(deny file-read* (subpath HOME))`, then `(allow file-read-metadata (literal ...))` for every ancestor directory between HOME and each allowed subtree under it (lookups check metadata per path component), then allow read of root, venv, interpreter base, tooling, data dirs. Every path is listed in both its given and canonical form (`/tmp` is `/private/tmp`). |
 | write | `--bind` the run output dir, `<root>/data/derived` if it exists, `<runs_dir>/<run_id>`, and a fresh `--tmpfs /tmp` | `(allow file-write* (subpath ...))` for the same set plus `/private/tmp` and `/private/var/folders` |
-| network | `--unshare-net` unless `network: true` | `(deny network*)` unless `network: true` |
+| network | `--unshare-net`, always | `(deny network*)`, always |
 | process | `--die-with-parent --new-session --unshare-pid --proc /proc --dev /dev` | `(allow process*)`, `(allow sysctl-read)`, `(allow mach-lookup)` for the minimum needed by Python |
 
 `limits` applies `RLIMIT_AS` (default 8 GiB), `RLIMIT_NOFILE`, and the timeout only, and the run is reported as `sandbox: "limits"`. The source tree is read-only in every real sandbox; a script that tries to write outside its output directory fails.
@@ -220,7 +221,7 @@ target = "local"
 name = "ollama-lab"
 kind = "openai-compatible"             # openai-compatible | anthropic
 base_url = "http://lab-gpu:11434/v1"
-api_key_env = "OLLAMA_LAB_API_KEY"     # optional; phase 0 reads keys from env vars only
+api_key_env = "OLLAMA_LAB_API_KEY"     # optional; default <PROVIDER NAME>_API_KEY (here the same)
 
 [[providers]]
 name = "anthropic"
@@ -243,9 +244,15 @@ remote_root = "~/analyst"
 python = "3.12"
 sandbox = "auto"
 data_dirs = ["/data/shared"]
+uv_binary = "/opt/uv/linux-aarch64/uv" # optional: a local uv built for this host, copied there when it has none
+
+[packages]
+index_url = "https://pypi.org/simple"  # the one index installs use (default); set to an internal mirror
 ```
 
-Keys are read from the named environment variable in phase 0. Keychain storage is a desktop-app feature.
+Keys are looked up under the variable named by `api_key_env` (default: the provider name uppercased, non-alphanumerics to `_`, plus `_API_KEY`): first in the process environment, then in `$ANALYST_HOME/.env` (mode 0600; where `provider_key_set` and `analyst key set` write), then in `<repo>/.env` when it exists and git does not track it. There is no keychain and no `credentials.toml`.
+
+Network (ARCHITECTURE 5.6): the core contacts only the provider `base_url`s, `[packages] index_url`, and the `host` of each ssh target above, through the `wb-net` gate; each decision is a line in `$ANALYST_HOME/egress.jsonl` (`ts`, `class`: `model_endpoint | package_index | ssh`, `destination`, `allowed`, `purpose`).
 
 ### 2.2 Project `<repo>/.analyst/project.toml`
 
@@ -273,7 +280,6 @@ edits = "review"                       # review | auto-new-files | auto
 runs = "auto"                          # auto | ask
 packages = "ask"                       # ask | auto | deny
 shell = "ask"                          # ask | auto | deny
-network = "deny"                       # deny | ask | allow
 git = "ask"
 protected = []
 max_steps = 40
@@ -386,20 +392,20 @@ Arguments and results are JSON. Every tool result is capped at 16 KiB in the mod
 | `fs.propose_edit` | `{path, edits: {old: string, new: string}[]}` or `{path, content}` | edit | core; `old` must match exactly once |
 | `fs.propose_create` | `{path, content}` | edit | core |
 | `fs.propose_delete` | `{path}` | edit | core |
-| `run.script` | `{script, args?, timeout_s?, network?}` | run | kernel; syncs mirror first on remote targets |
+| `run.script` | `{script, args?, timeout_s?}` (no network parameter; a call that passes `network` is denied) | run | kernel; syncs mirror first on remote targets |
 | `exec.snippet` | `{code}` | run | kernel |
 | `pkg.add` / `pkg.remove` / `pkg.sync` | `{packages}` / `{packages}` / `{}` | package | `uv` on target |
 | `shell.run` | `{command, timeout_s?}` | shell | kernel sandbox |
 | `git.status` / `git.diff` | `{}` / `{path?}` | read | local git |
 | `git.commit` | `{message}` | git | local git |
 
-MCP tools and `doc.*` tools are phase 3.
+`doc.*` tools are phase 3. MCP tools are removed from the plan.
 
 ## 7. Repo sync (remote targets)
 
 File list: `git ls-files --cached --others --exclude-standard -z` in the local repo. Push: `rsync -az --delete --files-from=<list> ./ <host>:<mirror>/` when `rsync` exists on both ends, else `tar -cf - --null -T <list> | ssh <host> 'mkdir -p <mirror> && tar -xf - -C <mirror>'` (no deletion of extraneous files in the fallback; the core warns once). `tree_hash` = SHA-256 over sorted `(path, blob sha)` of the list, passed to `run.start`. Pull of rendered artifacts: `scp -q <host>:<mirror>/<path> <local>` per artifact, or a single `tar` pipe for a whole run on `run.done`.
 
-Remote bootstrap sequence, idempotent: `mkdir -p ~/.analyst/bin ~/.analyst/tooling`; install `uv` to `~/.analyst/bin/uv` (installer script with `UV_INSTALL_DIR`, or copy the bundled binary); `uv python install <version>`; `uv venv ~/.analyst/tooling/.venv`; `scp` the kernel wheel; `uv pip install --python ~/.analyst/tooling/.venv/bin/python <wheel>`; write `~/.analyst/tooling/VERSION`. Session venv: `cd <mirror> && ~/.analyst/bin/uv sync` (or `uv venv && uv pip install -r requirements.txt`).
+Remote bootstrap sequence, idempotent: `mkdir -p ~/.analyst/bin ~/.analyst/tooling`; provide `~/.analyst/bin/uv` without a download: link a `uv` already on the host (PATH, `~/.local/bin`, `~/.cargo/bin`), else `scp` one there (the local `uv` when `uname -sm` matches the host, else the target's `uv_binary`; with neither, fail and say so); `uv python install <version>`; `uv venv --default-index <index> ~/.analyst/tooling/.venv`; `scp` the kernel wheel; `uv pip install --default-index <index> --python ~/.analyst/tooling/.venv/bin/python <wheel>`; write `~/.analyst/tooling/VERSION`. Session venv: `cd <mirror> && ~/.analyst/bin/uv sync --default-index <index>` (or `uv venv && uv pip install -r requirements.txt`, same flag). `<index>` is `[packages] index_url`. The remote kernel command and the remote terminal shell are prefixed with `bwrap --unshare-net ... --` when a probe (`bwrap ... -- true`) succeeds on the host.
 
 ## 8. Evaluation tasks
 

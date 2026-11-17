@@ -303,8 +303,12 @@ export async function selectConversation(session: SessionId, conversation: Conve
 
 export async function openTerminal(session: SessionId, cols = 80, rows = 24): Promise<void> {
   try {
-    const id = await backend().invoke("terminal_open", { session, cols, rows });
-    useTerminals.getState().add(session, id);
+    const opened = await backend().invoke("terminal_open", { session, cols, rows });
+    useTerminals.getState().add(session, opened.terminal_id, {
+      isolated: opened.network_isolated,
+      kind: opened.network_isolation,
+      note: opened.network_isolation_note,
+    });
   } catch (e) {
     notifyError(e);
   }

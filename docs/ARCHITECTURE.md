@@ -13,15 +13,15 @@ This document specifies the architecture of the desktop application described in
 | D3 | App tooling runtime | A hidden, app-owned Python environment per execution target for the kernel, SymPy, and Ruff (language servers later) | Decided |
 | D4 | Model access | One internal interface, two wire adapters (OpenAI-compatible chat completions, Anthropic Messages). No model-specific code paths; capabilities probed, not hand-listed | Decided |
 | D5 | Execution targets | Default is fully local. The default remote target is a native environment on a remote Linux machine (Ubuntu or Fedora) over SSH; a cluster login node is the same target kind. Kernel protocol is transport-agnostic. Local repo is canonical; remote holds a synced mirror. Data is never synced; only rendered products (figures, logs, metadata, equation results) return to the UI | Decided |
-| D6 | Sandbox | `bubblewrap` on Linux (local and remote), `sandbox-exec` on macOS, network denied by default with per-run grants, container backend optional, unsandboxed with a visible badge where neither exists | Decided |
+| D6 | Sandbox | `bubblewrap` on Linux (local and remote), `sandbox-exec` on macOS, no network for sandboxed code, kernels, or terminals (no per-run grants), container backend optional, unsandboxed with a visible badge where neither exists | Decided |
 | D7 | Edit gating default | Review mode with per-hunk accept and reject; protected paths and protected-region markers in the first version | Decided |
 | D8 | Equation source | AST-derived for pure expressions, declared-and-checked for everything else, LLM-explained marked unverified | Open, see OQ-5 |
 | D9 | Script contract | CLI options on every script and shared logic in the library package are hard rules; the remaining proposed rules ship as defaults with severities adjustable per repo | Decided |
 | D10 | Editor | CodeMirror 6 (Monaco as the fallback if a needed feature is missing) | Recommended |
 | D11 | Docking | `dockview` for in-window panels; Tauri `WebviewWindow` for undocked panels | Recommended |
-| D12 | LaTeX toolchain | Tectonic, downloaded on first use; system TeX used if present | Open, see OQ-10 |
+| D12 | LaTeX toolchain | A TeX installation the user provides. Tectonic's fetch-on-demand is removed from the plan: the app downloads nothing for it | Decided, see OQ-10 |
 | D13 | Persistence | JSONL for transcripts and run records, TOML for config, git refs for checkpoints. A SQLite index is deferred until file scans become a measured problem | Decided |
-| D14 | External tools | MCP client (stdio and streamable HTTP) via the official Rust SDK; built-in tools share the same schema | Recommended |
+| D14 | External tools | Removed from the plan: there is no MCP client. Mentions of MCP elsewhere in this document describe the earlier design and are not built | Dropped |
 | D15 | Evaluation | Model-agnostic task suite with automatic graders; produces a scorecard per configured model; no model is privileged | Decided |
 | D16 | Platforms | macOS and Linux first, for both the desktop app and remote targets. Windows deferred to phase 4 | Decided |
 | D17 | Run launcher | Runs start directly on the target (local process, remote Linux machine, or cluster login node) behind a launcher interface; a Slurm scheduler launcher is a planned later extension, not a first-version feature | Decided |
@@ -101,8 +101,8 @@ What "native" means here: the app is a single native executable with native wind
 | Shell | Tauri 2 | Native window, menus, dialogs, multi-window for undocked panels, sidecar binaries, updater, platform installers. Interface drawn by the OS webview component: WKWebView on macOS, WebKitGTK on Linux. |
 | Core | Rust on `tokio` | All services in section 5. Compiled into the Tauri backend; also linked into a headless CLI for phase 0 and evals. |
 | IPC | Tauri commands and per-session channels; types exported with `ts-rs` | Request/response as commands; streams (model tokens, run output, artifacts) as events on a per-session channel. The `protocol` crate's types produce the TypeScript bindings. The contract is [IPC.md](IPC.md). |
-| Model clients | `reqwest` with SSE streaming, hand-written adapters | Two adapters are a few hundred lines each and keep full control over tool-call parsing. No provider SDKs. |
-| MCP | `rmcp` (official Rust SDK), client role | stdio and streamable HTTP transports. |
+| Model clients | SSE streaming over requests built by the network gate (`wb-net`), hand-written adapters | Two adapters are a few hundred lines each and keep full control over tool-call parsing. No provider SDKs. |
+| MCP | none | Removed from the plan (D14). |
 | Storage | `toml`, JSONL | See section 7. |
 | File watching | `notify` | Working-tree diffing between turns, `out/` watching for terminal runs. |
 | Terminals | `portable-pty` in the core, `xterm.js` in the renderer | A remote terminal is a local pty running `ssh -t`. |
@@ -112,7 +112,7 @@ What "native" means here: the app is a single native executable with native wind
 | Language tooling (planned) | Today: Ruff diagnostics through the kernel. Planned: `ruff server` and `ty` or `jedi-language-server` run from the tooling environment on the target | No Node dependency. The core proxies LSP over IPC, so on a remote target the language server runs where the venv is and sees the real packages. |
 | Docking | `dockview` | Floating groups in-window; undock creates a second `WebviewWindow` bound to the same session. |
 | Rendering | KaTeX, `react-markdown` with `remark-math`, `pdf.js` | |
-| Sidecars | `uv`, `rg`, optional `tectonic` | Bundled per platform through Tauri's external-binary mechanism. |
+| Sidecars | `uv`, `rg` | Bundled per platform through Tauri's external-binary mechanism. |
 
 Known cost: WebKitGTK on Linux is slower than Chromium for heavy canvases and large DOMs. The figures panel and editor must be tested on Linux early, and the figure viewer uses `<img>` elements with cached raster files rather than live canvases.
 
@@ -134,7 +134,7 @@ Known cost: WebKitGTK on Linux is slower than Chromium for heavy canvases and la
 | Equation | A rendered mathematical statement bound to a code location, with a provenance tier and verification status. | computed on demand |
 | Checkpoint | A snapshot of the local working tree taken before an agent turn that may change files. | git ref `refs/analyst/checkpoints/<id>` |
 | Skill | A markdown instruction set with trigger metadata, loaded into the agent's context on demand. | `.analyst/skills/`, `~/.analyst/skills/` |
-| Provider / Model | A configured endpoint plus a model identifier and its probed capability record. | `~/.analyst/config.toml` + `credentials.toml` |
+| Provider / Model | A configured endpoint plus a model identifier and its probed capability record. | `~/.analyst/config.toml`; keys from the environment or `.env` |
 | Policy | The per-session permission rules the agent operates under. | `.analyst/project.toml` with session overrides |
 
 ## 5. Core services
@@ -155,7 +155,7 @@ A session can change target later; doing so re-binds the environment and re-sync
 
 ### 5.2 Environment manager (D2)
 
-`uv` is the only environment tool. It is fast, manages Python versions itself, and produces a lockfile. The app bundles the `uv` binary for the local target and installs it on remote targets. Conda is out of scope; packages must be installable from PyPI or a configured index.
+`uv` is the only environment tool. It is fast, manages Python versions itself, and produces a lockfile. The app bundles the `uv` binary for the local target and copies a `uv` binary to remote targets that have none (5.5). Conda is out of scope; packages must be installable from the one configured index: `[packages] index_url` in `config.toml`, public PyPI by default or an internal mirror. Every `uv` invocation is made by the core. Installs (`uv add`, `uv remove`, `uv sync`, `uv lock`, venv creation, the tooling bootstrap) are authorized by the network gate (5.6) and pass the index to `uv` explicitly (`--default-index <url>`); every other `uv` call runs with `UV_OFFLINE=1`.
 
 Operations exposed to both the user (Packages panel) and the agent (tools, gated by policy), all executed on the session's target:
 
@@ -228,7 +228,7 @@ The local target needs no configuration.
 
 **Connection.** The core uses the system OpenSSH client with connection multiplexing (`ControlMaster=auto`, `ControlPersist`, a control socket under `~/.analyst/ssh/`). One master connection per target per session; the kernel's stdio, each terminal, and each sync are channels on it. This respects the user's existing SSH configuration, keys, agent, and bastions without the app reimplementing any of it. A Rust SSH implementation can replace this later behind the same `Transport` trait if the CLI dependency becomes a problem (Windows lacks `ControlMaster`; there the core opens separate connections).
 
-**Bootstrap.** On first use of a target the core checks for `~/.analyst/bin/uv` and `~/.analyst/tooling/` on the host and creates them if missing: `uv` from its installer script or by copying the bundled binary for the host's architecture, then the tooling environment from the kernel wheel in the app bundle. Nothing is installed outside the user's home directory and nothing needs root. Ubuntu and Fedora are the tested distributions; any Linux with a working `ssh`, `tar`, and `glibc` recent enough for `uv`'s Python builds should work. Bootstrap is idempotent and version-checked, so an app upgrade refreshes the remote kernel on next connect.
+**Bootstrap.** On first use of a target the core checks for `~/.analyst/bin/uv` and `~/.analyst/tooling/` on the host and creates them if missing. `uv` is never downloaded: a `uv` already on the host is used; otherwise a binary is copied over SSH (`scp`) to `~/.analyst/bin/uv`, the local `uv` when the host reports the same OS and architecture (`uname -sm`), else the file named by the target's `uv_binary` setting; with neither, bootstrap stops and says to provide one. Then the tooling environment from the kernel wheel in the app bundle. Nothing is installed outside the user's home directory and nothing needs root. Ubuntu and Fedora are the tested distributions; any Linux with a working `ssh`, `tar`, and `glibc` recent enough for `uv`'s Python builds should work. Bootstrap is idempotent and version-checked, so an app upgrade refreshes the remote kernel on next connect.
 
 **Repo sync model: local canonical, remote mirror.** The local repo is the source of truth for code. Before each run, and on demand, the core syncs the mirror:
 
@@ -242,11 +242,11 @@ Syncs are typically well under a second on a warm connection. The mirror is neve
 
 **Data stays where it is generated.** Input data directories are configured per target and are never synced in either direction. Scripts refer to data through CLI options whose defaults are repo-relative or come from `.analyst/project.toml` per-target overrides, so the same script runs locally against a sample and remotely against the full dataset without edits. A user who wants a data artifact locally fetches it explicitly from the Outputs view; the app records that it did so but never does it on its own.
 
-**Run launcher.** The kernel starts runs through a `Launcher` interface with one implementation in the first version, `DirectLauncher`, which runs the script as a detached process on the target: on a cluster this means the login node, which is the accepted mode for now. The interface (`submit`, `status`, `cancel`, `output_paths`) is shaped so that a `SchedulerLauncher` for Slurm or similar can be added later without changing the kernel protocol or the agent loop; the only visible differences would be queue time in the run card and a per-target launcher setting.
+**Run launcher.** The kernel starts runs through a `Launcher` interface with one implementation in the first version, `DirectLauncher`, which runs the script as a detached process on the target: on a cluster this means the login node, which is the accepted mode for now. The interface (`submit`, `status`, `cancel`, `output_paths`) is shaped so that a `SchedulerLauncher` for Slurm or similar can be added later without changing the kernel protocol or the agent loop; the only visible differences would be queue time in the run card and a per-target launcher setting. In the code today the extension point is `Target::launcher()` in `crates/core/src/target.rs`, which always returns `Launcher::Direct`; `Launcher::Scheduler` is an unimplemented placeholder.
 
 **Runs survive disconnects.** The kernel detaches each run and records stdout, stderr, exit status, and artifact list under `~/.analyst/runs/<run-id>/` on the target. If the SSH connection drops, the run continues. On reconnect, the core restarts the kernel if needed and calls `run.attach` to resume streaming from the last offsets. The run card shows "running, disconnected" rather than failing.
 
-**Terminal.** A remote terminal is a local pty running `ssh -t <host>` that changes to the mirror directory, activates the venv, and exports the figure-capture environment. Figures produced from that terminal appear in the figures panel through the same `out/` watcher, running on the target through the kernel.
+**Terminal.** A remote terminal is a local pty running `ssh -t <host>` that changes to the mirror directory, activates the venv, and exports the figure-capture environment. Where `bubblewrap` works on the host the remote shell (and the remote kernel) run under `bwrap --unshare-net`; otherwise they run unwrapped and the UI says the network is not isolated. Figures produced from that terminal appear in the figures panel through the same `out/` watcher, running on the target through the kernel.
 
 **Sandbox on remote hosts.** Linux hosts with `bubblewrap` and unprivileged user namespaces get the same sandbox as a local Linux machine. Many shared hosts disable user namespaces; there the kernel falls back to resource limits (`ulimit`, timeouts) and the run is badged "unsandboxed" in the UI. The SSH account boundary and the policy engine still apply. Scheduler integration (submitting runs through Slurm or similar) is not designed here; see OQ-17.
 
@@ -256,7 +256,9 @@ Syncs are typically well under a second on a warm connection. The mirror is neve
 
 ### 5.6 Sandbox (D6)
 
-**Decided:** OS-level isolation as below, network denied by default with per-run grants, container backend as an opt-in, resource-limits-only fallback badged in the UI on hosts that cannot isolate.
+**Decided:** OS-level isolation as below, no network for anything that runs code, container backend as an opt-in, resource-limits-only fallback badged in the UI on hosts that cannot isolate.
+
+**Network rule.** The app reaches the network for three things only, and only from the Rust core: (1) model endpoints (the `base_url` of configured providers), (2) Python package installation from the configured index, and (3) SSH execution targets from `config.toml`. All three go through one gate, the `wb-net` crate: it builds every HTTP request and refuses hosts that are not configured provider endpoints, and it authorizes each `uv` install and each `ssh`/`scp`/`rsync` spawn (the core passes every command line it runs through one check, `egress::guard`). The allowlist is filled from the user's configuration, never from model output. Every decision, allowed or refused, is appended to the ledger `<home>/egress.jsonl` (destination and purpose, never content); if the ledger cannot be written the request is not made. Code the agent runs, the Python kernels, and the embedded terminal have no network: the kernel and the terminal shell are started under `bwrap --unshare-net` (Linux) or `sandbox-exec` with the network denied (macOS), and per-run sandboxes are stricter still. There are no per-run network grants and no setting that enables one; a `network = ...` key left in an old `project.toml` is ignored. Where no isolation tool works, the kernel state and the terminal panel show "network not isolated".
 
 Scripts run with least privilege:
 
@@ -264,14 +266,14 @@ Scripts run with least privilege:
 |---|---|
 | Filesystem read | The home directory is hidden except for the repo or mirror, the session venv, the interpreter's base installation, the tooling environment, and user-approved data directories. Everything outside home (system libraries, other mounts) is readable. Data directories outside the repo come only from the user's global config, never from the repo's `project.toml`. |
 | Filesystem write | The run's output directory, `data/derived/` if present, and a per-run scratch directory that is also `TMPDIR`. Source directories are read-only during runs so a script cannot modify code. On macOS the system temp locations are also writable. |
-| Network | Denied. A per-run grant turns it on entirely; per-host allowlists need a filtering proxy and are not built. |
+| Network | Denied, always. There is no grant: not per run, not by policy, not by a tool parameter. |
 | Processes | Can spawn child processes within the same sandbox. Cannot escalate. |
 | Resources | Wall-clock timeout (default 10 minutes) and open-file limit. An address-space limit is opt-in (`[limits] address_space_gb`) because it also limits memory-mapped data. No CPU limit. |
 | Environment variables | Minimal allowlist. API keys are never passed into the sandbox. |
 
 Implementation per platform:
 
-- **Linux (local or remote):** `bubblewrap` (`bwrap`) with bind mounts matching the table above and `--unshare-net` unless granted. Fallback to Landlock plus `seccomp` if `bwrap` is unavailable; fallback to resource limits only, badged, if user namespaces are disabled.
+- **Linux (local or remote):** `bubblewrap` (`bwrap`) with bind mounts matching the table above and `--unshare-net`. Fallback to Landlock plus `seccomp` if `bwrap` is unavailable; fallback to resource limits only, badged, if user namespaces are disabled.
 - **macOS:** `sandbox-exec` with a generated profile. It is deprecated in documentation but functional and used by other agent tools; the alternative is a container backend.
 - **Container backend (optional):** Podman or Docker with the venv and repo mounted. Slower start, strongest isolation.
 - **Windows:** deferred with the platform (D16).
@@ -368,14 +370,10 @@ edits    = "review"        # review | auto-new-files | auto
 runs     = "auto"          # auto | ask
 packages = "ask"           # ask | auto | deny
 shell    = "ask"           # ask | auto | deny
-network  = "deny"          # deny | ask | allow
 git      = "ask"           # commits by the agent
 protected = ["analysis/core/**", "data/**"]   # never editable by the agent
 max_steps = 40
 max_run_seconds = 600
-
-[policy.mcp]
-wolfram = "ask"
 ```
 
 Edit gating states:
@@ -431,7 +429,7 @@ Provider configuration in `~/.analyst/config.toml`:
 name = "ollama-lab"
 kind = "openai-compatible"
 base_url = "http://lab-gpu:11434/v1"
-# api_key resolved from keychain entry "ollama-lab" or env var OLLAMA_LAB_API_KEY
+# api_key: env var OLLAMA_LAB_API_KEY (the derived default name), or the same name in a .env file
 
 [[providers]]
 name = "anthropic"
@@ -443,7 +441,7 @@ id = "<any model served there>"
 # capabilities are probed; override only if the probe is wrong, e.g. context_window = 65536
 ```
 
-API keys come from the environment variable named by `api_key_env` or, failing that, from `~/.analyst/credentials.toml` (mode 0600), which the app's settings dialog writes. OS keychain storage is planned. The chat header always shows which provider is active and whether it is local or remote, so you know what leaves the machine.
+API keys are named by an environment variable: `api_key_env`, or the derived default `<PROVIDER NAME>_API_KEY` (uppercased, non-alphanumerics to `_`). The lookup order is the process environment, then `~/.analyst/.env` (mode 0600, written by the settings dialog and `analyst key set`), then the repo's own `.env` when it exists and git does not track it. There is no keychain and no `credentials.toml`. Every provider request is built by the network gate (5.6), which only allows the hosts of configured providers. The chat header always shows which provider is active and whether it is local or remote, so you know what leaves the machine.
 
 Model choice is per conversation. A later feature allows different models for roles (planner, coder, summarizer); the interface already supports it.
 
@@ -540,14 +538,14 @@ Each rule has a severity (`error` or `warn`) in `.analyst/project.toml`. Checker
 ### 5.14 Documents
 
 - **Markdown:** edited in the main editor, previewed live in a panel using `react-markdown` with `remark-math` and KaTeX. Figure embeds support both plain image paths and run references such as `{{fig: fit_decay/residuals}}` that resolve to the latest run, so notes stay current as analyses are rerun.
-- **LaTeX:** `.tex` files compile with Tectonic (self-contained, fetches packages on demand) to PDF, shown in a `pdf.js` viewer panel. Compile on save with a debounce. Errors are parsed into editor diagnostics. SyncTeX click-to-source later. Compilation is always local.
+- **LaTeX:** `.tex` files compile with a TeX installation the user provides (Tectonic and its on-demand package fetching are removed from the plan) to PDF, shown in a `pdf.js` viewer panel. Compile on save with a debounce. Errors are parsed into editor diagnostics. SyncTeX click-to-source later. Compilation is always local.
 - **Agent support:** `doc.insert_figure` and `doc.render` tools; a "report" skill that knows the document structure.
 
 Each session gets a `notes.md` by default.
 
 ### 5.15 Terminal
 
-`xterm.js` in the renderer over a `portable-pty` in the core, opened in the repo root with the session venv activated and the figure-capture environment set. On a remote target the pty runs `ssh -t` into the mirror directory with the same setup. Multiple terminals per session. This is the manual door into the same loop: anything run here produces figures and run records like an agent run.
+`xterm.js` in the renderer over a `portable-pty` in the core, opened in the repo root with the session venv activated and the figure-capture environment set. The shell has no network access: it is started through the no-network wrapper (`bwrap --unshare-net` or `sandbox-exec`), and the panel shows "no network" or, where no isolation is available, "network not isolated". On a remote target the pty runs `ssh -t` into the mirror directory with the same setup, wrapped with `bwrap` on the host when it works there. Multiple terminals per session. This is the manual door into the same loop: anything run here produces figures and run records like an agent run.
 
 ### 5.16 Skills and configuration
 
@@ -612,7 +610,8 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
 ~/.analyst/                              (local machine)
   config.toml              providers, models, targets, global policy defaults, UI prefs
   skills/                  global skills
-  mcp.json                 global MCP servers
+  .env                     API keys saved through the app (mode 0600)
+  egress.jsonl             ledger of every network decision (destination, purpose)
   tooling/                 app-owned Python environment for the local target
   ssh/                     control sockets for multiplexed connections
   sessions/<id>/
@@ -630,7 +629,7 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
   .analyst/
     project.toml           contract, policy, data dirs, per-target overrides   (committed)
     skills/                project skills                                      (committed)
-    mcp.json               project MCP servers                                  (committed)
+    .env                   optional API keys for this repo                      (ignored; never synced)
     env.sh                 generated; figure capture env for terminals          (ignored)
   scripts/  analysis/  data/  out/  notes.md  pyproject.toml  uv.lock
 ```
@@ -639,11 +638,10 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
 
 ## 8. Security and privacy
 
-- No telemetry. No network calls except to configured model providers, configured MCP servers, SSH targets, package indexes during installs, and Tectonic's package fetches.
-- API keys in the environment or `credentials.toml` (mode 0600). Never logged, removed from the environment of kernels and terminals, never passed into the sandbox, never sent to a remote target, and never placed in MCP server environments unless explicitly configured for that server.
+- No telemetry. No network calls except to configured model providers, the configured package index during installs, and configured SSH targets, all through the gate described in 5.6 and all recorded in `<home>/egress.jsonl`. MCP servers and Tectonic's package fetches are removed from the plan.
+- API keys in the environment or an untracked `.env` file (`~/.analyst/.env`, mode 0600, or the repo's). Never logged, removed from the environment of kernels and terminals, never passed into the sandbox, never sent to a remote target (a repo `.env` is excluded from the mirror), and not readable through the agent's file tools.
 - SSH credentials are never handled by the app; it relies on the user's OpenSSH configuration and agent.
 - The chat UI shows provider locality (local or remote) at all times. A per-target "data directories" list controls what the agent can read; nothing outside the repo and that list is readable by tools or by the sandbox.
-- MCP servers run as separate processes with their own configured permissions; their tools go through the same policy engine as built-ins.
 - Transcripts stay local. Export is explicit.
 
 ## 9. Cross-platform (D16)

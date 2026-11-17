@@ -33,7 +33,7 @@ The product keeps the workflow and removes the friction: one application, one ag
 3. **Tools, not transcripts.** The product of a session is a repository of reusable, CLI-driven analysis tools, not a chat log or a notebook. The agent is held to a script contract that the app checks automatically.
 4. **Three doors into the same loop.** Agent-driven, editor-driven, and terminal-driven work all see the same runs, figures, and equations. You can enter at whichever is fastest for the task at hand.
 5. **Model agnostic, local first.** Open-weight models through Ollama (or any OpenAI-compatible server) and frontier models through provider API keys, with the same agent loop and no model-specific code paths. The app assumes a performant model (native tool calling, a reasonable context window) and probes capabilities rather than maintaining a model list. The application itself has no cloud dependency and no telemetry. The only data that leaves the machine is what you send to the model provider you chose, and the app tells you which that is.
-6. **Contained by default, wherever it runs.** Code the agent runs is sandboxed: scoped filesystem, no network unless you grant it, bounded time and resources. Runs execute on the local machine or on a remote host over SSH, with the same controls and the same figure and run views either way.
+6. **Contained by default, wherever it runs.** Code the agent runs is sandboxed: scoped filesystem, no network at all, bounded time and resources. The kernels and the terminal have no network either; the app itself reaches only model endpoints, the configured package index, and SSH targets. Runs execute on the local machine or on a remote host over SSH, with the same controls and the same figure and run views either way.
 7. **Data stays where it is generated.** The app never copies datasets or derived data between machines. Only rendered products travel back to the interface: figures, logs, run metadata, and equation results. Data outputs are inspected in place.
 
 ## 4. Who it is for
@@ -76,7 +76,7 @@ These walkthroughs are the acceptance bar for the first usable version.
 | Sessions | Tabs for repo plus venv plus conversation plus layout. Checkpoints and one-click revert. | Session templates. Archival and search across sessions. |
 | Packages | Visible, editable package list per target. Agent installs require approval. Lockfile committed with the repo so environments reproduce on any target. `uv` only. | Multiple environments per repo. |
 | Documents | Markdown with KaTeX preview. LaTeX compile to PDF with embedded viewer. | SyncTeX click-to-source. Report templates. |
-| External tools | MCP client for stdio and HTTP servers (Wolfram, MATLAB, Julia, databases, literature search). | Marketplace-style discovery. |
+| External tools | Removed from the plan: no MCP client. | |
 | Models | Any OpenAI-compatible endpoint plus Anthropic. API keys from the environment or entered in settings. Per-session model choice. Capabilities probed automatically. | Cost and token budgets. Role-specific models. |
 
 ## 8. Success criteria
@@ -89,7 +89,7 @@ These walkthroughs are the acceptance bar for the first usable version.
 
 ## 9. Non-goals for the first version
 
-Jupyter notebooks as a first-class format. Analysis languages other than Python (external engines are reachable through MCP). Multi-user collaboration. Cloud sync. Mobile. Automated model selection or AutoML.
+Jupyter notebooks as a first-class format. Analysis languages other than Python. MCP servers and other external tool connections. Multi-user collaboration. Cloud sync. Mobile. Automated model selection or AutoML.
 
 ## 10. Roadmap
 
@@ -98,7 +98,7 @@ Jupyter notebooks as a first-class format. Analysis languages other than Python 
 | 0. Headless spike | Agent loop, kernel, sandbox, local and SSH execution targets, and the script contract as a CLI harness with no UI. Model-agnostic evaluation suite. | Three representative analysis tasks complete end to end on both a local and an SSH target, with two models from different providers, graded by the suite. |
 | 1. Workbench | Tauri shell with sessions, editor, chat, runner, figure viewer, terminal, packages panel, target switching. | You can do a full day's analysis in the app without opening Zed. |
 | 2. Verification | Equation lens with consistency checks, contract checker, checkpoints and revert, run comparison. | Equation badges and diff review cover the walkthroughs in section 6. |
-| 3. Extension and documents | MCP servers, skills, markdown and LaTeX preview and compile, report assembly. | An external engine is used in an analysis and a PDF report is produced from the app. |
+| 3. Extension and documents | Skills, markdown and LaTeX preview and compile (with a TeX installation the user provides), report assembly. | A PDF report is produced from the app. |
 | 4. Polish | Undockable windows, keybindings and Vim mode, performance, Windows support. | Daily-driver quality. |
 
 macOS and Linux are the supported platforms through phase 3. All decisions that block phase 0 are closed; [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) lists what remains open for phase 1 and later, to be decided once phase 0 is complete.

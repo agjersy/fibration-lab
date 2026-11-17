@@ -5,6 +5,12 @@
  */
 export type ProviderKeyStatus = { provider: string, has_key: boolean, 
 /**
- * `"env"` (the provider's `api_key_env` is set), `"stored"` (saved through the app), or null.
+ * `"env"` (the variable is set in the app's environment), `"stored"` (found in
+ * `$ANALYST_HOME/.env`, where keys saved through the app go), or null.
  */
-source: string | null, api_key_env: string | null, };
+source: string | null, 
+/**
+ * The variable that names the key: the provider's `api_key_env`, or the derived default
+ * `<PROVIDER NAME>_API_KEY`.
+ */
+api_key_env: string | null, };

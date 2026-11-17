@@ -78,7 +78,7 @@ def test_g9_project_data_dirs_are_confined_and_data_dir_arg_is_honoured(repo: Pa
         assert "'~/.ssh'" in caplog.text and "'/etc'" in caplog.text
         assert k.data_dirs == [repo.resolve() / "data", repo.resolve() / "data" / "sub", external]
         assert k.config.targets["lab"]["data_dirs"] == [str(repo.resolve() / "data")]
-        spec = k.runs.sandbox_spec(tmp_path / "runs" / "r", repo / "out" / "s" / "r", False)
+        spec = k.runs.sandbox_spec(tmp_path / "runs" / "r", repo / "out" / "s" / "r")
         assert spec.data_dirs == k.data_dirs
         ro = [str(p) for p in spec.read_only_dirs()]
         assert str(external) in ro and "/etc" not in ro and not any(".ssh" in p for p in ro)

@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod checkpoint;
 pub mod config;
+pub mod egress;
 pub mod evals;
 pub mod init;
 pub mod kernel;
