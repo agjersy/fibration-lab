@@ -53,7 +53,7 @@ analyst chat -m <provider>/<model> "..."             # needs a provider in ~/.an
 analyst eval run --model <provider>/<model> --tasks <workspace>/evals/tasks
 ```
 
-Provider configuration lives in `~/.analyst/config.toml` (schema in PROTOCOL.md section 2.1). API keys are read from the environment variable named by `api_key_env`. Override the home directory with `--home` or `ANALYST_HOME`.
+Provider configuration lives in `~/.analyst/config.toml` (schema in PROTOCOL.md section 2.1). API keys are read from the environment variable named by `api_key_env` (default `<PROVIDER NAME>_API_KEY`), then from `$ANALYST_HOME/.env` (`analyst key set <provider>` writes it), then from an untracked `.env` in the repo. `[packages] index_url` sets the package index (default `https://pypi.org/simple`). Override the home directory with `--home` or `ANALYST_HOME`.
 
 ## Evaluation suite
 
@@ -127,6 +127,10 @@ The macOS sandbox also checks `file-read-metadata` on every directory along a pa
 3. Add that path to `data_dirs` in `.analyst/project.toml` if it is data, or report it if it is part of the interpreter or a system location.
 
 **Matplotlib cannot find a font cache or config.** Runs set `MPLCONFIGDIR` inside the run directory, which is writable; the user's `~/.matplotlib` is intentionally hidden.
+
+## Network rule
+
+The app reaches the network for model endpoints, package installs from the configured index, and SSH targets only, and only through `crates/wb-net` (ARCHITECTURE.md section 5.6). In `crates/core` that means: build HTTP requests with `wb_net::gate().request(..)`, never a client of your own; build `uv` installs with `egress::uv_install` (other `uv` calls run offline); and spawn command lines through the existing helpers (`target::run_command`, `TaskLogger::stream_command`, the kernel transports), which call `egress::guard`. `python3 tools/check_egress.py` checks that no other crate can reach the network. Decisions are logged to `$ANALYST_HOME/egress.jsonl`. Kernels and terminals are spawned through `wb_sandbox::no_network::wrap`; tests that need isolation skip when neither `bwrap` nor `sandbox-exec` works.
 
 ## Conventions
 

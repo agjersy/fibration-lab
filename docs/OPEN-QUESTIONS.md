@@ -10,7 +10,7 @@ Every question that blocked phase 0 has been answered. Numbering is preserved fr
 |---|---|---|
 | OQ-1 Desktop shell | Tauri 2 as a host-native desktop application for macOS and Linux (native windows, menus, installers; no browser, no local server; interface drawn by the OS webview component). | ARCHITECTURE.md section 3 |
 | OQ-2 Platforms and remote hosts | macOS and Linux are prioritized for both the desktop app and remote targets through phase 3. Windows is deferred to phase 4. Remote hosts are reached as login-node sessions. | ARCHITECTURE.md sections 5.5, 5.6, 9 |
-| OQ-3 Sandbox and network | OS-level isolation (`bubblewrap` on Linux, `sandbox-exec` on macOS), network denied by default with per-run grants and host allowlists, container backend as an opt-in, resource-limits-only fallback badged in the UI where isolation is unavailable. | ARCHITECTURE.md section 5.6 |
+| OQ-3 Sandbox and network | OS-level isolation (`bubblewrap` on Linux, `sandbox-exec` on macOS), no network for sandboxed code, kernels, or the terminal (no per-run grants; the core alone reaches model endpoints, the package index, and SSH targets, through one gate with a ledger), container backend as an opt-in, resource-limits-only fallback badged in the UI where isolation is unavailable. | ARCHITECTURE.md section 5.6 |
 | OQ-4 Edit gating | `review` is the default mode, review is per hunk, protected paths and protected-region markers are in the first version. Scope declaration applies in every mode. | ARCHITECTURE.md sections 5.7, 5.8 |
 | OQ-6 Script contract | Command-line options on every script and shared logic generalized into the library are hard rules with automated checks. The remaining proposed rules ship as defaults with per-repo severities. | ARCHITECTURE.md section 5.13 |
 | OQ-7 Environment tooling | `uv` only. No conda-only packages are planned. | ARCHITECTURE.md section 5.2 |
@@ -37,13 +37,9 @@ Nothing below blocks phase 1.
 
 **Decide after phase 0.** Phase 0 will measure derivation coverage on a real module. Then: is a `Math:` docstring section in SymPy syntax an acceptable convention to require? Would you rather write LaTeX directly and accept that it cannot be verified numerically?
 
-### OQ-10. LaTeX toolchain — Blocks phase 3
+### OQ-10. LaTeX toolchain — Decided
 
-**Options.** (a) Tectonic, fetched on first use, self-contained. (b) Use the system TeX Live or MacTeX if present. (c) Both, system first.
-
-**Recommendation.** (c).
-
-**Decide.** Do you have a TeX installation you want used?
+**Decision.** (b): use a TeX installation the user provides (TeX Live or MacTeX). Tectonic's fetch-on-demand is removed from the plan because the app does not download toolchains or packages for it. MCP (external tool servers) is likewise removed from the plan.
 
 ## 3. Evidence to gather before phase 2
 
