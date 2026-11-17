@@ -22,7 +22,7 @@
 | 0. Headless core | Everything in section 5: protocol, providers, kernel, SDK, renderer, diagrams, checker, fidelity render, references and search, project and snapshot store, sandbox, code mode, agent loop, CLI, evaluation suite | Section 5.16 |
 | 1. Workbench | Everything in section 6: Tauri app, renderer UI, live preview, proposals, source lens, exports, settings, installers for Windows and macOS | Section 6.12 |
 
-Out of scope until later phases (do not build, but do not design them out): re-import of PowerPoint edits (stable ids are in scope), import of arbitrary decks as projects, managed configuration and organization libraries, MCP connectors, Bedrock/Vertex/Foundry auth back ends, OCR, web access, `.odp`/HTML/`.potx` export, Linux packaging, animations.
+Out of scope until later phases (do not build, but do not design them out): re-import of PowerPoint edits (stable ids are in scope), import of arbitrary decks as projects, managed configuration and organization libraries, Bedrock/Vertex/Foundry auth back ends, OCR, web access, `.odp`/HTML/`.potx` export, Linux packaging, animations.
 
 ## 3. Repository layout and toolchain
 
@@ -84,8 +84,8 @@ Order matters: each package lists what it depends on. Packages without dependenc
 ### W2. Providers with gateway support (`wb-providers`)
 
 **Depends:** W0.
-**Do:** port Analyst's provider layer (both adapters, SSE, `ModelEvent`, scripted client, text protocol, capability probe). Add: `auth = bearer|x-api-key|none`, extra headers, `location`, proxy (`system|none|url`, system discovery on Windows and macOS) and trust store (`rustls-platform-verifier` plus an optional extra PEM), unknown-field downgrade (PROTOCOL 6.1), document blocks with citation mapping, prompt-caching markers, the vision probe, `degraded` computation against the 128k + vision baseline, keychain key storage (`keyring` crate) with `env:` fallback, the audit hook (a callback invoked per request with the PROTOCOL 10 record minus content).
-**Accept:** the Analyst SSE fixture tests pass unchanged; new fixtures for bearer auth, extra headers, a 400 naming `cache_control` followed by a successful retry, an Anthropic stream with `citations` deltas mapped to `Cite`, the vision probe pass and fail; a local HTTPS test server with a self-signed CA proves `ca_bundle` works and that without it the request fails; a proxy test with a local CONNECT proxy.
+**Do:** port Analyst's provider layer (both adapters, SSE, `ModelEvent`, scripted client, text protocol, capability probe). Add: `auth = bearer|x-api-key|none`, extra headers, `location`, unknown-field downgrade (PROTOCOL 6.1), document blocks with citation mapping, prompt-caching markers, the vision probe, `degraded` computation against the 128k + vision baseline, keys named by `env:<VAR>` and read from the environment or `.env`, the audit hook (a callback invoked per request with the PROTOCOL 10 record minus content).
+**Accept:** the Analyst SSE fixture tests pass unchanged; new fixtures for bearer auth, extra headers, a 400 naming `cache_control` followed by a successful retry, an Anthropic stream with `citations` deltas mapped to `Cite`, the vision probe pass and fail; a request to an endpoint that is not allowed at the network gate is refused before any connection. (Proxy, CA bundle, and keychain support were removed: network only for model endpoints, package installs, and SSH targets, through the network gate (`wb-net`); keys from the environment or `.env`.)
 
 ### W3. Kernel skeleton and runtime bundling
 
@@ -194,7 +194,7 @@ All packages accepted; then, run by the owner with real endpoints: three tasks c
 
 ### D4. Workbench layout and project tabs
 
-**Do:** top bar with project tabs (template name, model, kernel state), model picker with degraded badges, settings dialog (providers, keys into the keychain, network proxy and CA, render engine, embedding), new-project dialog (folder, template file, deck mode), layout persistence, Zed-style palette and keymap subset from Analyst.
+**Do:** top bar with project tabs (template name, model, kernel state), model picker with degraded badges, settings dialog (providers, keys into the home `.env`, render engine, embedding, kernel network isolation), new-project dialog (folder, template file, deck mode), layout persistence, Zed-style palette and keymap subset from Analyst.
 **Accept:** e2e: create a project from the mock, switch tabs, layout restored after reload.
 
 ### D5. Slide rail, outline view, canvas with live preview

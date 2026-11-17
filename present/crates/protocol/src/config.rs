@@ -15,6 +15,10 @@ use ts_rs::TS;
 // ---- global config.toml (4.1) ----
 
 /// `~/.present/config.toml` (macOS, Linux) or `%APPDATA%\Present\config.toml` (Windows).
+///
+/// There are no network settings: the app reaches model endpoints directly, through the
+/// network gate, without a proxy or extra trust roots. A `[network]` table left in an older
+/// file is ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct GlobalConfig {
@@ -23,7 +27,6 @@ pub struct GlobalConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_python: Option<String>,
     pub defaults: Defaults,
-    pub network: NetworkConfig,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<ProviderConfig>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -45,24 +48,6 @@ pub struct Defaults {
     /// `"<provider name>/<model id>"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(default)]
-pub struct NetworkConfig {
-    /// `"system"`, `"none"`, or a proxy URL.
-    pub proxy: String,
-    /// `"system"`, or the path of a PEM file added to the OS trust store.
-    pub ca_bundle: String,
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        NetworkConfig {
-            proxy: "system".to_string(),
-            ca_bundle: "system".to_string(),
-        }
-    }
 }
 
 #[derive(
@@ -104,7 +89,7 @@ pub struct ProviderConfig {
     /// Default: `x-api-key` for `anthropic`; see [`ProviderConfig::effective_auth`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthKind>,
-    /// `keychain:<entry>` or `env:<VAR>`; see [`KeySource`].
+    /// `env:<VAR>`; see [`KeySource`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// Extra headers, sent on every request.
@@ -138,9 +123,7 @@ impl ProviderConfig {
 /// Where a provider key is read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeySource {
-    /// `keychain:<entry>`: the OS keychain.
-    Keychain(String),
-    /// `env:<VAR>`: an environment variable (development and CI).
+    /// `env:<VAR>`: a variable in the process environment or in the app home's `.env` file.
     Env(String),
 }
 
@@ -151,7 +134,6 @@ impl KeySource {
             return None;
         }
         match scheme {
-            "keychain" => Some(KeySource::Keychain(rest.to_string())),
             "env" => Some(KeySource::Env(rest.to_string())),
             _ => None,
         }

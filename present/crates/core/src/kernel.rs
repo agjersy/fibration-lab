@@ -8,6 +8,7 @@ use present_protocol::rpc::RpcError;
 use present_protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, oneshot, Mutex};
+use wb_sandbox::no_network::{self, NetIsolation};
 
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
@@ -85,6 +87,7 @@ struct Inner {
     next_id: AtomicI64,
     notifications: broadcast::Sender<KernelNotification>,
     hello: Value,
+    network: NetIsolation,
 }
 
 #[derive(Clone)]
@@ -116,21 +119,61 @@ pub fn resolve_runtime_python(home: &Path, configured: Option<&str>) -> Option<P
     candidates.into_iter().find(|p| p.is_file())
 }
 
+/// `bwrap --bind / /` mounts the file system without device access, so the kernel could not
+/// open `/dev/null` (which every `subprocess.DEVNULL` does). Bind `/` with its devices
+/// instead; the network stays unshared. This changes nothing once the shared wrapper binds
+/// devices itself, and nothing for the other isolation kinds.
+fn keep_devices(mut wrapped: no_network::Wrapped) -> no_network::Wrapped {
+    if wrapped.isolation == NetIsolation::Bubblewrap {
+        let end = wrapped
+            .argv
+            .iter()
+            .position(|a| a == "--")
+            .unwrap_or(wrapped.argv.len());
+        for i in 0..end.saturating_sub(2) {
+            if wrapped.argv[i] == "--bind"
+                && wrapped.argv[i + 1] == "/"
+                && wrapped.argv[i + 2] == "/"
+            {
+                wrapped.argv[i] = "--dev-bind".into();
+            }
+        }
+    }
+    wrapped
+}
+
 impl KernelClient {
     /// Spawn the kernel and complete `kernel.hello`.
+    ///
+    /// The kernel runs with no network (`wb_sandbox::no_network`): it reads and writes the
+    /// project on the file system and never needs to connect anywhere. The per-run sandboxes
+    /// it starts itself (code mode, skill scripts) and the renderer it drives nest inside.
+    /// Where the platform has no working isolation the kernel still starts, and
+    /// [`KernelClient::network_isolation`] says so.
     pub async fn connect(launch: &KernelLaunch) -> Result<KernelClient, KernelError> {
-        let mut cmd = Command::new(&launch.python);
-        cmd.arg("-I")
-            .arg("-m")
-            .arg("present_kernel")
-            .arg("--project")
-            .arg(&launch.project)
-            .arg("--home")
-            .arg(&launch.home)
-            .arg("--engine")
-            .arg(&launch.engine)
-            .arg("--sandbox")
-            .arg(&launch.sandbox)
+        let argv: Vec<OsString> = [
+            launch.python.as_os_str(),
+            "-I".as_ref(),
+            "-m".as_ref(),
+            "present_kernel".as_ref(),
+            "--project".as_ref(),
+            launch.project.as_os_str(),
+            "--home".as_ref(),
+            launch.home.as_os_str(),
+            "--engine".as_ref(),
+            launch.engine.as_ref(),
+            "--sandbox".as_ref(),
+            launch.sandbox.as_ref(),
+        ]
+        .into_iter()
+        .map(OsStr::to_os_string)
+        .collect();
+        let wrapped = keep_devices(no_network::wrap(argv));
+        if let NetIsolation::None(why) = &wrapped.isolation {
+            tracing::warn!(reason = %why, "the deck kernel is running without network isolation");
+        }
+        let mut cmd = Command::new(&wrapped.argv[0]);
+        cmd.args(&wrapped.argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -184,6 +227,7 @@ impl KernelClient {
                 next_id: AtomicI64::new(1),
                 notifications: tx,
                 hello: Value::Null,
+                network: wrapped.isolation,
             }),
         };
         let hello = client
@@ -205,6 +249,12 @@ impl KernelClient {
     /// The raw `kernel.hello` result (engines, sandbox, embedding, packages).
     pub fn hello(&self) -> &Value {
         &self.inner.hello
+    }
+
+    /// How the kernel process is kept off the network (`label()` is `bwrap`,
+    /// `sandbox-exec`, or `none`).
+    pub fn network_isolation(&self) -> &NetIsolation {
+        &self.inner.network
     }
 
     pub fn notifications(&self) -> broadcast::Receiver<KernelNotification> {
@@ -248,5 +298,35 @@ impl KernelClient {
         if let Some(mut child) = self.inner.child.lock().await.take() {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wrapper_keeps_devices_and_only_touches_its_own_arguments() {
+        let argv = |w: &no_network::Wrapped| -> Vec<String> {
+            w.argv
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        // A kernel argument that looks like the wrapper's own is left alone.
+        let command = ["python", "--bind", "/", "/"];
+        let w = keep_devices(no_network::wrap_with(&NetIsolation::Bubblewrap, command));
+        let a = argv(&w);
+        let split = a.iter().position(|x| x == "--").unwrap();
+        assert!(a[..split].contains(&"--unshare-net".to_string()));
+        assert!(!a[..split].contains(&"--bind".to_string()));
+        assert!(a[..split].contains(&"--dev-bind".to_string()));
+        assert_eq!(a[split + 1..], command);
+
+        let none = NetIsolation::None("why".into());
+        let w = keep_devices(no_network::wrap_with(&none, command));
+        assert_eq!(argv(&w), command);
+        let w = keep_devices(no_network::wrap_with(&NetIsolation::SandboxExec, command));
+        assert_eq!(argv(&w)[3..], command);
     }
 }

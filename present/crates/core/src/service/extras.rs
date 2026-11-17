@@ -64,7 +64,9 @@ fn asset_view(root: &Path, path: &Path) -> Option<AssetView> {
 }
 
 impl Workbench {
-    /// Store a provider's API key in the OS keychain. The key is never returned or logged.
+    /// Store a provider's API key in the home `.env` file (mode 0600) under the variable the
+    /// provider's `key = "env:<VAR>"` names. The key is never returned or logged. A value
+    /// for the same variable in the process environment still takes precedence.
     pub fn provider_set_key(&self, provider: &str, key: &str) -> R<()> {
         let global = self.global();
         let cfg = global
@@ -74,26 +76,18 @@ impl Workbench {
             .ok_or_else(|| {
                 IpcError::not_found(format!("no provider named {provider:?} in config.toml"))
             })?;
-        let reference = cfg.key.clone().unwrap_or_default();
-        let entry = match wb_providers::keys::KeyRef::parse(&reference) {
-            Ok(wb_providers::keys::KeyRef::Keychain(entry)) => entry,
-            Ok(wb_providers::keys::KeyRef::Env(var)) => {
-                return Err(IpcError::invalid(format!(
-                    "provider {provider:?} reads its key from the environment variable {var}; set key = \"keychain:<name>\" in config.toml to store it here"
-                )))
-            }
-            Err(_) => {
-                return Err(IpcError::invalid(format!(
-                    "provider {provider:?} has no key = \"keychain:<name>\" entry in config.toml"
-                )))
-            }
+        let Some(reference) = cfg.key.as_deref() else {
+            return Err(IpcError::invalid(format!(
+                "provider {provider:?} has no key entry in config.toml; add key = \"env:<VAR>\" to name the variable its key is stored under"
+            )));
         };
+        let reference = wb_providers::keys::KeyRef::parse(reference)
+            .map_err(|e| IpcError::invalid(format!("provider {provider:?}: {e}")))?;
         if key.trim().is_empty() {
             return Err(IpcError::invalid("the key is empty"));
         }
-        wb_providers::keys::KeyStores::system("Personal Present")
-            .keychain
-            .set(&entry, key.trim())
+        wb_providers::keys::KeyStores::for_home(&self.home)
+            .set(&reference, key.trim())
             .map_err(|e| IpcError::invalid(format!("the key could not be stored: {e}")))
     }
 }

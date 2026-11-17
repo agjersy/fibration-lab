@@ -1,14 +1,12 @@
-//! Minimal local HTTP/1.1 test server, CONNECT proxy, and test CA (tokio only; no mock
-//! framework). One request per connection; the handler sees the full recorded request.
+//! Minimal local HTTP/1.1 test server (tokio only; no mock framework). One request per connection; the handler sees the full recorded request.
 #![allow(dead_code)]
 
 use serde_json::Value;
-use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use wb_providers::keys::{KeyError, KeyStore, KeyStores};
+use tokio::net::TcpListener;
+use wb_providers::keys::{KeyRef, KeyStores};
 
 #[derive(Debug, Clone)]
 pub struct Recorded {
@@ -70,24 +68,17 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    /// Plain HTTP on 127.0.0.1.
+    /// Plain HTTP on 127.0.0.1. The server's address is allowed at the network gate as a
+    /// model endpoint, as a configured provider's `base_url` would be.
     pub async fn start(
         handler: impl Fn(&Recorded, usize) -> Reply + Send + Sync + 'static,
     ) -> Self {
-        Self::start_inner(Arc::new(handler), None).await
-    }
-
-    /// HTTPS on 127.0.0.1 with the given certificate.
-    pub async fn start_tls(
-        tls: tokio_rustls::TlsAcceptor,
-        handler: impl Fn(&Recorded, usize) -> Reply + Send + Sync + 'static,
-    ) -> Self {
-        Self::start_inner(Arc::new(handler), Some(tls)).await
-    }
-
-    async fn start_inner(handler: Handler, tls: Option<tokio_rustls::TlsAcceptor>) -> Self {
+        let handler: Handler = Arc::new(handler);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        wb_net::gate()
+            .allow_model_endpoint(&format!("http://{addr}"))
+            .unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = requests.clone();
         tokio::spawn(async move {
@@ -95,18 +86,8 @@ impl TestServer {
                 let Ok((stream, _)) = listener.accept().await else {
                     return;
                 };
-                let (handler, recorded, tls) = (handler.clone(), recorded.clone(), tls.clone());
-                tokio::spawn(async move {
-                    match tls {
-                        // A failed handshake (client does not trust us) just ends the task.
-                        Some(acceptor) => {
-                            if let Ok(s) = acceptor.accept(stream).await {
-                                serve(s, handler, recorded).await;
-                            }
-                        }
-                        None => serve(stream, handler, recorded).await,
-                    }
-                });
+                let (handler, recorded) = (handler.clone(), recorded.clone());
+                tokio::spawn(serve(stream, handler, recorded));
             }
         });
         TestServer { addr, requests }
@@ -199,140 +180,28 @@ async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
     let _ = stream.shutdown().await;
 }
 
-/// A forward proxy that only understands `CONNECT host:port` and tunnels bytes.
-pub struct ConnectProxy {
-    pub addr: SocketAddr,
-    targets: Arc<Mutex<Vec<String>>>,
+/// Key stores backed by a temporary home `.env` holding `entries` (variable, value). The
+/// variable names used in these tests are never set in the process environment.
+pub struct TestKeys {
+    _home: tempfile::TempDir,
+    stores: KeyStores,
 }
 
-impl ConnectProxy {
-    pub async fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let targets = Arc::new(Mutex::new(Vec::new()));
-        let seen = targets.clone();
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut client, _)) = listener.accept().await else {
-                    return;
-                };
-                let seen = seen.clone();
-                tokio::spawn(async move {
-                    let Some((head, early)) = read_head(&mut client).await else {
-                        return;
-                    };
-                    let (method, target, _) = parse_head(&head);
-                    if method != "CONNECT" {
-                        let _ = client
-                            .write_all(
-                                b"HTTP/1.1 405 Method Not Allowed\r\ncontent-length: 0\r\n\r\n",
-                            )
-                            .await;
-                        return;
-                    }
-                    seen.lock().unwrap().push(target.clone());
-                    let Ok(mut upstream) = TcpStream::connect(&target).await else {
-                        let _ = client
-                            .write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n")
-                            .await;
-                        return;
-                    };
-                    if client
-                        .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                    let _ = upstream.write_all(&early).await;
-                    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
-                });
-            }
-        });
-        ConnectProxy { addr, targets }
-    }
-
-    pub fn url(&self) -> String {
-        format!("http://{}", self.addr)
-    }
-
-    /// `host:port` of every CONNECT seen.
-    pub fn targets(&self) -> Vec<String> {
-        self.targets.lock().unwrap().clone()
+impl std::ops::Deref for TestKeys {
+    type Target = KeyStores;
+    fn deref(&self) -> &KeyStores {
+        &self.stores
     }
 }
 
-/// A throwaway CA and a server certificate for `localhost` signed by it.
-pub struct TestPki {
-    pub ca_pem: String,
-    pub acceptor: tokio_rustls::TlsAcceptor,
-}
-
-pub fn test_pki() -> TestPki {
-    use rcgen::{
-        BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
-        KeyUsagePurpose,
-    };
-    use tokio_rustls::rustls;
-
-    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "wb-providers test CA");
-    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let ca_key = KeyPair::generate().unwrap();
-    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-
-    let mut leaf_params = CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-    leaf_params
-        .distinguished_name
-        .push(DnType::CommonName, "localhost");
-    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    let leaf_key = KeyPair::generate().unwrap();
-    let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
-
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(leaf_key.serialize_der().into());
-    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(vec![leaf_cert.der().clone()], key)
-    .unwrap();
-    TestPki {
-        ca_pem: ca_cert.pem(),
-        acceptor: tokio_rustls::TlsAcceptor::from(Arc::new(config)),
+pub fn key_stores(entries: &[(&str, &str)]) -> TestKeys {
+    let home = tempfile::tempdir().unwrap();
+    let stores = KeyStores::for_home(home.path());
+    for (var, value) in entries {
+        stores.set(&KeyRef::Env(var.to_string()), value).unwrap();
     }
-}
-
-/// In-memory key store.
-#[derive(Default)]
-pub struct MemoryKeys(pub Mutex<BTreeMap<String, String>>);
-
-impl KeyStore for MemoryKeys {
-    fn get(&self, entry: &str) -> Result<Option<String>, KeyError> {
-        Ok(self.0.lock().unwrap().get(entry).cloned())
-    }
-    fn set(&self, entry: &str, secret: &str) -> Result<(), KeyError> {
-        self.0.lock().unwrap().insert(entry.into(), secret.into());
-        Ok(())
-    }
-    fn delete(&self, entry: &str) -> Result<(), KeyError> {
-        self.0.lock().unwrap().remove(entry);
-        Ok(())
-    }
-}
-
-/// Key stores whose keychain holds `entries` and whose environment is empty.
-pub fn key_stores(entries: &[(&str, &str)]) -> KeyStores {
-    let keychain = MemoryKeys::default();
-    for (k, v) in entries {
-        keychain.set(k, v).unwrap();
-    }
-    KeyStores {
-        env: Box::new(MemoryKeys::default()),
-        keychain: Box::new(keychain),
+    TestKeys {
+        _home: home,
+        stores,
     }
 }

@@ -1,16 +1,12 @@
 [defaults]
 model = "gateway/claude-opus-5-5"     # "<provider name>/<model id>"
 
-[network]
-proxy = "system"                      # system | none | "http://proxy.corp:8080"
-ca_bundle = "system"                  # system | path to a PEM file (added to the OS trust store, not replacing it)
-
 [[providers]]
 name = "gateway"
 kind = "anthropic"                    # anthropic | openai-compatible
 base_url = "https://llm-gateway.corp.example"
 auth = "bearer"                       # x-api-key (default for anthropic) | bearer | none
-key = "keychain:gateway"              # keychain:<entry> | env:<VAR>
+key = "env:GATEWAY_API_KEY"           # env:<VAR>: read from the environment, then from .env
 headers = { "X-Team" = "strategy" }   # extra headers, sent on every request
 location = "internal"                 # internal | external: shown in the chat header
 

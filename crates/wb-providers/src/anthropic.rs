@@ -469,7 +469,8 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
-    /// A client with `x-api-key` auth and default network settings (Analyst's constructor).
+    /// A client with `x-api-key` auth (Analyst's constructor). The caller allows
+    /// `base_url` at the network gate (`wb_net::gate().allow_model_endpoint`).
     pub fn new(base_url: String, api_key: String, model: String) -> anyhow::Result<Self> {
         Self::from_endpoint(EndpointConfig {
             provider: String::new(),
@@ -479,7 +480,6 @@ impl AnthropicClient {
             key: Some(api_key),
             headers: BTreeMap::new(),
             model,
-            http: reqwest::Client::builder().build()?,
             audit: None,
             capabilities: None,
             capability_cache: None,
@@ -499,7 +499,7 @@ impl AnthropicClient {
     /// `GET {base_url}/v1/models/{id}`, raw JSON (used for the capability probe).
     pub async fn model_info(&self) -> anyhow::Result<Value> {
         let url = format!("{}/v1/models/{}", self.ep.base_url, self.ep.model);
-        self.ep.get_json(url, FIXED_HEADERS).await
+        self.ep.get_json(url, "probe", FIXED_HEADERS).await
     }
 }
 

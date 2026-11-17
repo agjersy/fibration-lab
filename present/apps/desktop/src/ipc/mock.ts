@@ -128,6 +128,8 @@ const APP: AppInfo = {
   ],
   sandbox: { kind: "bwrap", available: true, detail: "mock sandbox" },
   embedding: { kind: "bundled", model: "mock-embed", dims: 384 },
+  kernel_network: "bwrap",
+  kernel_network_detail: null,
 };
 
 const SKILLS: SkillView[] = [

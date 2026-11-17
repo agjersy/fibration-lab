@@ -260,6 +260,8 @@ async fn main() {
 async fn run(cli: &Cli) -> Result<i32> {
     let home = cli.home.clone().unwrap_or_else(default_home);
     std::fs::create_dir_all(&home)?;
+    // Every network decision from here on is recorded in `<home>/egress.jsonl`.
+    wb_net::init(&home);
     match &cli.command {
         Command::Init {
             dir,
@@ -401,12 +403,13 @@ async fn run(cli: &Cli) -> Result<i32> {
         Command::Build => {
             let ws = open(cli, &home).await?;
             let built = ws.build("exports/deck.pptx", "", None).await;
+            let kernel_network = ws.kernel.network_isolation().label();
             ws.close().await;
             match built {
                 Ok(v) => {
                     print!("{}", v["stdout"].as_str().unwrap_or(""));
                     println!(
-                        "built exports/deck.pptx (sandbox: {})",
+                        "built exports/deck.pptx (sandbox: {}, kernel network: {kernel_network})",
                         v["sandbox"].as_str().unwrap_or("n/a")
                     );
                     Ok(0)

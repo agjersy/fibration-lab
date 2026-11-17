@@ -50,11 +50,9 @@ pub async fn resolve_model(
         .ok_or_else(|| anyhow!("no provider named {provider_name:?} in config.toml"))?;
     let provider: wb_providers::config::ProviderConfig =
         convert(provider_cfg).context("provider configuration")?;
-    let network: wb_providers::config::NetworkConfig =
-        convert(&global.network).context("network configuration")?;
-    let keys = wb_providers::keys::KeyStores::system("Personal Present");
+    // Keys come from the process environment, then from `<home>/.env`.
+    let keys = wb_providers::keys::KeyStores::for_home(home);
     let options = ClientOptions {
-        network: &network,
         keys: &keys,
         audit: None,
         home: Some(home),

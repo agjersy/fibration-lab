@@ -4,4 +4,13 @@ import type { EngineInfo } from "./EngineInfo";
 import type { Platform } from "./Platform";
 import type { SandboxInfo } from "./SandboxInfo";
 
-export type AppInfo = { version: string, home_abs: string, platform: Platform, dev_mode: boolean, engines: Array<EngineInfo>, sandbox: SandboxInfo | null, embedding: EmbeddingInfo | null, };
+export type AppInfo = { version: string, home_abs: string, platform: Platform, dev_mode: boolean, engines: Array<EngineInfo>, sandbox: SandboxInfo | null, embedding: EmbeddingInfo | null, 
+/**
+ * How the deck kernel process is kept off the network: `bwrap`, `sandbox-exec`, or
+ * `none` (no isolation is available on this machine).
+ */
+kernel_network: string, 
+/**
+ * Why there is no isolation, when `kernel_network` is `none`.
+ */
+kernel_network_detail: string | null, };
