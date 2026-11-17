@@ -8,6 +8,7 @@ use present_protocol::rpc::RpcError;
 use present_protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -15,6 +16,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, oneshot, Mutex};
+use wb_sandbox::no_network::{self, NetIsolation};
 
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
@@ -85,6 +87,7 @@ struct Inner {
     next_id: AtomicI64,
     notifications: broadcast::Sender<KernelNotification>,
     hello: Value,
+    network: NetIsolation,
 }
 
 #[derive(Clone)]
@@ -118,19 +121,36 @@ pub fn resolve_runtime_python(home: &Path, configured: Option<&str>) -> Option<P
 
 impl KernelClient {
     /// Spawn the kernel and complete `kernel.hello`.
+    ///
+    /// The kernel runs with no network (`wb_sandbox::no_network`): it reads and writes the
+    /// project on the file system and never needs to connect anywhere. The per-run sandboxes
+    /// it starts itself (code mode, skill scripts) and the renderer it drives nest inside.
+    /// Where the platform has no working isolation the kernel still starts, and
+    /// [`KernelClient::network_isolation`] says so.
     pub async fn connect(launch: &KernelLaunch) -> Result<KernelClient, KernelError> {
-        let mut cmd = Command::new(&launch.python);
-        cmd.arg("-I")
-            .arg("-m")
-            .arg("present_kernel")
-            .arg("--project")
-            .arg(&launch.project)
-            .arg("--home")
-            .arg(&launch.home)
-            .arg("--engine")
-            .arg(&launch.engine)
-            .arg("--sandbox")
-            .arg(&launch.sandbox)
+        let argv: Vec<OsString> = [
+            launch.python.as_os_str(),
+            "-I".as_ref(),
+            "-m".as_ref(),
+            "present_kernel".as_ref(),
+            "--project".as_ref(),
+            launch.project.as_os_str(),
+            "--home".as_ref(),
+            launch.home.as_os_str(),
+            "--engine".as_ref(),
+            launch.engine.as_ref(),
+            "--sandbox".as_ref(),
+            launch.sandbox.as_ref(),
+        ]
+        .into_iter()
+        .map(OsStr::to_os_string)
+        .collect();
+        let wrapped = no_network::wrap(argv);
+        if let NetIsolation::None(why) = &wrapped.isolation {
+            tracing::warn!(reason = %why, "the deck kernel is running without network isolation");
+        }
+        let mut cmd = Command::new(&wrapped.argv[0]);
+        cmd.args(&wrapped.argv[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -184,6 +204,7 @@ impl KernelClient {
                 next_id: AtomicI64::new(1),
                 notifications: tx,
                 hello: Value::Null,
+                network: wrapped.isolation,
             }),
         };
         let hello = client
@@ -205,6 +226,12 @@ impl KernelClient {
     /// The raw `kernel.hello` result (engines, sandbox, embedding, packages).
     pub fn hello(&self) -> &Value {
         &self.inner.hello
+    }
+
+    /// How the kernel process is kept off the network (`label()` is `bwrap`,
+    /// `sandbox-exec`, or `none`).
+    pub fn network_isolation(&self) -> &NetIsolation {
+        &self.inner.network
     }
 
     pub fn notifications(&self) -> broadcast::Receiver<KernelNotification> {

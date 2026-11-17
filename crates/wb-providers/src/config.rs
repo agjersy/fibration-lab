@@ -1,12 +1,11 @@
 // Ported from Personal Analyst `crates/protocol/src/config.rs` (provider and model sections)
 // and `crates/core/src/config.rs` (`api_key`) at commit f229e4d.
-// Adapted: `api_key_env` is replaced by `auth` + `key`; adds `headers`, `location`, and the
-// `[network]` section (Present PROTOCOL 4.1).
-//! Provider, model, and network configuration as written in the global `config.toml`.
+// Adapted: `api_key_env` is replaced by `auth` + `key`; adds `headers` and `location`
+// (Present PROTOCOL 4.1).
+//! Provider and model configuration as written in the global `config.toml`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProviderKind {
@@ -50,7 +49,7 @@ pub struct ProviderConfig {
     /// Defaults by kind when absent: see `effective_auth`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthKind>,
-    /// `keychain:<entry>` or `env:<VAR>`.
+    /// `env:<VAR>`: the variable is read from the process environment, then from `.env`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     /// Extra headers sent on every request.
@@ -85,7 +84,7 @@ impl ProviderConfig {
     /// Host part of the effective base URL (for display and the audit log); empty when the
     /// URL does not parse.
     pub fn base_url_host(&self) -> String {
-        reqwest::Url::parse(&self.effective_base_url())
+        wb_net::reqwest::Url::parse(&self.effective_base_url())
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
             .unwrap_or_default()
@@ -116,77 +115,6 @@ pub struct ModelConfig {
     pub max_output_tokens: Option<u32>,
 }
 
-/// `proxy = "system" | "none" | "<url>"`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(from = "String", into = "String")]
-pub enum ProxySetting {
-    /// The operating system's proxy settings and the usual `HTTPS_PROXY`/`NO_PROXY` variables.
-    #[default]
-    System,
-    /// Direct connections; environment and system proxies are ignored.
-    None,
-    /// All requests go through this proxy.
-    Url(String),
-}
-
-impl From<String> for ProxySetting {
-    fn from(s: String) -> Self {
-        match s.trim() {
-            "" | "system" => ProxySetting::System,
-            "none" => ProxySetting::None,
-            url => ProxySetting::Url(url.to_string()),
-        }
-    }
-}
-
-impl From<ProxySetting> for String {
-    fn from(p: ProxySetting) -> String {
-        match p {
-            ProxySetting::System => "system".into(),
-            ProxySetting::None => "none".into(),
-            ProxySetting::Url(u) => u,
-        }
-    }
-}
-
-/// `ca_bundle = "system" | "<path to a PEM file>"`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(from = "String", into = "String")]
-pub enum CaBundle {
-    /// The operating system's trust store only.
-    #[default]
-    System,
-    /// The operating system's trust store plus every certificate in this PEM file.
-    Path(PathBuf),
-}
-
-impl From<String> for CaBundle {
-    fn from(s: String) -> Self {
-        match s.trim() {
-            "" | "system" => CaBundle::System,
-            p => CaBundle::Path(PathBuf::from(p)),
-        }
-    }
-}
-
-impl From<CaBundle> for String {
-    fn from(c: CaBundle) -> String {
-        match c {
-            CaBundle::System => "system".into(),
-            CaBundle::Path(p) => p.to_string_lossy().into_owned(),
-        }
-    }
-}
-
-/// The `[network]` section.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct NetworkConfig {
-    #[serde(default)]
-    pub proxy: ProxySetting,
-    #[serde(default)]
-    pub ca_bundle: CaBundle,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,7 +124,7 @@ mod tests {
     fn provider_parses_with_defaults() {
         let p: ProviderConfig = serde_json::from_value(json!({
             "name": "gateway", "kind": "anthropic", "base_url": "https://llm-gateway.corp.example/",
-            "auth": "bearer", "key": "keychain:gateway",
+            "auth": "bearer", "key": "env:GATEWAY_KEY",
             "headers": {"X-Team": "strategy"}, "location": "internal"
         }))
         .unwrap();
@@ -225,25 +153,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(o.effective_auth(), AuthKind::None);
-    }
-
-    #[test]
-    fn network_settings_parse() {
-        let n: NetworkConfig = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(n, NetworkConfig::default());
-        let n: NetworkConfig =
-            serde_json::from_value(json!({"proxy": "none", "ca_bundle": "system"})).unwrap();
-        assert_eq!(n.proxy, ProxySetting::None);
-        assert_eq!(n.ca_bundle, CaBundle::System);
-        let n: NetworkConfig = serde_json::from_value(
-            json!({"proxy": "http://proxy.corp:8080", "ca_bundle": "/etc/corp.pem"}),
-        )
-        .unwrap();
-        assert_eq!(n.proxy, ProxySetting::Url("http://proxy.corp:8080".into()));
-        assert_eq!(n.ca_bundle, CaBundle::Path("/etc/corp.pem".into()));
-        assert_eq!(
-            serde_json::to_value(&n).unwrap(),
-            json!({"proxy": "http://proxy.corp:8080", "ca_bundle": "/etc/corp.pem"})
-        );
     }
 }

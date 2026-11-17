@@ -40,10 +40,11 @@ impl NetIsolation {
     }
 }
 
-/// The `bwrap` arguments placed before `--` and the command. Also valid on a remote Linux
+/// The `bwrap` arguments placed before `--` and the command. The root is bound with device
+/// access (`--dev-bind`): a plain `--bind` makes `/dev/null` and the terminal's pty unusable. Also valid on a remote Linux
 /// host, so callers that build a remote command line can reuse them.
 pub const BWRAP_NO_NETWORK_ARGS: &[&str] =
-    &["--unshare-net", "--die-with-parent", "--bind", "/", "/"];
+    &["--unshare-net", "--die-with-parent", "--dev-bind", "/", "/"];
 
 /// The `sandbox-exec` profile: everything allowed except the network.
 pub const SANDBOX_EXEC_NO_NETWORK_PROFILE: &str = "(version 1)(allow default)(deny network*)";
@@ -157,7 +158,7 @@ mod tests {
                 "bwrap",
                 "--unshare-net",
                 "--die-with-parent",
-                "--bind",
+                "--dev-bind",
                 "/",
                 "/",
                 "--",
@@ -210,7 +211,12 @@ mod tests {
             "{out:?}"
         );
 
-        let w = wrap(["sh", "-c", &format!("echo ok > '{}'", marker.display())]);
+        // Device nodes stay usable (kernels pass /dev/null to their children).
+        let w = wrap([
+            "sh",
+            "-c",
+            &format!("echo x > /dev/null && echo ok > '{}'", marker.display()),
+        ]);
         let st = std::process::Command::new(&w.argv[0])
             .args(&w.argv[1..])
             .status()

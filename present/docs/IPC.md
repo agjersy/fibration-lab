@@ -22,7 +22,8 @@ type DeckMode = "structured" | "code";
 type KernelState = "stopped" | "starting" | "ready" | "error";
 
 interface AppInfo { version: string; home_abs: string; platform: "macos" | "windows" | "linux"; dev_mode: boolean;
-  engines: EngineInfo[]; sandbox: SandboxInfo; embedding: EmbeddingInfo }
+  engines: EngineInfo[]; sandbox: SandboxInfo; embedding: EmbeddingInfo;
+  kernel_network: "bwrap" | "sandbox-exec" | "none"; kernel_network_detail: string | null }  // how the deck kernel is kept off the network
 
 interface ProjectSummary { id: ProjectId; name: string; path_abs: string; template_name: string; deck_mode: DeckMode;
   slides: number; model: string | null; created_at: string; last_opened_at: string; open: boolean }
@@ -162,7 +163,7 @@ type ProjectEvent =
 | `skill_set_enabled` | `{ project, name, enabled }` | `null` | |
 | `models_list` | `{}` | `ModelEntry[]` | |
 | `model_probe` | `{ model }` | `ModelEntry` | |
-| `provider_set_key` | `{ provider, key }` | `null` | writes the OS keychain; key never returned |
+| `provider_set_key` | `{ provider, key }` | `null` | writes `<home>/.env` (mode 0600) under the variable of the provider's `key = "env:<VAR>"`; key never returned |
 | `audit_export` | `{ from, to, path_abs }` | `null` | CSV |
 | `dialog_pick_file` / `dialog_pick_files` / `dialog_pick_directory` / `dialog_save_file` | `{ title?, filters? }` | `string \| string[] \| null` | native dialogs |
 

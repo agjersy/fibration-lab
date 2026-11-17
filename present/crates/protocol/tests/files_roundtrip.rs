@@ -85,14 +85,13 @@ fn template_sidecar_round_trips() {
 fn global_config_round_trips() {
     let c: GlobalConfig = round_trip_toml("config.toml");
     assert_eq!(c.defaults.model.as_deref(), Some("gateway/claude-opus-5-5"));
-    assert_eq!(c.network.proxy, "system");
     assert_eq!(c.runtime_python, None);
     let gateway = c.provider("gateway").unwrap();
     assert_eq!(gateway.kind, ProviderKind::Anthropic);
     assert_eq!(gateway.effective_auth(), AuthKind::Bearer);
     assert_eq!(
         gateway.key_source(),
-        Some(KeySource::Keychain("gateway".into()))
+        Some(KeySource::Env("GATEWAY_API_KEY".into()))
     );
     assert_eq!(gateway.headers["X-Team"], "strategy");
     assert_eq!(gateway.effective_location(), Location::Internal);
@@ -113,11 +112,12 @@ fn global_config_round_trips() {
 fn global_config_defaults_and_variants() {
     let empty: GlobalConfig = toml::from_str("").unwrap();
     assert_eq!(empty, GlobalConfig::default());
-    assert_eq!(empty.network.ca_bundle, "system");
     // Defaults survive a round trip through text.
     let again: GlobalConfig = toml::from_str(&toml::to_string(&empty).unwrap()).unwrap();
     assert_eq!(again, empty);
 
+    // A `[network]` table from an older file still parses; it is ignored and not written
+    // back.
     let text = r#"
 runtime_python = "/opt/present/python/bin/python3"
 
@@ -157,7 +157,9 @@ theme = "dark"
     assert_eq!(c.embedding.model.as_deref(), Some("bge-m3"));
     assert_eq!(c.render.engine, RenderEngine::None);
     assert_eq!(c.ui.theme, UiTheme::Dark);
-    let again: GlobalConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+    let written = toml::to_string(&c).unwrap();
+    assert!(!written.contains("network") && !written.contains("proxy"));
+    let again: GlobalConfig = toml::from_str(&written).unwrap();
     assert_eq!(again, c);
 
     for (auth, expected) in [
@@ -170,7 +172,8 @@ theme = "dark"
             expected
         );
     }
-    assert_eq!(KeySource::parse("keychain:"), None);
+    assert_eq!(KeySource::parse("keychain:gateway"), None);
+    assert_eq!(KeySource::parse("env:"), None);
     assert_eq!(KeySource::parse("sk-secret"), None);
     assert_eq!(KeySource::parse("file:/tmp/key"), None);
     assert!(toml::from_str::<GlobalConfig>("[render]\nengine = \"keynote\"\n").is_err());

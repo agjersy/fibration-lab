@@ -50,6 +50,7 @@ describe("MockBackend: project and template", () => {
     expect(app.engines.some((e) => e.available)).toBe(true);
     expect(app.sandbox?.available).toBe(true);
     expect(app.embedding?.dims).toBeGreaterThan(0);
+    expect(app.kernel_network).toBe("bwrap");
   });
 
   it("lists one open project, Demo review, with the real corp template", async () => {

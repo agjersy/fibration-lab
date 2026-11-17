@@ -13,21 +13,16 @@ use wb_providers::audit::MemoryAuditSink;
 use wb_providers::model::{REASON_CONTEXT, REASON_TOOLS, REASON_VISION};
 use wb_providers::{
     capabilities, client_for, collect, AuditStatus, AuthKind, ChatRequest, ClientOptions,
-    ContentPart, Location, Message, ModelCapabilities, ModelEvent, NetworkConfig, ProviderConfig,
-    ProviderKind, ProxySetting, Role, StopReason, ToolDef, ToolSupport,
+    ContentPart, Location, Message, ModelCapabilities, ModelEvent, ProviderConfig, ProviderKind,
+    Role, StopReason, ToolDef, ToolSupport,
 };
 
 const ANTHROPIC_TEXT: &str = include_str!("../src/fixtures/anthropic_text.sse");
 const ANTHROPIC_CITATIONS: &str = include_str!("../src/fixtures/anthropic_citations.sse");
 const OPENAI_TEXT: &str = include_str!("../src/fixtures/openai_text.sse");
 
-/// Direct connections: the test machine's proxy variables must not capture loopback traffic.
-fn direct() -> NetworkConfig {
-    NetworkConfig {
-        proxy: ProxySetting::None,
-        ..Default::default()
-    }
-}
+/// The variable the test provider's key is read from (set only in a test's `.env`).
+const KEY_VAR: &str = "WB_PROVIDERS_TEST_GATEWAY_KEY";
 
 fn provider(kind: ProviderKind, base_url: String) -> ProviderConfig {
     ProviderConfig {
@@ -35,7 +30,7 @@ fn provider(kind: ProviderKind, base_url: String) -> ProviderConfig {
         kind,
         base_url: Some(base_url),
         auth: None,
-        key: Some("keychain:gateway".into()),
+        key: Some(format!("env:{KEY_VAR}")),
         headers: BTreeMap::new(),
         location: Location::Internal,
     }
@@ -92,13 +87,11 @@ async fn anthropic_bearer_auth_and_extra_headers_are_sent() {
     p.auth = Some(AuthKind::Bearer);
     p.headers.insert("X-Team".into(), "strategy".into());
     p.headers.insert("X-Cost-Center".into(), "42".into());
-    let keys = key_stores(&[("gateway", "sekrit-token")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "sekrit-token")]);
     let client = client_for(
         &p,
         "gateway-alias",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: None,
@@ -133,10 +126,8 @@ async fn anthropic_bearer_auth_and_extra_headers_are_sent() {
 async fn anthropic_defaults_to_x_api_key() {
     let server = TestServer::start(|_, _| Reply::sse(ANTHROPIC_TEXT)).await;
     let p = provider(ProviderKind::Anthropic, server.url());
-    let keys = key_stores(&[("gateway", "sekrit-token")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "sekrit-token")]);
     let opts = ClientOptions {
-        network: &network,
         keys: &keys,
         audit: None,
         home: None,
@@ -149,17 +140,15 @@ async fn anthropic_defaults_to_x_api_key() {
 
     // A provider that needs a key but has none configured fails before any request.
     let mut missing = p.clone();
-    missing.key = Some("keychain:other".into());
+    missing.key = Some("env:WB_PROVIDERS_TEST_UNSET_KEY".into());
     assert!(client_for(&missing, "m", &opts).is_err());
 }
 
 #[tokio::test]
 async fn openai_compatible_auth_schemes_and_headers() {
     let server = TestServer::start(|_, _| Reply::sse(OPENAI_TEXT)).await;
-    let keys = key_stores(&[("gateway", "sekrit-token")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "sekrit-token")]);
     let opts = ClientOptions {
-        network: &network,
         keys: &keys,
         audit: None,
         home: None,
@@ -233,11 +222,9 @@ async fn cache_control_rejection_is_retried_once_and_recorded() {
     )
     .unwrap();
     let p = provider(ProviderKind::Anthropic, server.url());
-    let keys = key_stores(&[("gateway", "k")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "k")]);
     let audit = Arc::new(MemoryAuditSink::default());
     let opts = ClientOptions {
-        network: &network,
         keys: &keys,
         audit: Some(audit.clone()),
         home: Some(home.path()),
@@ -300,12 +287,10 @@ async fn stream_options_rejection_is_retried_without_it() {
     let mut p = provider(ProviderKind::OpenAiCompatible, server.url());
     p.key = None;
     let keys = key_stores(&[]);
-    let network = direct();
     let client = client_for(
         &p,
         "m",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: Some(home.path()),
@@ -336,14 +321,8 @@ async fn other_400s_are_not_retried_and_a_second_rejection_surfaces() {
     })
     .await;
     let p = provider(ProviderKind::Anthropic, server.url());
-    let keys = key_stores(&[("gateway", "k")]);
-    let network = direct();
-    let mut cfg = wb_providers::EndpointConfig::from_provider(
-        &p,
-        Some("k".into()),
-        "m",
-        wb_providers::network::build_http_client(&network).unwrap(),
-    );
+    let keys = key_stores(&[(KEY_VAR, "k")]);
+    let mut cfg = wb_providers::EndpointConfig::from_provider(&p, Some("k".into()), "m");
     cfg.capabilities = Some(caps_with(true, false));
     let client = wb_providers::anthropic::AnthropicClient::from_endpoint(cfg).unwrap();
     use wb_providers::ModelClient;
@@ -365,7 +344,6 @@ async fn other_400s_are_not_retried_and_a_second_rejection_surfaces() {
         &p,
         "m",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: None,
@@ -408,13 +386,11 @@ async fn anthropic_stream_with_citation_deltas() {
     )
     .unwrap();
     let p = provider(ProviderKind::Anthropic, server.url());
-    let keys = key_stores(&[("gateway", "k")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "k")]);
     let client = client_for(
         &p,
         "gateway-alias",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: Some(home.path()),
@@ -486,13 +462,11 @@ async fn anthropic_stream_with_citation_deltas() {
 async fn documents_are_not_sent_as_blocks_without_the_capability() {
     let server = TestServer::start(|_, _| Reply::sse(ANTHROPIC_TEXT)).await;
     let p = provider(ProviderKind::Anthropic, server.url());
-    let keys = key_stores(&[("gateway", "k")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "k")]);
     let client = client_for(
         &p,
         "gateway-alias",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: None,
@@ -566,10 +540,8 @@ fn scripted_model(sees: bool, caching: bool) -> impl Fn(&Recorded, usize) -> Rep
 async fn vision_probe_passes_when_the_model_reads_the_number() {
     let server = TestServer::start(scripted_model(true, true)).await;
     let p = provider(ProviderKind::Anthropic, server.url());
-    let keys = key_stores(&[("gateway", "k")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "k")]);
     let opts = ClientOptions {
-        network: &network,
         keys: &keys,
         audit: None,
         home: None,
@@ -614,10 +586,8 @@ async fn vision_probe_passes_when_the_model_reads_the_number() {
 
 #[tokio::test]
 async fn vision_probe_fails_when_the_model_cannot_read_it_or_errors() {
-    let keys = key_stores(&[("gateway", "k")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "k")]);
     let opts = ClientOptions {
-        network: &network,
         keys: &keys,
         audit: None,
         home: None,
@@ -643,8 +613,7 @@ async fn vision_probe_fails_when_the_model_cannot_read_it_or_errors() {
 
 #[tokio::test]
 async fn full_probe_records_capabilities_and_degraded_tier() {
-    let keys = key_stores(&[("gateway", "k")]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, "k")]);
 
     // A baseline model behind a gateway that strips prompt caching.
     let server = TestServer::start(scripted_model(true, false)).await;
@@ -654,7 +623,6 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         &p,
         "m",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: Some(home.path()),
@@ -695,7 +663,6 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         &p,
         "m",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: None,
@@ -724,7 +691,6 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         &p,
         "m",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: None,
             home: None,
@@ -770,14 +736,12 @@ async fn audit_records_carry_metadata_and_never_content_keys_or_headers() {
     .await;
     let mut p = provider(ProviderKind::Anthropic, server.url());
     p.headers.insert("X-Team".into(), HEADER_VALUE.into());
-    let keys = key_stores(&[("gateway", KEY)]);
-    let network = direct();
+    let keys = key_stores(&[(KEY_VAR, KEY)]);
     let audit = Arc::new(MemoryAuditSink::default());
     let client = client_for(
         &p,
         "gateway-alias",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: Some(audit.clone()),
             home: None,
@@ -864,13 +828,11 @@ async fn transport_failure_is_a_stop_error_and_an_audit_error() {
     let mut p = provider(ProviderKind::OpenAiCompatible, format!("http://{addr}"));
     p.auth = Some(AuthKind::None);
     let keys = key_stores(&[]);
-    let network = direct();
     let audit = Arc::new(MemoryAuditSink::default());
     let client = client_for(
         &p,
         "m",
         &ClientOptions {
-            network: &network,
             keys: &keys,
             audit: Some(audit.clone()),
             home: None,
@@ -884,4 +846,48 @@ async fn transport_failure_is_a_stop_error_and_an_audit_error() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].error.as_deref(), Some("transport"));
     assert_eq!(records[0].location, Location::Internal);
+}
+
+#[tokio::test]
+async fn an_endpoint_that_is_not_allowed_at_the_gate_is_never_contacted() {
+    // A listener that the gate has not been told about: built directly from an endpoint
+    // config, the client must be refused before any connection is made.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut p = provider(ProviderKind::OpenAiCompatible, format!("http://{addr}"));
+    p.auth = Some(AuthKind::None);
+    let audit = Arc::new(MemoryAuditSink::default());
+    let mut cfg = wb_providers::EndpointConfig::from_provider(&p, None, "m");
+    cfg.audit = Some(audit.clone());
+    let client = wb_providers::openai_compat::OpenAiCompatClient::from_endpoint(cfg).unwrap();
+    use wb_providers::ModelClient;
+    let c = collect(client.stream(request("hi"))).await;
+    assert_eq!(c.stop, Some(StopReason::Error));
+    let message = c.stop_message.unwrap();
+    assert!(
+        message.contains("was not sent") && message.contains("not allowed"),
+        "{message}"
+    );
+    assert_eq!(audit.records()[0].error.as_deref(), Some("egress_denied"));
+    assert!(client.list_models().await.is_err());
+    let accepted = tokio::time::timeout(std::time::Duration::from_millis(200), listener.accept());
+    assert!(accepted.await.is_err(), "nothing may connect");
+
+    // `client_for` allows the configured base URL, and only that host and port.
+    let keys = key_stores(&[]);
+    client_for(
+        &p,
+        "m",
+        &ClientOptions {
+            keys: &keys,
+            audit: None,
+            home: None,
+        },
+    )
+    .unwrap();
+    assert!(wb_net::gate().is_allowed(
+        wb_net::EgressClass::ModelEndpoint,
+        &format!("http://{addr}/v1")
+    ));
+    assert!(!wb_net::gate().is_allowed(wb_net::EgressClass::ModelEndpoint, "http://127.0.0.1:1/v1"));
 }

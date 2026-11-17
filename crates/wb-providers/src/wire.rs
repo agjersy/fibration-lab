@@ -10,11 +10,12 @@ use crate::model::{ChatRequest, ModelCapabilities, ModelEvent, StopReason};
 use crate::sse::{SseEvent, SseParser};
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use wb_net::reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
+use wb_net::reqwest::{self, Method, RequestBuilder};
 
 /// Wire names of the optional request fields subject to the unknown-field downgrade.
 pub const FIELD_STREAM_OPTIONS: &str = "stream_options";
@@ -110,7 +111,6 @@ pub struct EndpointConfig {
     /// same name.
     pub headers: BTreeMap<String, String>,
     pub model: String,
-    pub http: reqwest::Client,
     pub audit: Option<Arc<dyn AuditSink>>,
     /// The cached capability record, when there is one. Without it requests carry no
     /// caching markers and no document blocks.
@@ -120,12 +120,12 @@ pub struct EndpointConfig {
 }
 
 impl EndpointConfig {
-    /// Endpoint settings from a provider entry, with the key already resolved.
+    /// Endpoint settings from a provider entry, with the key already resolved. This does not
+    /// allow the endpoint at the network gate; `client_for` does.
     pub fn from_provider(
         provider: &ProviderConfig,
         key: Option<String>,
         model: impl Into<String>,
-        http: reqwest::Client,
     ) -> Self {
         EndpointConfig {
             provider: provider.name.clone(),
@@ -135,7 +135,6 @@ impl EndpointConfig {
             key,
             headers: provider.headers.clone(),
             model: model.into(),
-            http,
             audit: None,
             capabilities: None,
             capability_cache: None,
@@ -144,7 +143,6 @@ impl EndpointConfig {
 }
 
 pub(crate) struct Endpoint {
-    pub http: reqwest::Client,
     pub provider: String,
     pub location: Location,
     pub base_url: String,
@@ -198,7 +196,6 @@ impl Endpoint {
             .map(Features::from_capabilities)
             .unwrap_or_default();
         Ok(Endpoint {
-            http: cfg.http,
             provider: cfg.provider,
             location: cfg.location,
             base_url,
@@ -227,21 +224,58 @@ impl Endpoint {
         h
     }
 
+    /// A request to this endpoint, built by the network gate: it is refused unless the
+    /// URL's host and port are an allowed model endpoint. `purpose` is a fixed label for the
+    /// egress ledger and never carries request content.
+    pub fn request(
+        &self,
+        method: Method,
+        url: &str,
+        purpose: &'static str,
+        fixed: &[(&'static str, &'static str)],
+    ) -> Result<RequestBuilder> {
+        let builder = wb_net::gate()
+            .request(method, url, purpose)
+            .map_err(|e| egress_error(&self.provider, &e))?;
+        Ok(builder.headers(self.headers(fixed)))
+    }
+
     /// `GET url` with the endpoint's headers, parsed as JSON.
     pub async fn get_json(
         &self,
         url: String,
+        purpose: &'static str,
         fixed: &[(&'static str, &'static str)],
     ) -> Result<Value> {
         Ok(self
-            .http
-            .get(url)
-            .headers(self.headers(fixed))
+            .request(Method::GET, &url, purpose, fixed)?
             .send()
             .await?
             .error_for_status()?
             .json()
             .await?)
+    }
+}
+
+/// A refusal by the network gate, worded for the user.
+pub(crate) fn egress_error(provider: &str, e: &wb_net::EgressError) -> anyhow::Error {
+    let who = if provider.is_empty() {
+        "the request".to_string()
+    } else {
+        format!("the request to provider `{provider}`")
+    };
+    anyhow!("{who} was not sent: {e}")
+}
+
+/// The ledger label of a streaming request. Probe requests are named after what they probe;
+/// everything else is `chat`. The request's audit tag is never copied into the ledger.
+pub(crate) fn purpose_of(req: &ChatRequest) -> &'static str {
+    match req.audit_tag.as_deref() {
+        Some("probe:vision") => "vision-probe",
+        Some("probe:documents") => "document-probe",
+        Some("probe:tools") => "tool-probe",
+        Some(t) if t.starts_with("probe") => "probe",
+        _ => "chat",
     }
 }
 
@@ -439,13 +473,15 @@ async fn drive<D: Decoder>(
     let mut body = (spec.build)(req, &ep.features.snapshot());
     let mut retried = false;
     let resp = loop {
-        let sent = ep
-            .http
-            .post(&spec.url)
-            .headers(ep.headers(spec.fixed_headers))
-            .json(&body)
-            .send()
-            .await;
+        let builder = match ep.request(Method::POST, &spec.url, purpose_of(req), spec.fixed_headers)
+        {
+            Ok(b) => b,
+            Err(e) => {
+                out.fail(e.to_string()).await;
+                return (AuditStatus::Error, Some("egress_denied".into()));
+            }
+        };
+        let sent = builder.json(&body).send().await;
         let resp = match sent {
             Ok(r) => r,
             Err(e) => {
@@ -537,7 +573,6 @@ mod tests {
             key: key.map(str::to_string),
             headers: BTreeMap::from([("X-Team".to_string(), "strategy".to_string())]),
             model: "m".into(),
-            http: reqwest::Client::new(),
             audit: None,
             capabilities: None,
             capability_cache: None,
@@ -585,6 +620,18 @@ mod tests {
         let mut c = cfg(AuthKind::None, None);
         c.headers.insert("x-ok".into(), "line\nbreak".into());
         assert!(Endpoint::new(c).is_err());
+    }
+
+    #[test]
+    fn ledger_purposes_are_fixed_labels() {
+        let mut req = ChatRequest::default();
+        assert_eq!(purpose_of(&req), "chat");
+        req.audit_tag = Some("conv-1:7 the user said: secret".into());
+        assert_eq!(purpose_of(&req), "chat");
+        req.audit_tag = Some("probe:vision".into());
+        assert_eq!(purpose_of(&req), "vision-probe");
+        req.audit_tag = Some("probe:tools".into());
+        assert_eq!(purpose_of(&req), "tool-probe");
     }
 
     #[test]

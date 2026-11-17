@@ -94,6 +94,11 @@ pub struct AppInfo {
     pub engines: Vec<EngineInfo>,
     pub sandbox: Option<SandboxInfo>,
     pub embedding: Option<EmbeddingInfo>,
+    /// How the deck kernel process is kept off the network: `bwrap`, `sandbox-exec`, or
+    /// `none` (no isolation is available on this machine).
+    pub kernel_network: String,
+    /// Why there is no isolation, when `kernel_network` is `none`.
+    pub kernel_network_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

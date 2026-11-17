@@ -628,3 +628,71 @@ fn repo_root_template(rel: &str) -> String {
         .to_string_lossy()
         .into_owned()
 }
+
+/// Keys are written to the home `.env` under the provider's variable; nothing else stores
+/// them, and a leftover `keychain:` reference is refused with the way out.
+#[test]
+fn provider_keys_are_stored_in_the_home_env_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"
+[network]
+proxy = "http://proxy.corp:8080"
+
+[[providers]]
+name = "gateway"
+kind = "anthropic"
+base_url = "https://llm-gateway.corp.example"
+key = "env:PRESENT_TEST_SERVICE_GATEWAY_KEY"
+
+[[providers]]
+name = "old"
+kind = "anthropic"
+key = "keychain:old"
+
+[[providers]]
+name = "bare"
+kind = "openai-compatible"
+"#,
+    )
+    .unwrap();
+    let wb = Workbench::new(&home);
+    // Starting the service points the egress ledger into a home directory.
+    assert_eq!(
+        wb_net::gate()
+            .ledger_path()
+            .and_then(|p| p.file_name().map(|n| n.to_owned())),
+        Some("egress.jsonl".into())
+    );
+
+    wb.provider_set_key("gateway", "  sk-secret  ").unwrap();
+    let env_file = home.join(".env");
+    let text = std::fs::read_to_string(&env_file).unwrap();
+    assert_eq!(text, "PRESENT_TEST_SERVICE_GATEWAY_KEY=\"sk-secret\"\n");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&env_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+    // The stored key is what the provider layer resolves.
+    let keys = wb_providers::keys::KeyStores::for_home(&home);
+    let reference = wb_providers::keys::KeyRef::parse("env:PRESENT_TEST_SERVICE_GATEWAY_KEY");
+    assert_eq!(keys.get(&reference.unwrap()).as_deref(), Some("sk-secret"));
+
+    let empty = wb.provider_set_key("gateway", "   ").unwrap_err();
+    assert_eq!(empty.code, IpcErrorCode::Invalid);
+    let old = wb.provider_set_key("old", "sk-x").unwrap_err();
+    assert_eq!(old.code, IpcErrorCode::Invalid);
+    assert!(
+        old.message.contains("env:<VAR>") && old.message.contains(".env"),
+        "{}",
+        old.message
+    );
+    let bare = wb.provider_set_key("bare", "sk-x").unwrap_err();
+    assert_eq!(bare.code, IpcErrorCode::Invalid);
+    assert_eq!(std::fs::read_to_string(&env_file).unwrap(), text);
+}

@@ -61,7 +61,9 @@ export function SettingsDialog({ project, onClose }: { project: ProjectId | null
           );
         })}
       </ul>
-      <div className="help small muted">Providers are defined in config.toml; keys, proxy and CA settings arrive with the settings work package.</div>
+      <div className="help small muted">
+        Providers are defined in config.toml. A provider's key is named by <code>key = "env:VAR"</code> and read from the environment or from the <code>.env</code> file in the app home. The app connects only to the configured model endpoints.
+      </div>
 
       <h3 className="settings-heading">Render engine</h3>
       <ul className="settings-list" data-testid="engines">
@@ -79,6 +81,15 @@ export function SettingsDialog({ project, onClose }: { project: ProjectId | null
             <b>sandbox</b>
             <span className="small muted">
               {app.sandbox.kind} · {app.sandbox.detail}
+            </span>
+          </li>
+        ) : null}
+        {app ? (
+          <li data-testid="kernel-network">
+            <span className={`dot ${app.kernel_network === "none" ? "" : "ready"}`} />
+            <b>kernel network</b>
+            <span className="small muted">
+              {app.kernel_network === "none" ? `not isolated · ${app.kernel_network_detail ?? "no isolation available"}` : `blocked · ${app.kernel_network}`}
             </span>
           </li>
         ) : null}

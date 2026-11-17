@@ -43,7 +43,7 @@ Common pain points underneath:
 ## 4. Who it is for
 
 - **Primary:** a professional who regularly turns material (reports, analyses, spreadsheets, earlier decks) into presentations on a mandated corporate template, and finishes them in PowerPoint. Comfortable with PowerPoint; not necessarily a programmer.
-- **Secondary (phase 3):** the same user's organization: IT deploys the app with a managed configuration (approved model endpoints, locked policies, shared skills and templates). The app is enterprise-ready from the start (offline install, proxy and CA, audit log) so this needs no rework.
+- **Secondary (phase 3):** the same user's organization: IT deploys the app with a managed configuration (approved model endpoints, locked policies, shared skills and templates). The app is enterprise-ready from the start (offline install, audit log) so this needs no rework.
 - **Also:** you, as a Personal Analyst user turning analysis results into a talk or report-out.
 - **Not for:** freeform graphic design, animation-heavy keynote production, or real-time multi-user co-editing.
 
@@ -85,8 +85,8 @@ These walkthroughs are the acceptance bar for the first usable version.
 | Editing | Content-level: reorder, duplicate, delete slides; edit text in place; change layout; lock slides and elements; edit chart, table, and diagram data; speaker notes. Final pixel polish in PowerPoint. | Re-import edits made in PowerPoint. |
 | Export | `.pptx` (primary), PDF, PNG per slide, Markdown outline, speaker notes as `.docx`. | `.odp`, self-contained HTML, `.potx` from a deck, handouts. |
 | Skills | Agent Skills (`SKILL.md`, resources, and scripts) loaded and executed by the app itself, scripts in an OS-native sandbox, so they work identically with every endpoint, including gateways and open-weight servers. Organization skill library (read-only, managed). | Skill authoring helpers. Skill evaluation. |
-| Models | Anthropic API, internal gateways (Anthropic Messages or OpenAI-compatible), open-weight models on internal servers. Keys and tokens in the OS keychain. Per-conversation model choice. Capabilities probed. | Amazon Bedrock, Google Vertex AI, Microsoft Foundry. Cost and token budgets per project. |
-| Enterprise | Offline installers (MSI, PKG/DMG) with no runtime downloads. Proxy and custom CA support. Local audit log of what was sent to which provider. No telemetry. | Managed configuration with locked keys and organization template and skill libraries (phase 3). Sensitivity labels. Distribution over a file share or MCP. |
+| Models | Anthropic API, internal gateways (Anthropic Messages or OpenAI-compatible), open-weight models on internal servers. Keys and tokens from the environment or an untracked `.env` file. Per-conversation model choice. Capabilities probed. | Amazon Bedrock, Google Vertex AI, Microsoft Foundry. Cost and token budgets per project. |
+| Enterprise | Offline installers (MSI, PKG/DMG) with no runtime downloads. Network access only to configured model endpoints, through one gate in the Rust core; no proxy or custom CA support. Local audit log of what was sent to which provider. No telemetry. | Managed configuration with locked keys and organization template and skill libraries (phase 3). Sensitivity labels. Distribution over a file share. |
 | Analyst interop | Import figures, tables, and equations from a Personal Analyst repo with their run provenance. | Live links: re-run in Analyst, refresh in Present. |
 
 ## 8. Success criteria
@@ -101,7 +101,7 @@ These walkthroughs are the acceptance bar for the first usable version.
 
 ## 9. Non-goals for the first version
 
-Animations and transitions. Embedded video and audio. Real-time collaboration. Cloud sync. Mobile. Freeform drawing. A hosted web version. Generating images with image models (possible later through MCP).
+Animations and transitions. Embedded video and audio. Real-time collaboration. Cloud sync. Mobile. Freeform drawing. A hosted web version. Generating images with image models. MCP servers, web access, and automatic updates (the app reaches the network only for model endpoints, package installs, and SSH targets).
 
 ## 10. Roadmap (draft)
 
@@ -110,5 +110,5 @@ Animations and transitions. Embedded video and audio. Real-time collaboration. C
 | 0. Headless core | Deck schema, template ingestion, deterministic `.pptx` renderer, deck checker, reference ingestion and search, agent loop as a CLI, provider adapters for the Anthropic API, gateways, and OpenAI-compatible servers (shared with Analyst), evaluation suite. | Three representative deck tasks complete end to end with two models from different providers on two templates; every output opens without repair in PowerPoint and passes the checker. |
 | 1. Workbench | Tauri shell: project tabs, slide grid and canvas, outline view, chat with cards, references panel, checks panel, exports. Windows and macOS. | You can build and export a real deck for work without leaving the app until the final PowerPoint polish. |
 | 2. Verification and editing | Source lens and number check, in-place editing, locks, re-import of PowerPoint edits into structured projects, fidelity check. | The walkthroughs in section 6 pass. |
-| 3. Enterprise and extension | Managed configuration, organization libraries for templates and skills, MCP connectors, Analyst interop, more export formats. | IT can deploy a locked configuration offline; an Analyst figure travels into a deck with provenance. |
+| 3. Enterprise and extension | Managed configuration, organization libraries for templates and skills, Analyst interop, more export formats. | IT can deploy a locked configuration offline; an Analyst figure travels into a deck with provenance. |
 | 4. Polish | Performance, accessibility, Linux packaging, keyboard-first workflows. | Daily-driver quality. |
