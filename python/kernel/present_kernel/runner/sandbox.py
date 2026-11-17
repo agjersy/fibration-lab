@@ -22,6 +22,12 @@ from ..errors import SANDBOX_UNAVAILABLE, RpcError
 DEFAULT_MEMORY = 2 * 1024**3
 DEFAULT_PROCESSES = 64
 _ENV_ALLOW = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TMPDIR")
+# Windows refuses to start a process in an AppContainer ("environment option not found") when
+# the standard per-user and per-machine variables are missing. They name folders, not secrets,
+# and the container still cannot read what they point at.
+_ENV_ALLOW_WINDOWS = ("SYSTEMDRIVE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA", "ALLUSERSPROFILE", "PUBLIC", "USERNAME",
+                      "USERDOMAIN", "COMPUTERNAME", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "PROGRAMFILES",
+                      "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "OS")  # fmt: skip
 
 
 @dataclass
@@ -237,7 +243,8 @@ def _limits_prologue(memory: int) -> str:
 
 
 def child_env(spec: SandboxSpec, extra: dict[str, str]) -> dict[str, str]:
-    env = {k: os.environ[k] for k in _ENV_ALLOW if k in os.environ}
+    allow = _ENV_ALLOW + (_ENV_ALLOW_WINDOWS if sys.platform == "win32" else ())
+    env = {k: os.environ[k] for k in allow if k in os.environ}
     env.update({"HOME": str(spec.scratch), "USERPROFILE": str(spec.scratch), "TMPDIR": str(spec.scratch),
                 "TEMP": str(spec.scratch), "TMP": str(spec.scratch), "MPLCONFIGDIR": str(spec.scratch / "mpl"),
                 "MPLBACKEND": "Agg", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8",

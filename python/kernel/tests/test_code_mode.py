@@ -174,6 +174,20 @@ def test_profiles_and_argv_shapes(tmp_path):
     assert ["--bind", str(scratch), str(scratch)] == argv[argv.index("--bind"):argv.index("--bind") + 3]
 
 
+def test_child_env_keeps_what_windows_needs_and_nothing_secret(tmp_path, monkeypatch):
+    from present_kernel.runner import sandbox as sb
+
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    spec = SandboxSpec(cwd=tmp_path, scratch=tmp_path, read_only=[])
+    monkeypatch.setattr(sb.sys, "platform", "win32")
+    env = sb.child_env(spec, {})
+    assert env["LOCALAPPDATA"].endswith("Local") and env["TEMP"] == str(tmp_path)
+    assert "ANTHROPIC_API_KEY" not in env
+    monkeypatch.setattr(sb.sys, "platform", "linux")
+    assert "LOCALAPPDATA" not in sb.child_env(spec, {})
+
+
 def test_hello_reports_sandbox(kernel_for, tmp_path):
     hello = kernel_for(tmp_path).dispatcher.call("kernel.hello", {"core_version": "0", "protocol_version": 1})
     assert hello["sandbox"]["kind"] in ("limits", "bwrap", "sandbox-exec", "appcontainer") and hello["sandbox"]["available"]
