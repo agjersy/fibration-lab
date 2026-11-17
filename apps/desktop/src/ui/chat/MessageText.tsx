@@ -1,7 +1,10 @@
+import { memo, useLayoutEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import type { ConversationId } from "../../ipc";
+import { useStreamText } from "../../state/chat";
 
 /** Minimal rendering of assistant text: fenced code blocks and `inline code`. */
-export function MessageText({ text, streaming }: { text: string; streaming?: boolean }) {
+export const MessageText = memo(function MessageText({ text, streaming }: { text: string; streaming?: boolean }) {
   const parts: ReactNode[] = [];
   const fence = /```[\w-]*\n([\s\S]*?)(?:```|$)/g;
   let last = 0;
@@ -18,7 +21,27 @@ export function MessageText({ text, streaming }: { text: string; streaming?: boo
       {parts}
     </div>
   );
-}
+});
+
+/**
+ * The message being streamed. It alone subscribes to the stream slot, so a
+ * delta re-renders this component and nothing else in the conversation.
+ */
+export const StreamingMessage = memo(function StreamingMessage({ conversation, id, fallback }: { conversation: ConversationId; id: string; fallback: string }) {
+  const text = useStreamText(conversation, id);
+  const anchor = useRef<HTMLSpanElement>(null);
+  // Keep the end of the growing message in view.
+  useLayoutEffect(() => {
+    const list = anchor.current?.closest(".chat-messages");
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [text]);
+  return (
+    <>
+      <MessageText text={text ?? fallback} streaming={text !== null} />
+      <span ref={anchor} hidden />
+    </>
+  );
+});
 
 function inline(text: string): ReactNode[] {
   const out: ReactNode[] = [];

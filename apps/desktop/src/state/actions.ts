@@ -1,10 +1,11 @@
 // Async orchestration on top of the stores: every call goes through the Backend.
 import { backend, errorMessage, getBackend, isIpcError } from "../ipc";
 import type { Attachment, ConversationId, ProposalDecision, ProposalId, SessionId } from "../ipc";
-import { useChat } from "./chat";
+import { flushAgentText, useChat } from "./chat";
 import { isSubscribed, subscribeSession, unsubscribeSession } from "./dispatcher";
 import { dropSessionFigures } from "./figureCache";
-import { detectLineSeparator, dirtyPaths, useFiles } from "./files";
+import { detectLineSeparator, dirtyPaths, snapshotBuffer, useFiles } from "./files";
+import { usePackages } from "./packages";
 import { applySessionInfo, loadSessionData, loadTranscript, reconcileRun, reconcileSessionInfo, refreshIndex as refreshIndexQuiet } from "./loaders";
 import { useRuns } from "./runs";
 import { useSessions } from "./sessions";
@@ -109,6 +110,8 @@ export async function closeSession(session: SessionId): Promise<boolean> {
   useFiles.getState().dropSession(session);
   useRuns.getState().dropSession(session);
   dropSessionFigures(session);
+  usePackages.getState().dropSession(session);
+  flushAgentText();
   useChat.getState().forget(conversations);
   return true;
 }
@@ -172,7 +175,10 @@ async function writeBuffer(session: SessionId, path: string, overwrite: boolean)
   if (!buffer || buffer.loading) return false;
   // A queued save finds the buffer already written by the one before it.
   if (!buffer.dirty && !overwrite && buffer.external === "none") return true;
-  const content = buffer.content;
+  // The one place the document is serialised: the text comes from the editor.
+  const snapshot = snapshotBuffer(session, path);
+  if (!snapshot) return false;
+  const content = snapshot.text;
   try {
     const res = await backend().invoke("fs_write", {
       session,
@@ -180,7 +186,7 @@ async function writeBuffer(session: SessionId, path: string, overwrite: boolean)
       content,
       ...(overwrite || !buffer.hash ? {} : { expected_hash: buffer.hash }),
     });
-    useFiles.getState().markSaved(session, path, res.hash, content);
+    useFiles.getState().markSaved(session, path, res.hash, content, snapshot.markSaved());
     return true;
   } catch (e) {
     if (isIpcError(e) && e.code === "conflict") {

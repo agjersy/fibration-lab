@@ -94,6 +94,11 @@ def test_default_severities_and_overrides(kernel):
         else:
             assert s == DEFAULT_SEVERITY[rule]
     assert DEFAULT_SEVERITY["lib.near-duplicate"] == "warn" and DEFAULT_SEVERITY["cli.help-text"] == "error"
+    # the heuristic rules are advisory by default; the structural ones stay errors
+    assert DEFAULT_SEVERITY["cli.option-for-every-input"] == "warn"
+    assert sev["cli.option-for-every-input"] == "warn" and sev["cli.no-absolute-paths"] == "error"
+    for rule in ("cli.parser-required", "cli.main-function", "cli.main-guard", "lib.script-defines-logic", "lib.duplicate"):
+        assert DEFAULT_SEVERITY[rule] == "error"
 
 
 def test_library_rules(kernel, repo: Path):

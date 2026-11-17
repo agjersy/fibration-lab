@@ -242,3 +242,13 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 - `chat_cancel` also cancels any run the turn started.
 - When the active sandbox is `limits` or `none`, run-class tools (`run.script`, `exec.snippet`, `shell.run`) arrive as proposals with `reason: "ask"` and a summary that says the run is unsandboxed, unless the project sets `policy.unsandboxed_runs = "auto"`.
 - Edit proposals and renderer file commands refuse paths under `.git/` and `.analyst/`, and any path that resolves outside the repo through a symlink.
+
+## 8. Simplification round (DESIGN-REVIEW.md)
+
+- `FigureView` gains `file_abs: string | null`. When non-null and running under Tauri, the renderer displays the figure with `convertFileSrc(file_abs)` (asset protocol; the backend allows each open session's repo and its artifacts directory in the asset scope). `figure_data` remains for remote figures not yet pulled and for browser mode.
+- One figure, one tab: the capture backend writes PNG only by default (`[figures] formats = ["png"]` in `project.toml`; `"svg"` and `"pdf"` may be added). The Figures panel groups files by stem, shows the PNG, and offers other formats as alternates.
+- Policy presets: `policy.preset = "review" | "auto" | "read-only"` in `project.toml` expands to the detailed keys (`review`: edits review, runs auto, packages/shell/git ask; `auto`: edits auto within declared scope, runs auto, packages/shell/git ask; `read-only`: edits, packages, shell, git denied, runs auto). Detailed keys still override. The settings dialog offers the three presets. Comment-marker locked regions are removed; protected globs remain.
+- Models must support native tool calling. The text-protocol tier is removed; a model that fails the tool-calling probe is rejected with a clear error.
+- Contract rules `cli.option-for-every-input` and `lib.near-duplicate` are advisory (`warn`) by default and are not fed back to the agent as must-fix diagnostics.
+- Development and tests in a browser use the real core through `analyst serve` (a local WebSocket bridge speaking the same commands and events); `MockBackend` and the hand-written type mirror are removed.
+- Remote sync pushes the checkpoint tree with git: the host holds a bare repository at `<mirror>.git`; the core pushes a commit of the working tree (tracked plus untracked, not ignored) to `refs/analyst/sync`, and the mirror is a detached checkout of it with `out/`, `.venv/`, and `.analyst/` left untouched. The tree id is the sync identity. rsync, the tar fallback, the deletion manifest, and the tree-hash file are removed.

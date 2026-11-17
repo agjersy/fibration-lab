@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import type { Artifact, FigureGroup, FigureView, RunId, RunView, SessionId } from "../ipc";
+import { figureStem } from "./figures";
+import { frameBatcher } from "./frame";
 import { EMPTY_OUTPUT, appendOutput, outputFromText } from "./outputText";
 import type { OutputBuffer } from "./outputText";
 
@@ -15,6 +17,7 @@ export interface RunOutput {
 export const MAX_RUNS_WITH_OUTPUT = 20;
 
 export interface FigureSelection {
+  /** The figure's stem (file name without extension); one figure may exist in several formats. */
   name: string;
   run_id: RunId;
 }
@@ -151,7 +154,7 @@ export const useRuns = create<RunsState>((set) => ({
       const pinned = s.pinned[session] ?? [];
       const active = s.activeFigure[session];
       const keepActive = active !== null && active !== undefined && pinned.some((p) => p.name === active.name && p.run_id === active.run_id);
-      const activeFigure = keepActive ? active : { name: figure.name, run_id };
+      const activeFigure = keepActive ? active : { name: figureStem(figure), run_id };
       return {
         runs: { ...s.runs, [session]: runs },
         figures: { ...s.figures, [session]: figures },
@@ -168,7 +171,7 @@ export const useRuns = create<RunsState>((set) => ({
       const live = (s.figures[session] ?? []).filter((g) => !listed.has(g.run.meta.run_id) && g.run.meta.status === "running");
       const all = [...live, ...merged];
       const first = all[0]?.figures[0];
-      const active = s.activeFigure[session] ?? (first ? { name: first.name, run_id: first.run_id } : null);
+      const active = s.activeFigure[session] ?? (first ? { name: figureStem(first), run_id: first.run_id } : null);
       return { figures: { ...s.figures, [session]: all }, activeFigure: { ...s.activeFigure, [session]: active } };
     }),
   selectRun: (session, run_id) => set((s) => ({ selectedRun: { ...s.selectedRun, [session]: run_id } })),
@@ -203,7 +206,7 @@ export function findRun(session: SessionId, run_id: RunId): RunView | undefined 
 // output panel) update at most once per frame however chatty the script is.
 
 const pending = new Map<RunId, Record<StreamName, string[]>>();
-let scheduled: { kind: "raf"; id: number } | { kind: "timer"; id: ReturnType<typeof setTimeout> } | null = null;
+const outputFrame = frameBatcher(() => flushRunOutput());
 
 export function queueRunOutput(run_id: RunId, stream: StreamName, chunk: string): void {
   let entry = pending.get(run_id);
@@ -212,22 +215,12 @@ export function queueRunOutput(run_id: RunId, stream: StreamName, chunk: string)
     pending.set(run_id, entry);
   }
   entry[stream].push(chunk);
-  if (scheduled) return;
-  // Hidden documents do not get animation frames; fall back to a timer there.
-  if (typeof requestAnimationFrame === "function" && typeof document !== "undefined" && document.visibilityState === "visible") {
-    scheduled = { kind: "raf", id: requestAnimationFrame(flushRunOutput) };
-  } else {
-    scheduled = { kind: "timer", id: setTimeout(flushRunOutput, 16) };
-  }
+  outputFrame.schedule();
 }
 
 /** Applies everything queued so far. Called per frame, and before anything that reads or replaces output. */
 export function flushRunOutput(): void {
-  if (scheduled) {
-    if (scheduled.kind === "raf") cancelAnimationFrame(scheduled.id);
-    else clearTimeout(scheduled.id);
-    scheduled = null;
-  }
+  outputFrame.cancel();
   if (pending.size === 0) return;
   const batch = new Map<RunId, Record<StreamName, string>>();
   for (const [run_id, chunks] of pending) batch.set(run_id, { stdout: chunks.stdout.join(""), stderr: chunks.stderr.join("") });

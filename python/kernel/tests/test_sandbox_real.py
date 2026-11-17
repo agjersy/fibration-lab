@@ -234,7 +234,9 @@ def test_bwrap_run_end_to_end(bwrap_kernel: Kernel, repo: Path, notes: Notes, tm
     assert done["status"] == "done" and done["exit_code"] == 0, err
     assert bwrap_kernel.call("run.status", {"run_id": run_id})["sandbox"] == "bwrap"
     arts = {a["artifact"]["path"].rsplit("/", 1)[-1]: a["artifact"] for a in notes.of("run.artifact", run_id)}
-    assert set(arts) == {"decay-fit.png", "decay-fit.svg", "fit.json"}, err
+    assert set(arts) == {"decay-fit.png", "fit.json"}, err
+    # the shared Matplotlib cache is writable inside the sandbox: the font cache landed there
+    assert any((tmp_path / "runs" / "_mplconfig").iterdir()), err
     assert arts["decay-fit.png"]["sidecar"]["run_id"] == run_id
 
 

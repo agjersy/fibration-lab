@@ -16,6 +16,7 @@ import contextlib
 import os
 import subprocess
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 try:  # pragma: no cover - always present on the supported platforms
@@ -24,6 +25,32 @@ except ImportError:  # pragma: no cover - windows
     fcntl = None  # type: ignore[assignment]
 
 TERMINAL_PREFIXES = ("done:", "cancelled", "timeout", "failed")
+
+
+def limits_preexec(rlimit_as: int | None, rlimit_nofile: int | None) -> Callable[[], None]:
+    """Return a preexec_fn that applies RLIMIT_AS and RLIMIT_NOFILE in the child."""
+
+    def _apply() -> None:
+        try:
+            import resource
+        except ImportError:  # pragma: no cover - windows
+            return
+        if rlimit_as:
+            try:
+                _, hard = resource.getrlimit(resource.RLIMIT_AS)
+                soft = rlimit_as if hard == resource.RLIM_INFINITY else min(rlimit_as, hard)
+                resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+            except (ValueError, OSError):
+                pass
+        if rlimit_nofile:
+            try:
+                _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+                soft = rlimit_nofile if hard == resource.RLIM_INFINITY else min(rlimit_nofile, hard)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+            except (ValueError, OSError):
+                pass
+
+    return _apply
 
 
 def write_atomic(path: Path, text: str) -> None:

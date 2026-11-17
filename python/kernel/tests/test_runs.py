@@ -51,7 +51,7 @@ def test_run_fit_decay_end_to_end(kernel: Kernel, repo: Path, notes: Notes, tmp_
     assert fig["sidecar"]["args"] == ["--tau1", "1.5"]
     assert fig["sidecar"]["title"] == "Decay fit"
     assert fig["sidecar"]["axes"] == [{"title": "Decay fit", "xlabel": "t (s)", "ylabel": "signal"}]
-    assert arts["decay-fit.svg"]["kind"] == "figure"
+    assert set(arts) == {"decay-fit.png", "fit.json"}  # PNG only by default
     assert not any(name.endswith(".meta.json") for name in arts)  # sidecars are not artifacts
     assert arts["fit.json"]["kind"] == "json" and arts["fit.json"]["rendered"] is True
     recorded = [json.loads(ln) for ln in (run_dir / "artifacts.jsonl").read_text().splitlines()]
@@ -110,7 +110,9 @@ def test_environment_table_and_cwd(kernel: Kernel, repo: Path, notes: Notes, tmp
     assert env["ANALYST_OUT_DIR"] == str((repo / res["out_dir"]).resolve())
     assert env["ANALYST_ROOT"] == str(repo.resolve())
     assert env["MPLBACKEND"] == "module://analyst_mpl"
-    assert env["MPLCONFIGDIR"] == str(tmp_path / "runs" / run_id / "mplconfig")
+    assert env["MPLCONFIGDIR"] == str(tmp_path / "runs" / "_mplconfig")  # shared, never per run
+    assert not (tmp_path / "runs" / run_id / "mplconfig").exists()
+    assert env["ANALYST_FIGURE_FORMATS"] == "png"
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(kernel.mpl_dir)
     assert (Path(env["PYTHONPATH"].split(os.pathsep)[0]) / "analyst_mpl" / "__init__.py").exists()
     assert env["PYTHONUNBUFFERED"] == "1"

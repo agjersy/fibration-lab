@@ -44,6 +44,14 @@ CHECK_TIMEOUT_S = 60.0
 _BOOT = "import sys; sys.path.insert(0, sys.argv[1]); from analyst_kernel._eqworker import main; sys.exit(main())"
 
 
+# Analyzed once by ``EqWorker.prewarm``: a declared and a derived expression with a function call.
+_WARMUP_SOURCE = (
+    "def warmup(t, a, tau):\n"
+    '    """Decay.\n\n    Math:\n        y = a * exp(-t / tau)\n    """\n'
+    "    return a * np.exp(-t / tau) + np.sqrt(a) ** 2\n"
+)
+
+
 class EqWorker:
     """Client for the equation worker subprocess. One request at a time; restarted on demand."""
 
@@ -125,6 +133,28 @@ class EqWorker:
         except ValueError:
             return None
         return obj if isinstance(obj, dict) else None
+
+    def prewarm(self) -> bool:
+        """Start the worker now (it imports SymPy) so the first request does not wait for it.
+
+        Safe to call from a background thread: a request that arrives meanwhile waits for
+        this start rather than beginning a second one. After the start one small function is
+        analyzed, which loads the parts of SymPy that are imported lazily (simplification,
+        the LaTeX printer). True when a worker is ready.
+        """
+        with self._lock:
+            if self._closed:
+                return False
+            if self._proc is None or self._proc.poll() is not None:
+                try:
+                    self._spawn()
+                except (OSError, RuntimeError, ValueError):
+                    self._kill()
+                    return False
+                if self._closed:  # closed while starting: do not leave a worker behind
+                    self._kill()
+                    return False
+        return "error" not in self.analyze(_WARMUP_SOURCE, 0, False)
 
     # ---- requests -----------------------------------------------------------------
     def analyze(self, source: str, line_offset: int, is_method: bool) -> dict[str, Any]:

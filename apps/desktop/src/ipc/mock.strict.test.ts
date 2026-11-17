@@ -148,7 +148,7 @@ describe("MockBackend additions of IPC.md section 7", () => {
     await b.invoke("session_open", { session: SEEDED });
     const out = await b.invoke("out_list", { session: SEEDED, path: "out" });
     const paths = out.entries.map((e) => e.path);
-    expect(paths.some((p) => p.endsWith("decay-simulation.svg.meta.json"))).toBe(true);
+    expect(paths.some((p) => p.endsWith("decay-simulation.png.meta.json"))).toBe(true);
     expect(paths.some((p) => p.endsWith("decay-simulation.json"))).toBe(false);
   });
 });

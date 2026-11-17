@@ -1,11 +1,13 @@
 import { create } from "zustand";
 import type { Attachment, ConversationId, ProposalId, ProposalView, RunId, SessionId, TurnId, TurnSummary } from "../ipc";
+import { frameBatcher } from "./frame";
 
 /** "expired": recorded in the transcript without a decision and no longer pending in the backend. */
 export type ProposalStatus = "pending" | "accept" | "reject" | "auto" | "expired";
 
 export type ChatItem =
   | { kind: "user"; id: string; text: string; attachments: Attachment[] }
+  /** While `streaming`, the text so far is in `ConversationState.stream`, not here. */
   | { kind: "assistant"; id: string; turn: TurnId; text: string; streaming: boolean }
   | { kind: "tool"; id: string; turn: TurnId; name: string; arguments: unknown; result: { ok: boolean; summary: string } | null }
   | { kind: "proposal"; id: string; proposal_id: ProposalId }
@@ -20,8 +22,21 @@ export interface Usage {
   context_used: number;
 }
 
+/** Text of the assistant message being streamed; `id` names its item in `items`. */
+export interface StreamSlot {
+  id: string;
+  turn: TurnId;
+  text: string;
+}
+
 export interface ConversationState {
   items: ChatItem[];
+  /**
+   * The message currently streaming. Deltas only replace this slot, so `items`
+   * keeps its identity while text arrives; the text moves into the item when
+   * the message ends (the next item, the end of the turn).
+   */
+  stream: StreamSlot | null;
   busy: boolean;
   turn: TurnId | null;
   usage: Usage | null;
@@ -61,6 +76,7 @@ interface ChatState {
   setResponding(proposal_id: ProposalId, responding: boolean): void;
   forget(conversations: ConversationId[]): void;
   turnStarted(conversation: ConversationId, turn: TurnId): void;
+  /** Appends streamed text. Events go through `queueAgentText`, which calls this once per frame. */
   appendText(conversation: ConversationId, turn: TurnId, delta: string): void;
   toolCall(conversation: ConversationId, turn: TurnId, id: string, name: string, args: unknown): void;
   toolResult(conversation: ConversationId, id: string, ok: boolean, summary: string): void;
@@ -77,7 +93,7 @@ interface ChatState {
   removeAttachment(conversation: ConversationId, index: number): void;
 }
 
-const EMPTY: ConversationState = { items: [], busy: false, turn: null, usage: null, loaded: false };
+const EMPTY: ConversationState = { items: [], stream: null, busy: false, turn: null, usage: null, loaded: false };
 
 let counter = 0;
 function nextId(prefix: string): string {
@@ -93,8 +109,16 @@ function update(
   return { conversations: { ...s.conversations, [conversation]: { ...cur, ...fn(cur) } } };
 }
 
-function finishStreaming(items: ChatItem[]): ChatItem[] {
-  return items.map((it) => (it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it));
+/** The items with the streaming message (if any) completed: its text moved in from the slot. */
+function committed(c: ConversationState): ChatItem[] {
+  const stream = c.stream;
+  if (!stream) return c.items;
+  return c.items.map((it) => (it.kind === "assistant" && it.id === stream.id ? { ...it, text: stream.text, streaming: false } : it));
+}
+
+/** Ends the streaming message and appends `item` after it. */
+function append(c: ConversationState, item: ChatItem): Pick<ConversationState, "items" | "stream"> {
+  return { items: [...committed(c), item], stream: null };
 }
 
 export const useChat = create<ChatState>((set) => ({
@@ -107,7 +131,8 @@ export const useChat = create<ChatState>((set) => ({
   loadHistory: (conversation, items, proposals, replace) =>
     set((s) => {
       const known = new Set(items.map((it) => it.id));
-      const live = replace ? [] : (s.conversations[conversation]?.items ?? []).filter((it) => !known.has(it.id));
+      const cur = s.conversations[conversation];
+      const live = replace ? [] : (cur?.items ?? []).filter((it) => !known.has(it.id));
       const records = { ...s.proposals };
       for (const rec of proposals) {
         const cur = records[rec.proposal.id];
@@ -115,14 +140,16 @@ export const useChat = create<ChatState>((set) => ({
         // freshest status; history only fills in what is not known yet.
         if (!cur || replace || cur.status === "pending") records[rec.proposal.id] = cur && cur.proposal.proposed !== null && rec.proposal.proposed === null ? { ...rec, proposal: cur.proposal } : rec;
       }
-      return { proposals: records, ...update(s, conversation, () => ({ items: [...items, ...live], loaded: true })) };
+      // A replaced conversation has no item left for the slot to belong to.
+      return { proposals: records, ...update(s, conversation, (c) => ({ items: [...items, ...live], stream: replace ? null : c.stream, loaded: true })) };
     }),
   addUser: (conversation, text, attachments) => {
     const id = nextId("u");
-    set((s) => update(s, conversation, (c) => ({ items: [...c.items, { kind: "user", id, text, attachments }], busy: true })));
+    set((s) => update(s, conversation, (c) => ({ ...append(c, { kind: "user", id, text, attachments }), busy: true })));
     return id;
   },
-  removeItem: (conversation, id) => set((s) => update(s, conversation, (c) => ({ items: c.items.filter((it) => it.id !== id) }))),
+  removeItem: (conversation, id) =>
+    set((s) => update(s, conversation, (c) => ({ items: c.items.filter((it) => it.id !== id), stream: c.stream?.id === id ? null : c.stream }))),
   syncPending: (session, pending, authoritative) =>
     set((s) => {
       let next: Pick<ChatState, "conversations"> & { proposals: ChatState["proposals"] } = { conversations: s.conversations, proposals: s.proposals };
@@ -133,8 +160,8 @@ export const useChat = create<ChatState>((set) => ({
         const proposals = { ...next.proposals, [proposal.id]: { session, proposal, status: "pending" as const, by: null } };
         const conv = next.conversations[proposal.conversation] ?? EMPTY;
         const id = `proposal:${proposal.id}`;
-        const items = conv.items.some((it) => it.id === id) ? conv.items : [...finishStreaming(conv.items), { kind: "proposal" as const, id, proposal_id: proposal.id }];
-        next = { proposals, conversations: { ...next.conversations, [proposal.conversation]: { ...conv, items } } };
+        const changed = conv.items.some((it) => it.id === id) ? {} : append(conv, { kind: "proposal", id, proposal_id: proposal.id });
+        next = { proposals, conversations: { ...next.conversations, [proposal.conversation]: { ...conv, ...changed } } };
       }
       if (authoritative) {
         const proposals = { ...next.proposals };
@@ -168,20 +195,17 @@ export const useChat = create<ChatState>((set) => ({
   appendText: (conversation, turn, delta) =>
     set((s) =>
       update(s, conversation, (c) => {
-        const last = c.items[c.items.length - 1];
-        if (last && last.kind === "assistant" && last.turn === turn && last.streaming) {
-          return { items: [...c.items.slice(0, -1), { ...last, text: last.text + delta }] };
-        }
-        return { items: [...finishStreaming(c.items), { kind: "assistant", id: nextId("a"), turn, text: delta, streaming: true }] };
+        // Same message: only the slot changes; `items` is not touched.
+        if (c.stream && c.stream.turn === turn) return { stream: { ...c.stream, text: c.stream.text + delta } };
+        const id = nextId("a");
+        return { ...append(c, { kind: "assistant", id, turn, text: "", streaming: true }), stream: { id, turn, text: delta } };
       }),
     ),
   toolCall: (conversation, turn, id, name, args) =>
     set((s) =>
       update(s, conversation, (c) =>
         // Already present when the transcript was loaded while the call was running.
-        c.items.some((it) => it.id === `tool:${id}`)
-          ? {}
-          : { items: [...finishStreaming(c.items), { kind: "tool", id: `tool:${id}`, turn, name, arguments: args, result: null }] },
+        c.items.some((it) => it.id === `tool:${id}`) ? {} : append(c, { kind: "tool", id: `tool:${id}`, turn, name, arguments: args, result: null }),
       ),
     ),
   toolResult: (conversation, id, ok, summary) =>
@@ -195,7 +219,7 @@ export const useChat = create<ChatState>((set) => ({
       proposals: { ...s.proposals, [proposal.id]: { session, proposal, status: "pending", by: null } },
       ...update(s, proposal.conversation, (c) => {
         const id = `proposal:${proposal.id}`;
-        return c.items.some((it) => it.id === id) ? {} : { items: [...finishStreaming(c.items), { kind: "proposal", id, proposal_id: proposal.id }] };
+        return c.items.some((it) => it.id === id) ? {} : append(c, { kind: "proposal", id, proposal_id: proposal.id });
       }),
     })),
   resolveProposal: (proposal_id, status, by) =>
@@ -206,28 +230,12 @@ export const useChat = create<ChatState>((set) => ({
     }),
   addRun: (conversation, run_id) =>
     set((s) =>
-      update(s, conversation, (c) =>
-        c.items.some((it) => it.kind === "run" && it.run_id === run_id)
-          ? {}
-          : { items: [...finishStreaming(c.items), { kind: "run", id: `run:${run_id}`, run_id }] },
-      ),
+      update(s, conversation, (c) => (c.items.some((it) => it.kind === "run" && it.run_id === run_id) ? {} : append(c, { kind: "run", id: `run:${run_id}`, run_id }))),
     ),
   turnDone: (conversation, turn, summary) =>
-    set((s) =>
-      update(s, conversation, (c) => ({
-        items: [...finishStreaming(c.items), { kind: "summary", id: nextId("s"), turn, summary }],
-        busy: false,
-        turn: null,
-      })),
-    ),
+    set((s) => update(s, conversation, (c) => ({ ...append(c, { kind: "summary", id: nextId("s"), turn, summary }), busy: false, turn: null }))),
   turnError: (conversation, turn, message) =>
-    set((s) =>
-      update(s, conversation, (c) => ({
-        items: [...finishStreaming(c.items), { kind: "error", id: nextId("e"), turn, message }],
-        busy: false,
-        turn: null,
-      })),
-    ),
+    set((s) => update(s, conversation, (c) => ({ ...append(c, { kind: "error", id: nextId("e"), turn, message }), busy: false, turn: null }))),
   setUsage: (conversation, usage) => set((s) => update(s, conversation, () => ({ usage }))),
   setBusy: (conversation, busy) => set((s) => update(s, conversation, () => ({ busy }))),
   setDraft: (conversation, text) => set((s) => ({ drafts: { ...s.drafts, [conversation]: text } })),
@@ -244,10 +252,56 @@ export function useConversation(conversation: ConversationId | null): Conversati
   return useChat((s) => (conversation ? (s.conversations[conversation] ?? EMPTY) : EMPTY));
 }
 
+/** The item list alone: its identity does not change while a message streams. */
+export function useConversationItems(conversation: ConversationId | null): ChatItem[] {
+  return useChat((s) => (conversation ? (s.conversations[conversation] ?? EMPTY).items : EMPTY.items));
+}
+
+/** Text of a streaming message, or null once it has ended (the item then carries the text). */
+export function useStreamText(conversation: ConversationId, id: string): string | null {
+  return useChat((s) => {
+    const stream = s.conversations[conversation]?.stream;
+    return stream && stream.id === id ? stream.text : null;
+  });
+}
+
 export function useProposal(proposal_id: ProposalId | null): ProposalRecord | undefined {
   return useChat((s) => (proposal_id ? s.proposals[proposal_id] : undefined));
 }
 
 export function useResponding(proposal_id: ProposalId | null): boolean {
   return useChat((s) => (proposal_id ? s.responding[proposal_id] === true : false));
+}
+
+// ---- streamed text batching ----
+// `agent_text` deltas arrive per token. They are collected here and applied
+// once per animation frame, so a long answer costs one store update (and one
+// render of the streaming message) per frame, whatever the token rate.
+
+const pendingText = new Map<ConversationId, { turn: TurnId; parts: string[] }[]>();
+const textFrame = frameBatcher(() => flushAgentText());
+
+export function queueAgentText(conversation: ConversationId, turn: TurnId, delta: string): void {
+  let runs = pendingText.get(conversation);
+  if (!runs) {
+    runs = [];
+    pendingText.set(conversation, runs);
+  }
+  const last = runs[runs.length - 1];
+  if (last && last.turn === turn) last.parts.push(delta);
+  else runs.push({ turn, parts: [delta] });
+  textFrame.schedule();
+}
+
+/**
+ * Applies the queued deltas. Called per frame, and by the dispatcher before
+ * any other event so that text and the items around it keep their order.
+ */
+export function flushAgentText(): void {
+  textFrame.cancel();
+  if (pendingText.size === 0) return;
+  const batch = [...pendingText];
+  pendingText.clear();
+  const chat = useChat.getState();
+  for (const [conversation, runs] of batch) for (const run of runs) chat.appendText(conversation, run.turn, run.parts.join(""));
 }

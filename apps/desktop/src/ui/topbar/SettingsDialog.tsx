@@ -2,6 +2,7 @@ import { useState } from "react";
 import { backend } from "../../ipc";
 import type { PolicyView, SessionId } from "../../ipc";
 import { startTask } from "../../state/actions";
+import { POLICY_PRESETS, presetOf, presetPatch } from "../../state/policyPresets";
 import { useSessions } from "../../state/sessions";
 import { notifyError, useUi } from "../../state/ui";
 import type { ThemePreference } from "../../state/ui";
@@ -29,6 +30,7 @@ export function SettingsDialog({ session, onClose }: { session: SessionId | null
       .invoke("session_set_policy", { session, policy })
       .catch(notifyError);
   };
+  const preset = info ? presetOf(info.policy) : null;
 
   return (
     <Modal
@@ -52,7 +54,7 @@ export function SettingsDialog({ session, onClose }: { session: SessionId | null
       {info && session ? (
         <>
           <h3 className="small muted" style={{ margin: "6px 0 0" }}>
-            Session policy overrides ({info.name})
+            Session ({info.name})
           </h3>
           <div className="form-grid">
             <label htmlFor="st-target">Target</label>
@@ -67,22 +69,48 @@ export function SettingsDialog({ session, onClose }: { session: SessionId | null
                 </option>
               ))}
             </select>
-            {POLICY_FIELDS.map((f) => (
-              <PolicySelect key={f.key} id={`st-${f.key}`} label={f.label} value={info.policy[f.key]} options={f.options} onChange={(v) => setPolicy({ [f.key]: v } as Partial<PolicyView>)} />
-            ))}
-            <label htmlFor="st-max-steps">Max steps</label>
-            <input
-              id="st-max-steps"
-              type="number"
-              min={1}
-              value={maxSteps}
-              onChange={(e) => setMaxSteps(Number(e.target.value))}
-              onBlur={() => setPolicy({ max_steps: maxSteps })}
-            />
-            <label htmlFor="st-protected">Protected</label>
-            <textarea id="st-protected" rows={3} value={protectedText} onChange={(e) => setProtectedText(e.target.value)} onBlur={() => setPolicy({ protected: protectedText.split("\n").map((s) => s.trim()).filter(Boolean) })} />
-            <div className="help">Glob patterns the agent may not change without explicit approval. Overrides apply to this session only.</div>
           </div>
+          <h3 className="small muted" style={{ margin: "6px 0 0" }}>
+            What the agent may do
+          </h3>
+          <div className="policy-presets" role="radiogroup" aria-label="Policy preset" data-testid="policy-presets">
+            {POLICY_PRESETS.map((p) => (
+              <label key={p.id} className={`policy-preset${preset === p.id ? " selected" : ""}`}>
+                <input type="radio" name="policy-preset" value={p.id} checked={preset === p.id} onChange={() => setPolicy(presetPatch(p.id))} data-testid={`policy-preset-${p.id}`} />
+                <span>
+                  <span>{p.label}</span>
+                  <span className="small muted" style={{ display: "block" }}>
+                    {p.description}
+                  </span>
+                </span>
+              </label>
+            ))}
+            {preset === null ? (
+              <div className="small muted" data-testid="policy-custom">
+                Custom: the detailed settings under Advanced do not match a preset.
+              </div>
+            ) : null}
+          </div>
+          <details className="settings-advanced" data-testid="policy-advanced">
+            <summary>Advanced</summary>
+            <div className="form-grid">
+              {POLICY_FIELDS.map((f) => (
+                <PolicySelect key={f.key} id={`st-${f.key}`} label={f.label} value={info.policy[f.key]} options={f.options} onChange={(v) => setPolicy({ [f.key]: v } as Partial<PolicyView>)} />
+              ))}
+              <label htmlFor="st-max-steps">Max steps</label>
+              <input
+                id="st-max-steps"
+                type="number"
+                min={1}
+                value={maxSteps}
+                onChange={(e) => setMaxSteps(Number(e.target.value))}
+                onBlur={() => setPolicy({ max_steps: maxSteps })}
+              />
+              <label htmlFor="st-protected">Protected</label>
+              <textarea id="st-protected" rows={3} value={protectedText} onChange={(e) => setProtectedText(e.target.value)} onBlur={() => setPolicy({ protected: protectedText.split("\n").map((s) => s.trim()).filter(Boolean) })} />
+              <div className="help">Glob patterns the agent may not change without explicit approval. These settings apply to this session only and override the preset.</div>
+            </div>
+          </details>
         </>
       ) : (
         <div className="small muted">Open a session to edit its policy.</div>

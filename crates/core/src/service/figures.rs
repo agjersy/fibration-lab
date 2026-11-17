@@ -106,6 +106,7 @@ pub fn figure_view(repo: &Path, file: &Path, run_id: &str, script: &str) -> Opti
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| mtime_rfc3339(file));
     Some(FigureView {
+        file_abs: None,
         run_id: run_id.to_string(),
         script: script.to_string(),
         path: rel,
@@ -126,6 +127,7 @@ pub fn figure_view_from_artifact(
 ) -> Option<FigureView> {
     let format = FigureFormat::from_path(&artifact.path)?;
     Some(FigureView {
+        file_abs: None,
         run_id: run_id.to_string(),
         script: script.to_string(),
         path: artifact.path.clone(),

@@ -90,10 +90,12 @@ describe("chat store with history", () => {
     const conv = useChat.getState().conversations[C];
     expect(conv?.loaded).toBe(true);
     expect(conv?.items.filter((i) => i.id === "tool:t2")).toHaveLength(1);
-    expect(conv?.items.at(-1)).toMatchObject({ kind: "assistant", text: "still working", streaming: true });
+    expect(conv?.items.at(-1)).toMatchObject({ kind: "assistant", streaming: true });
+    expect(conv?.stream).toMatchObject({ id: conv?.items.at(-1)?.id, text: "still working" });
     // A resync replaces everything.
     chat.loadHistory(C, mapped.items, mapped.proposals, true);
     expect(useChat.getState().conversations[C]?.items).toHaveLength(mapped.items.length);
+    expect(useChat.getState().conversations[C]?.stream).toBeNull();
   });
 
   it("syncPending adds live cards and, when authoritative, expires the ones the backend dropped", () => {

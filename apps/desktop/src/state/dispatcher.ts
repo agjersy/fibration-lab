@@ -3,12 +3,13 @@
 // still update state.
 import { backend } from "../ipc";
 import type { SessionEvent, SessionId } from "../ipc";
-import { useChat } from "./chat";
+import { flushAgentText, queueAgentText, useChat } from "./chat";
 import { useDiagnostics } from "./diagnostics";
 import { noteEvent } from "./eventSeq";
 import { useFiles } from "./files";
 import { checkExternalChanges } from "./fileWatch";
 import { applySessionInfo, reconcileRun, refreshIndex, reloadDirsSoon, resyncSession } from "./loaders";
+import { packagesChanged } from "./packages";
 import { flushRunOutput, queueRunOutput, useRuns } from "./runs";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
@@ -22,9 +23,12 @@ function quietly(p: Promise<unknown>): void {
 
 export function applyEvent(session: SessionId, e: SessionEvent): void {
   noteEvent(session, e.type);
+  // Text deltas are applied per frame. Anything else that can touch a
+  // conversation applies the queued text first, so items keep their order.
+  if (e.type !== "agent_text" && e.type !== "run_output" && e.type !== "terminal_data" && e.type !== "task_log") flushAgentText();
   switch (e.type) {
     case "agent_text":
-      useChat.getState().appendText(e.conversation, e.turn, e.delta);
+      queueAgentText(e.conversation, e.turn, e.delta);
       break;
     case "agent_tool_call":
       useChat.getState().toolCall(e.conversation, e.turn, e.id, e.name, e.arguments);
@@ -82,10 +86,10 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
     case "files_changed": {
       reloadDirsSoon(session, useFiles.getState().invalidateDirs(session, e.paths));
       void checkExternalChanges(session, e.paths);
-      if (e.paths.some((p) => p.endsWith(".py"))) {
-        useFiles.getState().markIndexStale(session);
-        quietly(refreshIndex(session));
-      }
+      // The backend re-indexes on its own and announces the result with
+      // `index_changed`; that event is the one fetch. Until then the index
+      // shown is only marked as possibly out of date.
+      if (e.paths.some((p) => p.endsWith(".py"))) useFiles.getState().markIndexStale(session);
       break;
     }
     case "index_changed":
@@ -110,7 +114,7 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
       if (e.state === "ready") quietly(refreshIndex(session));
       break;
     case "packages_changed":
-      bumpPackages(session);
+      packagesChanged(session);
       break;
     case "task_log":
       useTasks.getState().log(e.task_id, e.line);
@@ -125,18 +129,6 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
       quietly(resyncSession(session));
       break;
   }
-}
-
-// Packages have no store of their own; the panel re-fetches on this counter.
-const packageListeners = new Set<(session: SessionId) => void>();
-export function onPackagesChanged(fn: (session: SessionId) => void): () => void {
-  packageListeners.add(fn);
-  return () => {
-    packageListeners.delete(fn);
-  };
-}
-function bumpPackages(session: SessionId): void {
-  for (const fn of packageListeners) fn(session);
 }
 
 interface Subscription {

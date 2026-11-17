@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { backend } from "../../ipc";
-import type { PackageInfo } from "../../ipc";
 import { startTask } from "../../state/actions";
-import { onPackagesChanged } from "../../state/dispatcher";
+import { ensurePackages, refreshPackages, usePackageList, usePackages } from "../../state/packages";
 import { useActiveSession, useSessionInfo } from "../../state/sessions";
 import { useSessionTasks } from "../../state/tasks";
 import { notifyError } from "../../state/ui";
@@ -10,26 +9,19 @@ import { notifyError } from "../../state/ui";
 export function PackagesPanel() {
   const session = useActiveSession();
   const info = useSessionInfo(session);
-  const [packages, setPackages] = useState<PackageInfo[] | null>(null);
+  const packages = usePackageList(session);
+  const stale = usePackages((s) => (session ? (s.stale[session] ?? false) : false));
+  const loading = usePackages((s) => (session ? (s.loading[session] ?? false) : false));
   const [filter, setFilter] = useState("");
   const [toAdd, setToAdd] = useState("");
   const tasks = useSessionTasks(session);
   const latest = tasks[0];
 
-  const refresh = useCallback(() => {
-    if (!session) return;
-    backend()
-      .invoke("env_packages", { session })
-      .then(setPackages)
-      .catch(notifyError);
-  }, [session]);
-
+  // The list is cached in the store: opening the panel fetches it only the
+  // first time, and again after `packages_changed` marked it stale.
   useEffect(() => {
-    refresh();
-    return onPackagesChanged((s) => {
-      if (s === session) refresh();
-    });
-  }, [refresh, session]);
+    if (session) ensurePackages(session).catch(notifyError);
+  }, [session, stale]);
 
   if (!session) return <div className="empty">No session</div>;
   const busy = tasks.some((t) => !t.done);
@@ -42,6 +34,7 @@ export function PackagesPanel() {
   };
   const remove = (name: string) => void startTask(session, `remove ${name}`, () => backend().invoke("env_remove", { session, packages: [name] }));
   const sync = () => void startTask(session, "sync", () => backend().invoke("env_sync", { session }));
+  const refresh = () => void refreshPackages(session).catch(notifyError);
   const shown = (packages ?? []).filter((p) => p.name.toLowerCase().includes(filter.toLowerCase()));
 
   return (
@@ -51,6 +44,9 @@ export function PackagesPanel() {
         <span className="small muted">
           {packages ? `${packages.length} packages` : "…"} · {info?.python_abs ?? "python"} · {info?.target}
         </span>
+        <button type="button" className="small ghost" onClick={refresh} disabled={loading} title="Read the package list again" data-testid="packages-refresh">
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
         <span className="grow" />
         <input
           type="text"

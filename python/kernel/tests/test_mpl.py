@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 KERNEL_DIR = Path(__file__).resolve().parent.parent
 
 SCRIPT = """
@@ -50,6 +52,7 @@ def run_backend(tmp_path: Path, env_extra: dict[str, str], cwd: Path | None = No
         }
     )
     env.pop("ANALYST_OUT_DIR", None)
+    env.pop("ANALYST_FIGURE_FORMATS", None)
     env.update(env_extra)
     script = tmp_path / "plot_script.py"
     script.write_text(SCRIPT)
@@ -61,6 +64,33 @@ def run_backend(tmp_path: Path, env_extra: dict[str, str], cwd: Path | None = No
     )
 
 
+@pytest.mark.parametrize(
+    ("formats", "exts"),
+    [
+        ("png,svg", (".png", ".svg")),
+        (" SVG , .pdf ,svg,bogus", (".svg", ".pdf")),  # order kept, duplicates and unknown names dropped
+        ("jpg,,", (".png",)),  # nothing usable: the default
+    ],
+)
+def test_show_formats_come_from_the_environment(tmp_path: Path, formats: str, exts: tuple[str, ...]):
+    out = tmp_path / "outdir"
+    proc = run_backend(tmp_path, {"ANALYST_OUT_DIR": str(out), "ANALYST_FIGURE_FORMATS": formats})
+    assert proc.returncode == 0, proc.stderr
+    figs = out / "figures"
+    stems = ("fig-1", "residuals", "residuals-2", "decay-fit-run-1")
+    assert sorted(p.name for p in figs.iterdir()) == sorted(
+        f"{stem}{ext}{meta}" for stem in stems for ext in exts for meta in ("", ".meta.json")
+    )
+    first = json.loads((figs / f"residuals{exts[0]}.meta.json").read_text())
+    for ext in exts:  # a sidecar per written file, all describing the same figure
+        sc = json.loads((figs / f"residuals{ext}.meta.json").read_text())
+        assert {k: v for k, v in sc.items() if k != "created_at"} == {k: v for k, v in first.items() if k != "created_at"}
+    if ".svg" in exts:
+        assert b"<svg" in (figs / "fig-1.svg").read_bytes()[:400]
+    if ".pdf" in exts:
+        assert (figs / "fig-1.pdf").read_bytes()[:4] == b"%PDF"
+
+
 def test_show_naming_sidecars_and_savefig(tmp_path: Path):
     out = tmp_path / "outdir"
     proc = run_backend(tmp_path, {"ANALYST_OUT_DIR": str(out), "ANALYST_RUN_ID": "20260101-000000-abcdef",
@@ -69,16 +99,11 @@ def test_show_naming_sidecars_and_savefig(tmp_path: Path):
     figs = out / "figures"
     names = sorted(p.name for p in figs.iterdir())
     stems = ("fig-1", "residuals", "residuals-2", "decay-fit-run-1")
-    assert names == sorted(
-        f"{stem}{ext}{meta}" for stem in stems for ext in (".png", ".svg") for meta in ("", ".meta.json")
-    )
+    # one file per figure: PNG only unless ANALYST_FIGURE_FORMATS asks for more
+    assert names == sorted(f"{stem}.png{meta}" for stem in stems for meta in ("", ".meta.json"))
     assert (figs / "fig-1.png").read_bytes()[:4] == b"\x89PNG"
-    assert b"<svg" in (figs / "fig-1.svg").read_bytes()[:400]
 
     sc = json.loads((figs / "residuals.png.meta.json").read_text())
-    assert {k: v for k, v in json.loads((figs / "residuals.svg.meta.json").read_text()).items() if k != "created_at"} == {
-        k: v for k, v in sc.items() if k != "created_at"
-    }
     assert sc == {
         "run_id": "20260101-000000-abcdef",
         "script": "plot_script.py",

@@ -16,6 +16,8 @@ DEFAULT_DATA_DIRS = ["data"]
 DEFAULT_TIMEOUT_S = 600
 DEFAULT_ADDRESS_SPACE_GB = 0.0  # 0 means no RLIMIT_AS
 DEFAULT_OPEN_FILES = 4096
+DEFAULT_FIGURE_FORMATS = ["png"]
+FIGURE_FORMATS = ("png", "svg", "pdf")  # what ``[figures] formats`` may list
 
 log = logging.getLogger("analyst_kernel.config")
 
@@ -71,6 +73,9 @@ class ProjectConfig:
     address_space_gb: float = DEFAULT_ADDRESS_SPACE_GB
     open_files: int = DEFAULT_OPEN_FILES
 
+    # Formats plt.show() figures are saved in; handed to runs as ANALYST_FIGURE_FORMATS.
+    figure_formats: list[str] = field(default_factory=lambda: list(DEFAULT_FIGURE_FORMATS))
+
     policy: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_POLICY))
     targets: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -99,6 +104,7 @@ class ProjectConfig:
                 "severity": self.severity,
             },
             "limits": {"address_space_gb": self.address_space_gb, "open_files": self.open_files},
+            "figures": {"formats": self.figure_formats},
             "policy": self.policy,
             "targets": self.targets,
         }
@@ -108,6 +114,20 @@ def _list_of_str(value: Any, default: list[str]) -> list[str]:
     if isinstance(value, list) and all(isinstance(v, str) for v in value):
         return list(value)
     return list(default)
+
+
+def figure_formats(value: Any) -> list[str]:
+    """``[figures] formats``: the allowed names in the order given, without duplicates.
+
+    Unknown entries are dropped; nothing usable (or no key at all) means the default, PNG only.
+    """
+    out: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            name = str(item).strip().lower().lstrip(".") if isinstance(item, str) else ""
+            if name in FIGURE_FORMATS and name not in out:
+                out.append(name)
+    return out or list(DEFAULT_FIGURE_FORMATS)
 
 
 def _out_dir_text(value: Any) -> str:
@@ -185,6 +205,7 @@ def config_from_dict(data: dict[str, Any]) -> ProjectConfig:
         policy.pop("network", None)
     targets = data.get("targets", {}) if isinstance(data.get("targets"), dict) else {}
     limits = data.get("limits", {}) if isinstance(data.get("limits"), dict) else {}
+    figures = data.get("figures", {}) if isinstance(data.get("figures"), dict) else {}
 
     def num(value: Any, default: float) -> float:
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
@@ -214,6 +235,7 @@ def config_from_dict(data: dict[str, Any]) -> ProjectConfig:
         severity=severity,
         address_space_gb=max(0.0, num(limits.get("address_space_gb"), DEFAULT_ADDRESS_SPACE_GB)),
         open_files=int(positive(limits.get("open_files"), DEFAULT_OPEN_FILES)),
+        figure_formats=figure_formats(figures.get("formats")),
         policy=policy,
         targets={str(k): dict(v) for k, v in targets.items() if isinstance(v, dict)},
         raw=data,

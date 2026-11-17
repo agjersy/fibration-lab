@@ -6,4 +6,10 @@ export type FigureView = { run_id: string, script: string,
 /**
  * Repo-relative, e.g. `out/fit_decay/<run>/figures/residuals.png`.
  */
-path: string, name: string, format: FigureFormat, sidecar: FigureSidecar | null, created_at: string, size: number, };
+path: string, name: string, format: FigureFormat, sidecar: FigureSidecar | null, created_at: string, size: number, 
+/**
+ * Absolute local path of the image file when it exists on this machine; the renderer
+ * loads it through the webview's asset protocol instead of `figure_data`. Null when the
+ * file has not been pulled from a remote target yet.
+ */
+file_abs: string | null, };

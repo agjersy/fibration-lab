@@ -1,4 +1,10 @@
-"""Run execution (PROTOCOL.md 1.4): detached runs, log tailing, artifact discovery, attach."""
+"""Run execution (PROTOCOL.md 1.4): detached runs, log tailing, artifact discovery, attach.
+
+Completion is signalled, not polled: the kernel hands each supervisor the write end of a
+pipe, and the supervisor closes it the instant the result is on disk. The watcher sleeps
+in ``select`` on the read end, so ``run.done`` follows process exit by a few milliseconds.
+Only runs adopted after a kernel restart (no pipe) fall back to polling the status file.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +12,7 @@ import json
 import logging
 import os
 import secrets
+import select
 import signal
 import subprocess
 import sys
@@ -25,7 +32,10 @@ from .sandbox import SandboxSpec, tooling_dir, venv_of, wrap
 
 log = logging.getLogger("analyst_kernel.runs")
 
-POLL_S = 0.25
+POLL_S = 0.25  # idle tail interval and live artifact-scan interval
+TAIL_MIN_S = 0.03  # tail interval while output is flowing
+TAIL_BACKOFF = 1.5  # growth of the tail interval per quiet tick, up to POLL_S
+MPLCONFIG_DIR = "_mplconfig"  # under runs_dir: one Matplotlib cache shared by every run
 CHUNK_BYTES = 64 * 1024  # largest run.stdout / run.stderr chunk
 MAX_CHUNKS_PER_POLL = 64  # a fast producer cannot hold the watcher in one tail forever
 PASSTHROUGH_ENV = ("HOME", "PATH", "LANG", "VIRTUAL_ENV")
@@ -225,6 +235,7 @@ class RunManager:
         supervisor_python: str | None = None,
         poll_s: float = POLL_S,
         data_dirs: list[Path] | None = None,
+        tail_min_s: float = TAIL_MIN_S,
     ) -> None:
         self.root = root.resolve()
         self.runs_dir = runs_dir.resolve()
@@ -242,9 +253,14 @@ class RunManager:
         self.data_dirs = list(data_dirs)
         self.supervisor_python = supervisor_python or sys.executable
         self.poll_s = poll_s
+        self.tail_min_s = tail_min_s
         self._watchers: dict[str, _Watcher] = {}
         self._lock = threading.Lock()
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+        # One Matplotlib config/cache directory for every run, the REPL and eq.check: the font
+        # cache is built once per runs dir instead of once per run.
+        self.mpl_config_dir = self.runs_dir / MPLCONFIG_DIR
+        self.mpl_config_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- helpers ------------------------------------------------------------
     def run_dir(self, run_id: str) -> Path:
@@ -274,7 +290,8 @@ class RunManager:
                 "ANALYST_OUT_DIR": str(out_abs),
                 "ANALYST_ROOT": str(self.root),
                 "MPLBACKEND": "module://analyst_mpl",
-                "MPLCONFIGDIR": str(run_dir / "mplconfig"),
+                "MPLCONFIGDIR": str(self.mpl_config_dir),
+                "ANALYST_FIGURE_FORMATS": ",".join(self.config.figure_formats),
                 "TMPDIR": str(run_dir / "tmp"),
                 "PYTHONPATH": pythonpath,
                 "PYTHONUNBUFFERED": "1",
@@ -293,6 +310,7 @@ class RunManager:
             data_dirs=list(self.data_dirs),
             support_dirs=[self.mpl_dir / "analyst_mpl"],
             tooling_dir=tooling_dir(),
+            cache_dirs=[self.mpl_config_dir],
             derived_dir=derived if derived.is_dir() else None,
             rlimit_as=self.config.rlimit_as(),
             rlimit_nofile=self.config.open_files,
@@ -322,7 +340,6 @@ class RunManager:
             run_id = new_run_id()
             run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True)
-        (run_dir / "mplconfig").mkdir()
         (run_dir / "tmp").mkdir()
         out_rel = f"{self.out_dir_name}/{script_abs.stem}/{run_id}"
         out_abs = self.root / out_rel
@@ -379,19 +396,29 @@ class RunManager:
             sup += ["--rlimit-as", str(wrapped.rlimit_as)]
         if wrapped.rlimit_nofile:
             sup += ["--rlimit-nofile", str(wrapped.rlimit_nofile)]
-        sup += ["--", *wrapped.argv]
+        # The supervisor closes its end of this pipe once the result is recorded; the watcher
+        # waits on ours. Only the supervisor inherits the write end (never the script).
+        exit_r: int | None
+        exit_r, exit_w = os.pipe()
+        sup += ["--exit-fd", str(exit_w), "--", *wrapped.argv]
         child_env = self._build_env(run_id, run_dir, out_abs, env or {})
         try:
-            proc = subprocess.Popen(
-                sup,
-                cwd=str(self.root),
-                env=child_env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            try:
+                proc = subprocess.Popen(
+                    sup,
+                    cwd=str(self.root),
+                    env=child_env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    pass_fds=(exit_w,),
+                )
+            finally:
+                os.close(exit_w)
         except OSError as exc:
+            os.close(exit_r)
+            exit_r = None
             meta["status"] = "failed"
             meta["finished_at"] = utc_now_iso()
             write_atomic(run_dir / "meta.json", json.dumps(meta, indent=2) + "\n")
@@ -402,7 +429,7 @@ class RunManager:
             meta["pid"] = proc.pid
             meta["pid_start"] = proc_start_token(proc.pid, allow_zombie=True)
             write_atomic(run_dir / "meta.json", json.dumps(meta, indent=2) + "\n")
-        watcher = _Watcher(self, run_id, run_dir, out_abs, proc, timeout)
+        watcher = _Watcher(self, run_id, run_dir, out_abs, proc, timeout, exit_fd=exit_r)
         with self._lock:
             self._watchers[run_id] = watcher
         watcher.start()
@@ -599,12 +626,13 @@ def _replay_log(
 
 
 class _ArtifactScanner:
-    """Discover artifacts under a run's output directory with the size-stable rule.
+    """Discover artifacts under a run's output directory.
 
-    While the run is live a file is announced once its size has been stable for one poll and
-    is not zero. The final scan looks at every file again: new files are announced at once,
-    and a file whose size, mtime, or sidecar changed since it was announced is announced
-    again, so the last record for a path is always the final state.
+    While the run is live a file is announced once its size is non-zero and unchanged between
+    two scans. The final scan, run once the moment the process has exited, needs no such
+    wait: every file is looked at again, new files are announced at once, and a file whose
+    size, mtime, or sidecar changed since it was announced is announced again, so the last
+    record for a path is always the final state.
     """
 
     def __init__(self, root: Path, run_dir: Path, out_abs: Path) -> None:
@@ -656,39 +684,55 @@ class _ArtifactScanner:
         except OSError:
             log.exception("could not rewrite artifacts.jsonl in %s", self.run_dir)
 
-    def _files(self) -> list[Path]:
-        out: list[Path] = []
-        for dirpath, dirnames, filenames in os.walk(self.out_abs):
-            dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
-            for name in filenames:
-                p = Path(dirpath) / name
-                if p.is_file() and not p.is_symlink():
-                    out.append(p)
-        return sorted(out)
+    def _files(self) -> list[tuple[Path, os.DirEntry[str]]]:
+        """Regular files under the output directory (no symlinks), sorted by path.
+
+        ``scandir`` reports the file type without a ``stat`` per entry, so a live scan of a
+        directory whose files are all announced already costs one ``readdir`` per directory.
+        """
+        out: list[tuple[Path, os.DirEntry[str]]] = []
+        stack = [self.out_abs]
+        while stack:
+            directory = stack.pop()
+            try:
+                with os.scandir(directory) as it:
+                    entries = list(it)
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        out.append((Path(entry.path), entry))
+                except OSError:
+                    continue
+        out.sort(key=lambda pair: pair[0])
+        return out
 
     def scan(self, final: bool = False) -> list[dict[str, Any]]:
         found: list[dict[str, Any]] = []
-        if not self.out_abs.is_dir():
-            return found
-        for file in self._files():
+        for file, entry in self._files():
             if file.name.endswith(".tmp"):
                 continue
             if file.parent == self.out_abs and file.name == "run.json":
+                continue
+            rel = rel_to_root(self.root, file)
+            previous = self.announced.get(rel)
+            if previous is not None and not final:
                 continue
             target = sidecar_target(file)
             # ``x.png.meta.json``: a sidecar when it describes an existing figure. Anything
             # else under that name is the user's own JSON and is listed once the run ends.
             if target is not None and (not final or (target.is_file() and read_sidecar(target) is not None)):
                 continue
-            rel = rel_to_root(self.root, file)
             try:
-                st = file.stat()
+                st = entry.stat(follow_symlinks=False)
             except OSError:
                 continue
             kind = artifact_kind(file)
-            previous = self.announced.get(rel)
-            if previous is not None and not final:
-                continue
             if previous is None and not final:
                 prev_size = self.sizes.get(file)
                 self.sizes[file] = st.st_size
@@ -717,7 +761,13 @@ class _ArtifactScanner:
 
 
 class _Watcher(threading.Thread):
-    """Per-run tailer: logs, artifacts, completion, and the timeout backstop."""
+    """Per-run tailer: logs, artifacts, completion, and the timeout backstop.
+
+    A run started by this kernel has ``exit_fd``, the read end of the pipe its supervisor
+    closes when the result is recorded; the watcher sleeps on it between tails and wakes the
+    instant the run ends. An adopted run (attach after a kernel restart) has no pipe and is
+    polled through its status file instead.
+    """
 
     def __init__(
         self,
@@ -728,6 +778,7 @@ class _Watcher(threading.Thread):
         proc: subprocess.Popen | None,
         timeout_s: float,
         adopt: bool = False,
+        exit_fd: int | None = None,
     ) -> None:
         super().__init__(name=f"watch-{run_id}", daemon=True)
         self.manager = manager
@@ -735,10 +786,12 @@ class _Watcher(threading.Thread):
         self.run_dir = run_dir
         self.out_abs = out_abs
         self.proc = proc
+        self.exit_fd = exit_fd
         self.timeout_s = timeout_s
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self._begun = False
+        self._log_fds: dict[str, int] = {}
         self.scanner = _ArtifactScanner(manager.root, run_dir, out_abs)
         self.offsets = {"stdout": 0, "stderr": 0}
         if adopt:
@@ -771,36 +824,59 @@ class _Watcher(threading.Thread):
         except Exception:
             log.exception("notification %s failed", method)
 
-    def _tail(self, name: str, final: bool = False) -> None:
-        """Emit new log output in chunks of at most 64 KiB; ``final`` flushes everything."""
-        path = self.run_dir / f"{name}.log"
-        try:
-            fh = path.open("rb")
-        except OSError:
-            return
-        with fh:
-            sent = 0
-            while final or sent < MAX_CHUNKS_PER_POLL:
-                offset = self.offsets[name]
-                try:
-                    fh.seek(offset)
-                    data = fh.read(CHUNK_BYTES)
-                except OSError:
-                    return
-                if not data:
-                    return
-                full = len(data) == CHUNK_BYTES
-                # A sequence cut by the chunk boundary or by the writer waits for its tail;
-                # at the end of the run whatever is left is flushed with replacement.
-                cut = len(data) if (final and not full) else utf8_cut(data)
-                if cut <= 0:
-                    return
-                chunk = data[:cut].decode("utf-8", errors="replace")
-                self.offsets[name] = offset + cut
-                self._notify(f"run.{name}", {"run_id": self.run_id, "chunk": chunk, "offset": offset})
-                sent += 1
-                if not full and not final:
-                    return
+    def _log_fd(self, name: str) -> int | None:
+        """The log's descriptor, opened once and kept: a quiet tail is then one ``pread``."""
+        fd = self._log_fds.get(name)
+        if fd is None:
+            try:
+                fd = os.open(self.run_dir / f"{name}.log", os.O_RDONLY)
+            except OSError:
+                return None
+            self._log_fds[name] = fd
+        return fd
+
+    def _close_fds(self) -> None:
+        fds = list(self._log_fds.values())
+        self._log_fds.clear()
+        if self.exit_fd is not None:
+            fds.append(self.exit_fd)
+            self.exit_fd = None
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def _tail(self, name: str, final: bool = False) -> bool:
+        """Emit new log output in chunks of at most 64 KiB; ``final`` flushes everything.
+
+        Returns True when anything was emitted.
+        """
+        fd = self._log_fd(name)
+        if fd is None:
+            return False
+        sent = 0
+        while final or sent < MAX_CHUNKS_PER_POLL:
+            offset = self.offsets[name]
+            try:
+                data = os.pread(fd, CHUNK_BYTES, offset)
+            except OSError:
+                break
+            if not data:
+                break
+            full = len(data) == CHUNK_BYTES
+            # A sequence cut by the chunk boundary or by the writer waits for its tail;
+            # at the end of the run whatever is left is flushed with replacement.
+            cut = len(data) if (final and not full) else utf8_cut(data)
+            if cut <= 0:
+                break
+            chunk = data[:cut].decode("utf-8", errors="replace")
+            self.offsets[name] = offset + cut
+            self._notify(f"run.{name}", {"run_id": self.run_id, "chunk": chunk, "offset": offset})
+            sent += 1
+            if not full and not final:
+                break
+        return sent > 0
 
     def _artifacts(self, final: bool) -> None:
         arts = self.scanner.scan(final=final)
@@ -816,23 +892,49 @@ class _Watcher(threading.Thread):
             return self.proc.poll() is None
         return supervisor_alive(self.run_dir)
 
+    def _wait_exit(self, interval: float) -> bool:
+        """Sleep up to ``interval``; True as soon as the run is over.
+
+        With the exit pipe this returns the moment the supervisor closes it (result recorded)
+        or dies (the kernel then records the failure). Without one the status file and the
+        supervisor's identity are polled.
+        """
+        if self.exit_fd is not None:
+            try:
+                ready, _, _ = select.select([self.exit_fd], [], [], interval)
+            except (OSError, ValueError):
+                ready = [self.exit_fd]
+            # Belt and braces: a supervisor that is gone has ended the run even if some other
+            # process were to hold the pipe open.
+            return bool(ready) or (self.proc is not None and self.proc.poll() is not None)
+        if read_status_line(self.run_dir) != "running":
+            return True
+        if not self._supervisor_alive():
+            time.sleep(0.05)  # it may have been between writing its result and exiting
+            return True
+        self.stop.wait(interval)
+        return False
+
     def run(self) -> None:
         t0 = time.monotonic()
         started = parse_iso(_read_meta_field(self.run_dir, "started_at")) or time.time()
+        signalled = self.exit_fd is not None
+        idle = max(self.manager.poll_s, 0.001)
+        busy = min(self.manager.tail_min_s, idle)
+        interval = busy
+        next_scan = t0 + idle
         try:
             while not self.stop.is_set():
                 with self.lock:
-                    self._tail("stdout")
-                    self._tail("stderr")
-                    self._artifacts(final=False)
-                line = read_status_line(self.run_dir)
-                if line != "running":
-                    break
-                if not self._supervisor_alive():
-                    # Supervisor vanished without recording a result.
-                    time.sleep(0.05)
-                    if read_status_line(self.run_dir) == "running":
-                        _finish_failed(self.run_dir, "analyst: the run's supervisor process is gone; the run is marked failed\n")
+                    moved = self._tail("stdout")
+                    moved = self._tail("stderr") or moved
+                    now = time.monotonic()
+                    if now >= next_scan:
+                        self._artifacts(final=False)
+                        next_scan = now + idle
+                # Output usually comes in bursts: tail quickly while it flows, back off when quiet.
+                interval = busy if moved else min(interval * TAIL_BACKOFF, idle)
+                if self._wait_exit(interval):
                     break
                 if self.timeout_s and time.time() - started > self.timeout_s + 15.0:
                     # Backstop: the supervisor should have done this already.
@@ -840,17 +942,20 @@ class _Watcher(threading.Thread):
                     if transition(self.run_dir, "timeout") == "timeout" and pid and same_process(pid, token):
                         _signal_group(pid, signal.SIGKILL)
                     break
-                self.stop.wait(self.manager.poll_s)
             if self.stop.is_set():
                 return
-            # Let the supervisor finish writing meta.json, then do the final flush.
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                if not self._supervisor_alive():
-                    break
-                if _read_meta_field(self.run_dir, "finished_at"):
-                    break
-                time.sleep(0.05)
+            if read_status_line(self.run_dir) == "running":
+                # Supervisor vanished without recording a result.
+                _finish_failed(self.run_dir, "analyst: the run's supervisor process is gone; the run is marked failed\n")
+            elif not signalled:
+                # Polled run: let the supervisor finish writing meta.json before the final flush.
+                # (A signalled run's supervisor closes the pipe only after meta.json is written.)
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    if not self._supervisor_alive() or _read_meta_field(self.run_dir, "finished_at"):
+                        break
+                    time.sleep(0.01)
+            # The process has exited: one final flush and one final scan, no stability wait.
             with self.lock:
                 self._tail("stdout", final=True)
                 self._tail("stderr", final=True)
@@ -871,7 +976,13 @@ class _Watcher(threading.Thread):
         except Exception:
             log.exception("watcher for %s crashed", self.run_id)
         finally:
+            self._close_fds()
             self.manager._watcher_done(self.run_id)
+            if self.proc is not None and not self.stop.is_set():
+                try:  # reap the supervisor; it exits right after closing the pipe
+                    self.proc.wait(timeout=10)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
 
 
 def _read_meta_field(run_dir: Path, key: str) -> Any:
