@@ -1109,6 +1109,7 @@ impl ProjectRuntime {
 
     /// Render the deck with the fidelity engine and refresh thumbnails.
     pub async fn render_thumbnails(self: &Arc<Self>) -> R<usize> {
+        let _scratch = self.ws.scratch_lock.lock().await;
         dispatch::build_agent_deck(&self.ws)
             .await
             .map_err(IpcError::internal)?;
@@ -1543,7 +1544,11 @@ impl ProjectRuntime {
 
     pub fn deck_build(self: &Arc<Self>) -> String {
         self.spawn_task("Building the deck", |rt| async move {
-            match rt.ws.build(dispatch::AGENT_PPTX, "", None).await {
+            let built = {
+                let _scratch = rt.ws.scratch_lock.lock().await;
+                rt.ws.build(dispatch::AGENT_PPTX, "", None).await
+            };
+            match built {
                 Ok(out) => {
                     for (stream, key) in [("stdout", "stdout"), ("stderr", "stderr")] {
                         if let Some(text) = out[key].as_str().filter(|t| !t.is_empty()) {

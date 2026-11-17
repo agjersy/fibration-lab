@@ -613,11 +613,13 @@ pub async fn check_slides(
     state: &mut ToolState,
     slides: Option<&[String]>,
 ) -> Result<Vec<Value>, String> {
-    build_agent_deck(ws).await?;
-    let diags = ws
-        .check(AGENT_PPTX, slides, None, false)
-        .await
-        .map_err(|e| e.to_string())?;
+    let diags = {
+        let _scratch = ws.scratch_lock.lock().await;
+        build_agent_deck(ws).await?;
+        ws.check(AGENT_PPTX, slides, None, false)
+            .await
+            .map_err(|e| e.to_string())?
+    };
     let scope: Vec<String> = match slides {
         Some(s) => s.to_vec(),
         None => ws
@@ -827,6 +829,7 @@ async fn prepare_inner(
         }
         "slide.render" => {
             let id = slide_id_arg(args, "slide_id")?;
+            let _scratch = ws.scratch_lock.lock().await;
             let built = build_agent_deck(ws).await?;
             let deck = store.read_deck().map_err(|e| e.to_string())?;
             // Hidden slides are not rendered by the engine, so the page index counts visible ones.
@@ -1181,6 +1184,7 @@ async fn prepare_inner(
             }))
         }
         "deck.build" => {
+            let _scratch = ws.scratch_lock.lock().await;
             let built = build_agent_deck(ws).await?;
             let diags = ws
                 .check(AGENT_PPTX, None, None, false)

@@ -42,6 +42,9 @@ pub struct Workspace {
     pub home: PathBuf,
     pub kernel: KernelClient,
     index: Mutex<Index>,
+    /// Held while the shared scratch render is built and read, so a check started by the
+    /// user and one started by the agent never read each other's half-written file.
+    pub scratch_lock: tokio::sync::Mutex<()>,
 }
 
 /// The result of an export.
@@ -77,6 +80,7 @@ impl Workspace {
             home: options.home.clone(),
             kernel,
             index: Mutex::new(index),
+            scratch_lock: tokio::sync::Mutex::new(()),
         })
     }
 

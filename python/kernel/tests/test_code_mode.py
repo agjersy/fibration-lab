@@ -221,7 +221,10 @@ def test_native_sandbox_blocks_escapes(kernel_for, tmp_path, attempt, monkeypatc
     try:
         with pytest.raises(RpcError) as err:
             build(kernel_for, project)
-        assert "ESCAPED" not in err.value.extra.get("stdout", "")
+        # Under bwrap the home directory is a private, discarded tmpfs: a write there "succeeds"
+        # inside the sandbox and never reaches the host, so the host file is the evidence.
+        if not (attempt == "write_outside" and kind == "bwrap"):
+            assert "ESCAPED" not in err.value.extra.get("stdout", "")
         assert not target.exists()
         assert (project / "deck" / "deck.json").read_text(encoding="utf-8") == before
     finally:
