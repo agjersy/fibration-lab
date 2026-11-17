@@ -151,6 +151,11 @@ impl Workbench {
             .values()
             .next()
             .cloned();
+        // What an open kernel runs under; before a project is open, what one would get.
+        let kernel_network = first
+            .as_ref()
+            .map(|rt| rt.ws.kernel.network_isolation().clone())
+            .unwrap_or_else(|| wb_sandbox::no_network::probe().clone());
         let hello = first
             .map(|rt| rt.ws.kernel.hello().clone())
             .unwrap_or(Value::Null);
@@ -168,6 +173,11 @@ impl Workbench {
             engines: serde_json::from_value(hello["engines"].clone()).unwrap_or_default(),
             sandbox: serde_json::from_value(hello["sandbox"].clone()).ok(),
             embedding: serde_json::from_value(hello["embedding"].clone()).ok(),
+            kernel_network: kernel_network.label().to_string(),
+            kernel_network_detail: match &kernel_network {
+                wb_sandbox::no_network::NetIsolation::None(why) => Some(why.clone()),
+                _ => None,
+            },
         }
     }
 

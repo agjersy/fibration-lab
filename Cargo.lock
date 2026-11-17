@@ -2911,6 +2911,7 @@ dependencies = [
  "wb-net",
  "wb-policy",
  "wb-providers",
+ "wb-sandbox",
  "wb-skills",
  "wb-transcript",
  "zstd",

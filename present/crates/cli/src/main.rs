@@ -403,12 +403,13 @@ async fn run(cli: &Cli) -> Result<i32> {
         Command::Build => {
             let ws = open(cli, &home).await?;
             let built = ws.build("exports/deck.pptx", "", None).await;
+            let kernel_network = ws.kernel.network_isolation().label();
             ws.close().await;
             match built {
                 Ok(v) => {
                     print!("{}", v["stdout"].as_str().unwrap_or(""));
                     println!(
-                        "built exports/deck.pptx (sandbox: {})",
+                        "built exports/deck.pptx (sandbox: {}, kernel network: {kernel_network})",
                         v["sandbox"].as_str().unwrap_or("n/a")
                     );
                     Ok(0)
