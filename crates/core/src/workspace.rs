@@ -229,6 +229,86 @@ impl Workspace {
         Ok((entry, warnings))
     }
 
+    /// Import one figure or table from a Personal Analyst repository as a reference. Only
+    /// the imported item is copied; the repository is never modified.
+    pub async fn add_analyst_reference(
+        &self,
+        repo_abs: &str,
+        item: &str,
+    ) -> anyhow::Result<RefEntry> {
+        let out = self
+            .kernel
+            .call_value(
+                "analyst.import",
+                json!({"repo_abs": repo_abs, "item": item}),
+            )
+            .await?;
+        let text = |k: &str| out[k].as_str().unwrap_or_default().to_string();
+        let (file, version) = (text("file"), text("version"));
+        if file.is_empty() || version.is_empty() {
+            anyhow::bail!("the import returned no file");
+        }
+        let mut manifest = refs::load_manifest(&self.project.root)?;
+        if let Some(existing) = manifest.refs.iter().find(|r| r.version == version) {
+            return Ok(existing.clone());
+        }
+        let kind = refs::kind_of(Path::new(&file))
+            .ok_or_else(|| anyhow::anyhow!("unsupported reference format: {file}"))?;
+        let origin = present_protocol::config::AnalystOrigin {
+            repo: out["analyst"]["repo"]
+                .as_str()
+                .unwrap_or(repo_abs)
+                .to_string(),
+            item: out["analyst"]["item"].as_str().unwrap_or(item).to_string(),
+            run_id: out["analyst"]["run_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        };
+        let original_path = format!("{}/{}", origin.repo.replace('\\', "/"), origin.item);
+        let entry = if let Some(slot) = manifest
+            .refs
+            .iter_mut()
+            .find(|r| r.source == RefSource::Analyst && r.original_path == original_path)
+        {
+            // The same item imported again after a new run: a new version of the reference.
+            slot.previous_versions.push(slot.version.clone());
+            slot.version = version;
+            slot.file = file;
+            slot.imported = now_iso();
+            slot.analyst = origin;
+            slot.clone()
+        } else {
+            let mut id = RefId::new(text("ref_id")).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let mut n = 1;
+            while manifest.get(&id).is_some() {
+                n += 1;
+                id = RefId::new(format!("{}-{n}", text("ref_id")))
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            let entry = RefEntry {
+                id,
+                file,
+                kind,
+                title: text("title"),
+                original_path,
+                imported: now_iso(),
+                version,
+                previous_versions: Vec::new(),
+                parent: String::new(),
+                source: RefSource::Analyst,
+                analyst: origin,
+            };
+            manifest.refs.push(entry.clone());
+            entry
+        };
+        refs::save_manifest(&self.project.root, &manifest)?;
+        let ingested = self.ingest(&entry).await?;
+        self.index_ingested(&entry, &ingested)?;
+        self.embed_pending().await?;
+        Ok(entry)
+    }
+
     async fn ingest(&self, entry: &RefEntry) -> Result<Value, KernelError> {
         self.kernel
             .call_value(

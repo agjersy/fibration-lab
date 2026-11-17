@@ -454,3 +454,153 @@ async fn references_exports_and_code_files() {
     rt.code_write("deck/helpers.py", "X = 2\n", Some(&w.hash))
         .unwrap();
 }
+
+/// A 1x1 PNG.
+const PIXEL: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, 0x49, 0x48, 0x44, 0x52, 0, 0, 0,
+    1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1F, 0x15, 0xC4, 0x89, 0, 0, 0, 0x0D, 0x49, 0x44, 0x41, 0x54,
+    0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0, 5, 0, 1, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0, 0,
+    0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+];
+
+#[tokio::test]
+async fn assets_previews_analyst_imports_and_template_replacement() {
+    use base64::Engine;
+    use present_protocol::ui::ThumbKind;
+    let Some(rig) = rig(vec![]).await else { return };
+    let rt = &rig.rt;
+    let mut rx = rt.subscribe();
+    let tmp = rig.tmp.path();
+
+    // Assets: copied once, renamed on a clash, other formats refused.
+    let logo = tmp.join("logo mark.png");
+    std::fs::write(&logo, PIXEL).unwrap();
+    let a = rt.asset_add(&logo.to_string_lossy()).unwrap();
+    assert_eq!(
+        (a.path.as_str(), a.width, a.height),
+        ("assets/logo-mark.png", 1, 1)
+    );
+    assert_eq!(rt.asset_add(&logo.to_string_lossy()).unwrap(), a);
+    let mut other = PIXEL.to_vec();
+    other.push(0);
+    std::fs::write(&logo, &other).unwrap();
+    let b = rt.asset_add(&logo.to_string_lossy()).unwrap();
+    assert_ne!(b.path, a.path);
+    assert_eq!(rt.assets_list().unwrap().len(), 2);
+    let exe = tmp.join("tool.exe");
+    std::fs::write(&exe, b"MZ").unwrap();
+    assert_eq!(
+        rt.asset_add(&exe.to_string_lossy()).unwrap_err().code,
+        IpcErrorCode::Invalid
+    );
+
+    // A renderer preview becomes the slide's thumbnail until the slide changes.
+    let slide = rt.slide_create(None, "Title and Content").await.unwrap();
+    let id = slide.slide.id.to_string();
+    let b64 = base64::engine::general_purpose::STANDARD.encode(PIXEL);
+    rt.slide_preview_png(&id, &format!("data:image/png;base64,{b64}"))
+        .unwrap();
+    let view = rt.deck_get().unwrap().slides.remove(0);
+    assert_eq!(view.thumb.kind, ThumbKind::Preview);
+    assert!(!view.thumb.stale);
+    assert!(tmp.join("p").join(view.thumb.path.unwrap()).is_file());
+    assert!(rt.slide_preview_png(&id, "bm90IGEgcG5n").is_err());
+    assert!(rt.slide_preview_png("s-missing", &b64).is_err());
+
+    // Chart data through the declarative transforms.
+    let source = json!({"kind": "inline", "table": {"columns": ["region", "units"], "rows": [["north", 30], ["south", 10], ["east", 20]], "loc": ""}});
+    let table = rt
+        .chart_compute(
+            source.clone(),
+            json!([{"op": "filter", "column": "units", "cmp": ">=", "value": 20}, {"op": "sort", "by": ["units"], "descending": true}]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        table["rows"],
+        json!([["north", 30], ["east", 20]]),
+        "{table}"
+    );
+    let bad = rt
+        .chart_compute(source, json!([{"op": "no_such_step"}]))
+        .await
+        .unwrap_err();
+    assert!(!bad.message.is_empty());
+
+    // Analyst import: only the chosen item is copied, with its provenance.
+    let repo = tmp.join("analyst-repo");
+    let figs = repo.join("out/figures/fit/20261104-113207");
+    std::fs::create_dir_all(&figs).unwrap();
+    std::fs::write(figs.join("residuals.png"), PIXEL).unwrap();
+    std::fs::write(
+        figs.join("residuals.json"),
+        r#"{"run_id": "20261104-113207", "script": "scripts/fit.py", "args": ["--region", "north"], "title": "Residuals by week"}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(repo.join("data")).unwrap();
+    std::fs::write(repo.join("data/secret.csv"), "a\n1\n").unwrap();
+    let repo_abs = repo.to_string_lossy().into_owned();
+    let items = rt.analyst_scan(&repo_abs).await.unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        (items[0].kind.as_str(), items[0].title.as_str()),
+        ("figure", "Residuals by week")
+    );
+    assert_eq!(items[0].script, "scripts/fit.py");
+    let before = rt.refs_list().unwrap().len();
+    let imported = rt.analyst_import(&repo_abs, &items[0].id).await.unwrap();
+    assert_eq!(imported.title, "Residuals by week");
+    assert_eq!(rt.refs_list().unwrap().len(), before + 1);
+    // Importing the same item again adds nothing.
+    rt.analyst_import(&repo_abs, &items[0].id).await.unwrap();
+    assert_eq!(rt.refs_list().unwrap().len(), before + 1);
+    assert!(rt
+        .analyst_import(&repo_abs, "data/secret.csv")
+        .await
+        .is_err());
+
+    // Replacing the template keeps the slides and takes a snapshot first.
+    let corp = repo_root_template("corp/corp.potx");
+    let task = rt.template_replace(corp);
+    let done = wait_for(&mut rx, |e| match e {
+        ProjectEvent::TaskDone {
+            task_id,
+            ok,
+            message,
+        } if *task_id == task => Some((*ok, message.clone())),
+        _ => None,
+    })
+    .await;
+    assert!(done.0, "{done:?}");
+    let deck = rt.deck_get().unwrap();
+    assert_eq!(deck.deck.template, "template/corp.potx");
+    assert_eq!(deck.slides.len(), 1);
+    // The preview was made for the old template.
+    assert!(deck.slides[0].thumb.path.is_none());
+    assert!(rt
+        .history_list(None)
+        .unwrap()
+        .iter()
+        .any(|s| s.label.as_deref() == Some("before replacing the template")));
+    let bad_task = rt.template_replace(exe.to_string_lossy().into_owned());
+    let refused = wait_for(&mut rx, |e| match e {
+        ProjectEvent::TaskDone { task_id, ok, .. } if *task_id == bad_task => Some(*ok),
+        _ => None,
+    })
+    .await;
+    assert!(!refused);
+
+    // Keys: unknown providers are reported, nothing is stored.
+    assert_eq!(
+        rig.wb.provider_set_key("nope", "sk-x").unwrap_err().code,
+        IpcErrorCode::NotFound
+    );
+}
+
+fn repo_root_template(rel: &str) -> String {
+    repo()
+        .join("evals/templates")
+        .join(rel)
+        .to_string_lossy()
+        .into_owned()
+}

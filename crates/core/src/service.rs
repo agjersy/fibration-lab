@@ -2,6 +2,9 @@
 //! project. The Tauri crate is thin glue over the methods here, so everything is testable
 //! without a window. Shaped after Personal Analyst `crates/core/src/service/`.
 
+mod extras;
+pub use extras::image_size;
+
 use crate::agent::dispatch::{self, Change, ToolState};
 use crate::agent::tools::Mode as AgentMode;
 use crate::agent::{ApprovalDecision, ApprovalRequest, Approver};
@@ -422,6 +425,8 @@ struct RuntimeState {
     pending: HashMap<String, oneshot::Sender<ProposalDecision>>,
     diagnostics: Vec<Value>,
     thumbs: BTreeMap<String, (String, String)>,
+    /// Renderer-made preview images: slide id to (path, slide hash when made).
+    previews: BTreeMap<String, (String, String)>,
     policy_patch: PolicyPatch,
     disabled_skills: BTreeSet<String>,
     layout: Option<Value>,
@@ -800,10 +805,17 @@ impl ProjectRuntime {
                 path: Some(path.clone()),
                 stale: at_hash != &hash,
             },
-            None => Thumb {
-                kind: ThumbKind::Preview,
-                path: None,
-                stale: true,
+            None => match st.previews.get(&id) {
+                Some((path, at_hash)) => Thumb {
+                    kind: ThumbKind::Preview,
+                    path: Some(path.clone()),
+                    stale: at_hash != &hash,
+                },
+                None => Thumb {
+                    kind: ThumbKind::Preview,
+                    path: None,
+                    stale: true,
+                },
             },
         };
         SlideView {
