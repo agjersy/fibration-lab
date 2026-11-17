@@ -70,14 +70,14 @@ These walkthroughs are the acceptance bar for the first usable version.
 |---|---|---|
 | Agent loop for analysis | Plan, propose, run, verify cycle. Review-gated edits. Script contract enforcement, including CLI-options and shared-logic checks. Run-only mode. Configurable policies and skills. No model-specific code paths. | Multi-model roles (planner, coder, reviewer). Parallel sub-tasks. |
 | Sandboxed Python runtime | Per-session venv via `uv`. Local or remote (SSH) execution target per session, with code synced out and only rendered products synced back; data never moves. Runs start directly on the host or login node. OS-level sandbox on macOS and Linux, local and remote. Runs survive disconnects. | Container backend. Scheduler (Slurm) launcher. Windows. |
-| Editor | Code editor with Python diagnostics, inline diff review, protected regions, language server running on the target. | Vim mode. Multibuffer views. |
-| Figure viewer | Dockable and undockable tabs. Run history. Side-by-side comparison. Send a figure to a vision-capable model. | Interactive Plotly and Bokeh output. Figure annotation. |
+| Editor | Code editor with Python diagnostics, inline diff review, protected regions. | Language server on the target. Vim mode. Multibuffer views. |
+| Figure viewer | Dockable and undockable tabs. Run history. Side-by-side comparison. | Sending figures to vision-capable models. Interactive Plotly and Bokeh output. Figure annotation. |
 | Equation lens | LaTeX derived from pure-expression functions. Declared equations checked numerically against code. Click to jump to source. | Algorithm-level pseudocode views. Unit and dimension checks. |
 | Sessions | Tabs for repo plus venv plus conversation plus layout. Checkpoints and one-click revert. | Session templates. Archival and search across sessions. |
 | Packages | Visible, editable package list per target. Agent installs require approval. Lockfile committed with the repo so environments reproduce on any target. `uv` only. | Multiple environments per repo. |
 | Documents | Markdown with KaTeX preview. LaTeX compile to PDF with embedded viewer. | SyncTeX click-to-source. Report templates. |
 | External tools | MCP client for stdio and HTTP servers (Wolfram, MATLAB, Julia, databases, literature search). | Marketplace-style discovery. |
-| Models | Any OpenAI-compatible endpoint plus Anthropic. API keys in the OS keychain. Per-session model choice. Capabilities probed automatically. | Cost and token budgets. Role-specific models. |
+| Models | Any OpenAI-compatible endpoint plus Anthropic. API keys from the environment or entered in settings. Per-session model choice. Capabilities probed automatically. | Cost and token budgets. Role-specific models. |
 
 ## 8. Success criteria
 

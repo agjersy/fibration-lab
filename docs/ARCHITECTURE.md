@@ -1,6 +1,6 @@
 # Personal Analyst — Application Design and Architecture
 
-*Status: revised after second review (2026-10-16); phase 0 decisions closed. Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).*
+*Status: phases 0 and 1 built; revised after the November 2026 implementation review ([REVIEW.md](REVIEW.md)). Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).*
 
 This document specifies the architecture of the desktop application described in the vision. It is written to be built from. Decisions confirmed in review are marked as such; where a decision is still open, it states the recommendation and points to the open-questions document.
 
@@ -10,7 +10,7 @@ This document specifies the architecture of the desktop application described in
 |---|---|---|---|
 | D1 | Desktop shell | Tauri 2: a host-native desktop application (native window, menus, dialogs, installers; no browser, no local server). Rust core; the interface is drawn by the OS's embedded webview component (WKWebView on macOS, WebKitGTK on Linux) | Decided |
 | D2 | Analysis runtime | Python, one `uv`-managed virtual environment per session. `uv` only; no conda | Decided |
-| D3 | App tooling runtime | A hidden, app-owned Python environment per execution target for the kernel, SymPy, Ruff, and language servers | Recommended |
+| D3 | App tooling runtime | A hidden, app-owned Python environment per execution target for the kernel, SymPy, and Ruff (language servers later) | Decided |
 | D4 | Model access | One internal interface, two wire adapters (OpenAI-compatible chat completions, Anthropic Messages). No model-specific code paths; capabilities probed, not hand-listed | Decided |
 | D5 | Execution targets | Default is fully local. The default remote target is a native environment on a remote Linux machine (Ubuntu or Fedora) over SSH; a cluster login node is the same target kind. Kernel protocol is transport-agnostic. Local repo is canonical; remote holds a synced mirror. Data is never synced; only rendered products (figures, logs, metadata, equation results) return to the UI | Decided |
 | D6 | Sandbox | `bubblewrap` on Linux (local and remote), `sandbox-exec` on macOS, network denied by default with per-run grants, container backend optional, unsandboxed with a visible badge where neither exists | Decided |
@@ -20,7 +20,7 @@ This document specifies the architecture of the desktop application described in
 | D10 | Editor | CodeMirror 6 (Monaco as the fallback if a needed feature is missing) | Recommended |
 | D11 | Docking | `dockview` for in-window panels; Tauri `WebviewWindow` for undocked panels | Recommended |
 | D12 | LaTeX toolchain | Tectonic, downloaded on first use; system TeX used if present | Open, see OQ-10 |
-| D13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, git refs for checkpoints | Recommended |
+| D13 | Persistence | JSONL for transcripts and run records, TOML for config, git refs for checkpoints. A SQLite index is deferred until file scans become a measured problem | Decided |
 | D14 | External tools | MCP client (stdio and streamable HTTP) via the official Rust SDK; built-in tools share the same schema | Recommended |
 | D15 | Evaluation | Model-agnostic task suite with automatic graders; produces a scorecard per configured model; no model is privileged | Decided |
 | D16 | Platforms | macOS and Linux first, for both the desktop app and remote targets. Windows deferred to phase 4 | Decided |
@@ -53,7 +53,7 @@ flowchart LR
     SY[Repo sync]
     FS[File + git service]
     CK[Checkpoints]
-    ST[(SQLite / JSONL)]
+    ST[(JSONL / TOML)]
   end
 
   subgraph Target["Execution target (local machine or SSH host)"]
@@ -103,13 +103,13 @@ What "native" means here: the app is a single native executable with native wind
 | IPC | Tauri commands and per-session channels; types exported with `ts-rs` | Request/response as commands; streams (model tokens, run output, artifacts) as events on a per-session channel. The `protocol` crate's types produce the TypeScript bindings. The contract is [IPC.md](IPC.md). |
 | Model clients | `reqwest` with SSE streaming, hand-written adapters | Two adapters are a few hundred lines each and keep full control over tool-call parsing. No provider SDKs. |
 | MCP | `rmcp` (official Rust SDK), client role | stdio and streamable HTTP transports. |
-| Storage | `rusqlite`, `toml`, JSONL | See section 7. |
+| Storage | `toml`, JSONL | See section 7. |
 | File watching | `notify` | Working-tree diffing between turns, `out/` watching for terminal runs. |
 | Terminals | `portable-pty` in the core, `xterm.js` in the renderer | A remote terminal is a local pty running `ssh -t`. |
 | Git | System `git` through the CLI | Plumbing commands for checkpoints; porcelain for status and diff. |
 | SSH | System OpenSSH client (`ssh`, `scp`), `rsync` where present | See section 5.5. No SSH reimplementation in the first version. |
-| Editor | CodeMirror 6 | Lighter and more consistent across the three webviews than Monaco. Python syntax, LSP client, inline diff widgets, code lenses, read-only ranges. |
-| Language tooling | `ruff server` (lint, format) and `ty` or `jedi-language-server` (hover, definitions), both run from the tooling environment on the target | No Node dependency. The core proxies LSP over IPC, so on a remote target the language server runs where the venv is and sees the real packages. |
+| Editor | CodeMirror 6 | Lighter and more consistent across the three webviews than Monaco. Python syntax, inline diff widgets, lint gutter. An LSP client is planned, not built. |
+| Language tooling (planned) | Today: Ruff diagnostics through the kernel. Planned: `ruff server` and `ty` or `jedi-language-server` run from the tooling environment on the target | No Node dependency. The core proxies LSP over IPC, so on a remote target the language server runs where the venv is and sees the real packages. |
 | Docking | `dockview` | Floating groups in-window; undock creates a second `WebviewWindow` bound to the same session. |
 | Rendering | KaTeX, `react-markdown` with `remark-math`, `pdf.js` | |
 | Sidecars | `uv`, `rg`, optional `tectonic` | Bundled per platform through Tauri's external-binary mechanism. |
@@ -129,12 +129,12 @@ Known cost: WebKitGTK on Linux is slower than Chromium for heavy canvases and la
 | Conversation | An ordered list of turns with one model configuration. A session can have several. | session store (JSONL) |
 | Turn | One user message and everything the agent did in response: model calls, tool calls, proposals, runs. | transcript |
 | Proposal | A pending change set (file edits, package installs, commands) awaiting policy decision. | core, in memory + transcript |
-| Run | One execution of a script with arguments on a target, producing stdout, stderr, exit code, artifacts, and timing. Survives disconnects. | SQLite locally; `~/.analyst/runs/<id>/` on the target |
+| Run | One execution of a script with arguments on a target, producing stdout, stderr, exit code, artifacts, and timing. Survives disconnects. | `runs.jsonl` in the session store; `~/.analyst/runs/<id>/` on the target |
 | Artifact | A file produced by a run, with a sidecar metadata record. Rendered artifacts (figures, logs, run metadata) are pulled back to the local `out/` from remote targets; data artifacts (tables, arrays, derived datasets) stay on the target and are read on demand. | `<repo>/out/` locally; `<mirror>/out/` on the target |
-| Equation | A rendered mathematical statement bound to a code location, with a provenance tier and verification status. | computed, cached in SQLite |
+| Equation | A rendered mathematical statement bound to a code location, with a provenance tier and verification status. | computed on demand |
 | Checkpoint | A snapshot of the local working tree taken before an agent turn that may change files. | git ref `refs/analyst/checkpoints/<id>` |
 | Skill | A markdown instruction set with trigger metadata, loaded into the agent's context on demand. | `.analyst/skills/`, `~/.analyst/skills/` |
-| Provider / Model | A configured endpoint plus a model identifier and its probed capability record. | `~/.analyst/config.toml` + keychain |
+| Provider / Model | A configured endpoint plus a model identifier and its probed capability record. | `~/.analyst/config.toml` + `credentials.toml` |
 | Policy | The per-session permission rules the agent operates under. | `.analyst/project.toml` with session overrides |
 
 ## 5. Core services
@@ -262,11 +262,11 @@ Scripts run with least privilege:
 
 | Resource | Default |
 |---|---|
-| Filesystem read | Repo or mirror, session venv, Python installation, configured data directories (read-only), system libraries. Home directory otherwise hidden. |
-| Filesystem write | `out/`, `data/derived/` (configurable), a per-run scratch directory, the matplotlib cache. Source directories are read-only during runs so a script cannot modify code. |
-| Network | Denied. Per-session or per-run grant with an allowlist of hosts. |
+| Filesystem read | The home directory is hidden except for the repo or mirror, the session venv, the interpreter's base installation, the tooling environment, and user-approved data directories. Everything outside home (system libraries, other mounts) is readable. Data directories outside the repo come only from the user's global config, never from the repo's `project.toml`. |
+| Filesystem write | The run's output directory, `data/derived/` if present, and a per-run scratch directory that is also `TMPDIR`. Source directories are read-only during runs so a script cannot modify code. On macOS the system temp locations are also writable. |
+| Network | Denied. A per-run grant turns it on entirely; per-host allowlists need a filtering proxy and are not built. |
 | Processes | Can spawn child processes within the same sandbox. Cannot escalate. |
-| Resources | Wall-clock timeout (default 10 minutes), memory cap, CPU count, all configurable. |
+| Resources | Wall-clock timeout (default 10 minutes) and open-file limit. An address-space limit is opt-in (`[limits] address_space_gb`) because it also limits memory-mapped data. No CPU limit. |
 | Environment variables | Minimal allowlist. API keys are never passed into the sandbox. |
 
 Implementation per platform:
@@ -276,7 +276,7 @@ Implementation per platform:
 - **Container backend (optional):** Podman or Docker with the venv and repo mounted. Slower start, strongest isolation.
 - **Windows:** deferred with the platform (D16).
 
-The sandbox protects the host from the agent's code. It does not protect the repo from the agent's edits; that is the policy engine's job (5.8).
+The sandbox protects the host from the agent's code. It does not protect the repo from the agent's edits; that is the policy engine's job (5.8). The two are linked: review-gated edits only mean something if code the agent runs cannot write source files, so when the active sandbox is `limits` or `none` the policy engine makes every run, snippet, and shell call ask first (`policy.unsandboxed_runs`, default `ask`). Recent Ubuntu releases restrict the user namespaces `bubblewrap` needs, so that is the expected mode on a stock Ubuntu host until an AppArmor profile for `bwrap` is installed or a Landlock backend is added.
 
 ### 5.7 Agent loop
 
@@ -307,7 +307,7 @@ Large outputs (run logs, file contents) are never inlined past a size limit; the
 | `fs.read`, `fs.list`, `fs.search` (ripgrep, local) | read |
 | `scripts.index`, `lib.index`, `runs.list`, `runs.get` | read |
 | `eq.extract`, `eq.check`, `contract.check`, `contract.similar`, `lint.run` | read |
-| `fig.get` (returns image for vision-capable models), `fig.list` | read |
+| `fig.list` (`fig.get`, returning images to vision-capable models, is planned) | read |
 | `target.info` (name, state, sandbox level, data dirs) | read |
 | `out.list`, `out.read` (bounded previews of data outputs on the target) | read |
 | `fs.propose_edit` (unified diff or full file) | edit |
@@ -350,7 +350,7 @@ Pausing on "ask" is a real pause: the model's partial turn is held, the user act
 - After runs: non-zero exit codes and tracebacks go back to the model with the run's stderr. The user sees the run card either way.
 - On request or by policy: `eq.check` runs on functions with declared equations; mismatches are surfaced as a red badge in the Equations panel and as a tool result the model must address.
 
-**Scope declaration.** In Build mode the agent's first action on a new task is a short plan listing the files it intends to touch. Edits outside the declared set require approval even when the session is in auto-accept mode. This directly addresses "the agent changed things I didn't ask for".
+**Scope declaration.** In Build mode the agent's first action on a new task is a short plan listing the files it intends to touch. Edits outside the declared set require approval even when the session is in auto-accept mode. The scope resets every turn, and widening it within a turn itself requires approval, so the agent cannot grant itself more. Paths under `.git/` and `.analyst/` are never editable by the agent. This directly addresses "the agent changed things I didn't ask for".
 
 **Reuse before writing.** The system prompt requires the agent to consult `lib.index` and `fs.search` before defining a new function, and to extend or call an existing library function when one covers the need. The checker enforces the result (5.13).
 
@@ -443,7 +443,7 @@ id = "<any model served there>"
 # capabilities are probed; override only if the probe is wrong, e.g. context_window = 65536
 ```
 
-API keys are stored in the OS keychain (Tauri `stronghold` or the platform keyring crate), with environment variables as a fallback. The chat header always shows which provider is active and whether it is local or remote, so you know what leaves the machine.
+API keys come from the environment variable named by `api_key_env` or, failing that, from `~/.analyst/credentials.toml` (mode 0600), which the app's settings dialog writes. OS keychain storage is planned. The chat header always shows which provider is active and whether it is local or remote, so you know what leaves the machine.
 
 Model choice is per conversation. A later feature allows different models for roles (planner, coder, summarizer); the interface already supports it.
 
@@ -594,7 +594,7 @@ Panels and their primary interactions:
 |---|---|
 | Session tabs | Switch, create, close, duplicate with a new conversation. Each shows its target and connection state and restores its full layout. |
 | Project sidebar | File tree. Scripts view lists each script with its options parsed from the index and a form to run it with chosen arguments. Library view lists public functions with callers and "promote to library" candidates from the checker. Runs view with history, target, and filters. |
-| Editor | CodeMirror 6 with Python syntax, Ruff diagnostics, hover and definitions from the language server on the target. Inline diff review of agent proposals. Code-lens for equations. Protected-region markers. |
+| Editor | CodeMirror 6 with Python syntax, Ruff diagnostics, Inline diff review of agent proposals. Code-lens for equations. Protected-region markers. |
 | Agent chat | Streaming messages. Cards for plans, proposals, runs, package changes, MCP calls, and approvals. Mode switch. Model switch. Context indicator (tokens used, compaction state). Attach files, figures, or editor selections. |
 | Figures | Section 5.12. |
 | Equations | Section 5.11. |
@@ -618,7 +618,8 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
   sessions/<id>/
     session.toml           repo path, target, env path, layout, active model
     conversations/<id>.jsonl
-    index.sqlite           runs, artifacts, equations cache, checkpoints, capability records
+    runs.jsonl             run records
+    meta.json, layout.json conversations, policy overrides, dock layout
 
 ~/.analyst/                              (each remote target)
   bin/uv
@@ -639,7 +640,7 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
 ## 8. Security and privacy
 
 - No telemetry. No network calls except to configured model providers, configured MCP servers, SSH targets, package indexes during installs, and Tectonic's package fetches.
-- API keys in the OS keychain. Never logged, never passed into the sandbox, never sent to a remote target, and never placed in MCP server environments unless explicitly configured for that server.
+- API keys in the environment or `credentials.toml` (mode 0600). Never logged, removed from the environment of kernels and terminals, never passed into the sandbox, never sent to a remote target, and never placed in MCP server environments unless explicitly configured for that server.
 - SSH credentials are never handled by the app; it relies on the user's OpenSSH configuration and agent.
 - The chat UI shows provider locality (local or remote) at all times. A per-target "data directories" list controls what the agent can read; nothing outside the repo and that list is readable by tools or by the sandbox.
 - MCP servers run as separate processes with their own configured permissions; their tools go through the same policy engine as built-ins.
@@ -661,7 +662,7 @@ macOS and Linux are the supported platforms through phase 3, for both the deskto
 apps/desktop/
   src-tauri/           Tauri shell: commands, events, window management (thin glue over crates/core)
   src/                 React renderer
-crates/protocol/       IPC and kernel message types; TypeScript bindings generated with specta
+crates/protocol/       IPC and kernel message types; TypeScript bindings generated with ts-rs
 crates/core/           sessions, agent loop, policy, providers, tools, MCP, targets, sync, storage
 crates/cli/            headless harness for phase 0 and evals
 python/kernel/         analyst_kernel (runs, index, equations, contract) and analyst_mpl

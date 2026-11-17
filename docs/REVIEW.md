@@ -1,6 +1,30 @@
 # Design and Implementation Review
 
-*Date: 2026-11-15. Scope: all design documents and the phase 0 and phase 1 implementation at commit `f229e4d`. Nothing was changed; this is a findings list.*
+*Reviewed 2026-11-15 at commit `f229e4d`; fixes applied 2026-11-17. The findings are kept as written; the resolution section records what was done.*
+
+## Resolution (2026-11-17)
+
+The findings below were fixed on the working branch in four streams (kernel `818773e`, core `e8860ee`, renderer `103478b`, service and shell `b96d3b3`), with the behavior specified first in PROTOCOL.md section 9 and IPC.md section 7. Every finding that had a reproduction now has a regression test.
+
+Verified after the fixes: 190 Rust tests, 165 kernel tests, 104 renderer unit tests, 10 end-to-end specs, the desktop smoke test (now including close and reopen), and the scripted agent-loop evaluation. The `Math:` exploit (G1) was re-run against the fixed kernel under a real `bubblewrap` sandbox and is rejected. A packaged layout with no dev checkout was simulated and bootstraps its own tooling environment.
+
+**Fixed and verified here:** G1, G2, G4, G5, G6, G7, G9, B1 to B13, R1 (against local directories), R7, K1 to K10, C1 to C5, A1 to A11, U1 to U11, and the vacuous-test items.
+
+**Implemented but not executed here**
+
+| Area | Why | Items |
+|---|---|---|
+| Remote targets over SSH | no SSH server in the build environment | G8, R2 to R6, R8 beyond command construction, prepare-on-open, debounced sync, package flow, remote terminals |
+| macOS | Linux build environment | the `sandbox-exec` profile (a test now executes it, and CI runs the kernel suite on macOS), the app menu without Close Window, the FSEvents watcher path, the `.app` resource path |
+| Installers | not built | `tauri build` output; only the resource layout was simulated |
+
+**Not changed, by decision or scope**
+
+- G3: on hosts where `bubblewrap` cannot create user namespaces the kernel still falls back to `limits`. What changed is the consequence: runs, snippets, and shell calls now ask first and the app shows an "unsandboxed" badge. A Landlock backend or a documented AppArmor profile is the follow-up.
+- The sandbox still allows reads outside the home directory, and per-host network allowlists are not built; ARCHITECTURE 5.6 now says so.
+- Language server, `fig.get` for vision models, OS keychain storage, and a SQLite index remain planned; the documents no longer describe them as present.
+- `matplotlib.use("Agg")` before pyplot is imported still disables figure capture silently.
+- Capability cache entries poisoned by an earlier version are not auto-detected; re-probe or set an override.
 
 ## How this was reviewed
 
