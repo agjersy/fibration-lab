@@ -54,6 +54,13 @@ impl DeckStore {
             .join(format!("{id}.json"))
     }
 
+    /// Whether a slide file exists for an id given as text (false for anything that is not an id).
+    pub fn slide_path_exists(&self, id: &str) -> bool {
+        id.parse::<SlideId>()
+            .map(|sid| self.slide_path(&sid).is_file())
+            .unwrap_or(false)
+    }
+
     pub fn exists(&self) -> bool {
         self.deck_path().is_file()
     }

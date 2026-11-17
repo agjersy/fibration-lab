@@ -8,6 +8,10 @@ publish.workspace = true
 [dependencies]
 present-protocol = { path = "../protocol" }
 wb-providers = { path = "../wb-providers" }
+wb-policy = { path = "../wb-policy" }
+wb-transcript = { path = "../wb-transcript" }
+wb-skills = { path = "../wb-skills" }
+json-patch = "4"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
