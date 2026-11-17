@@ -7,7 +7,7 @@ from typing import Any
 
 def hello_info(kernel) -> dict[str, Any]:
     info: dict[str, Any] = {
-        "sandbox": {"kind": "limits", "available": True, "detail": "sandbox wrappers arrive with W11"},
+        "sandbox": {"kind": "limits", "available": True, "detail": "resource limits only"},
         "engines": [],
         "embedding": {"kind": "none", "model": "", "dims": 0},
     }

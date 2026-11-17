@@ -74,11 +74,18 @@ def open_sdk_deck(project: Path, deck: dict[str, Any], out: Path | None, snapsho
     return sdk_deck
 
 
+def has_generated(project: Path, deck_rel: str = "deck/deck.json", only: list[str] | None = None) -> bool:
+    _, slides = load_deck(project, deck_rel)
+    return any(d.get("kind") == "generated" for sid, d in slides.items() if only is None or sid in only)
+
+
 def render_deck(project: Path, out_rel: str, snapshot_id: str, only: list[str] | None = None,
-                deck_rel: str = "deck/deck.json", generated: Any = None) -> dict[str, Any]:
-    """Render the deck document. ``only`` renders a subset of slides (for partial thumbnails)."""
+                deck_rel: str = "deck/deck.json", generated: Any = None, out_abs: Path | None = None) -> dict[str, Any]:
+    """Render the deck document. ``only`` renders a subset of slides (for partial thumbnails).
+
+    ``out_abs`` overrides where the file is written (the sandboxed runner writes to scratch)."""
     deck, slides = load_deck(project, deck_rel)
-    out = resolve_in_root(project, out_rel)
+    out = out_abs or resolve_in_root(project, out_rel)
     sdk_deck = open_sdk_deck(project, deck, out, snapshot_id)
     multi = len([s for s in deck.get("sections", []) if s.get("title")]) > 0
     for section in deck.get("sections", []):

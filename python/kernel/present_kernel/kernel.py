@@ -145,10 +145,13 @@ class Kernel:
         return validate_deck(self.project, _opt(params, "deck", (str,), "deck/deck.json"))
 
     def deck_render(self, params: dict[str, Any]) -> dict[str, Any]:
-        from .render import render_deck
+        from .render import has_generated, render_deck
 
         slides = params.get("slides")
         if slides is not None and (not isinstance(slides, list) or not all(isinstance(s, str) for s in slides)):
             raise invalid_params("slides must be a list of slide ids")
-        return render_deck(self.project, _req(params, "out"), _opt(params, "snapshot_id", (str,), ""), slides,
-                           generated=getattr(self, "run_generated_slide", None))  # fmt: skip
+        out, snapshot = _req(params, "out"), _opt(params, "snapshot_id", (str,), "")
+        sandboxed = getattr(self, "sandboxed_render", None)
+        if sandboxed is not None and has_generated(self.project, only=slides):
+            return sandboxed(out, snapshot, slides)
+        return render_deck(self.project, out, snapshot, slides)
