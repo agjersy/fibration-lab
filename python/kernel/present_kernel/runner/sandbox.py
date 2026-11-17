@@ -117,6 +117,22 @@ def helper_path(home: Path | None = None) -> str | None:
     return None
 
 
+def _probe_helper(helper: str | None) -> tuple[bool, str]:
+    """Start a trivial command in the AppContainer once: policy can forbid creating profiles."""
+    if helper is None:
+        return False, "the present-sandbox helper was not found"
+    try:
+        scratch = Path(os.environ.get("TEMP") or os.environ.get("TMP") or ".")
+        proc = subprocess.run([helper, "--cwd", str(scratch), "--memory", str(DEFAULT_MEMORY), "--processes", "8", "--",
+                               os.environ.get("COMSPEC", "cmd.exe"), "/c", "exit", "0"], capture_output=True, timeout=30)  # fmt: skip
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"the AppContainer sandbox could not be started: {exc}"
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip()[-200:]
+        return False, f"the AppContainer sandbox is not usable on this machine (exit {proc.returncode}): {detail}"
+    return True, ""
+
+
 def detect(requested: str = "auto", home: Path | None = None) -> dict[str, Any]:
     """Resolve the sandbox preference to ``SandboxInfo`` (PROTOCOL 1.3)."""
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
@@ -126,8 +142,8 @@ def detect(requested: str = "auto", home: Path | None = None) -> dict[str, Any]:
         native = ("bwrap", ok, "bubblewrap" if ok else "bubblewrap is not installed or user namespaces are disabled")
     elif sys.platform == "win32":
         helper = helper_path(home)
-        native = ("appcontainer", helper is not None,
-                  "AppContainer with a job object" if helper else "the present-sandbox helper was not found")  # fmt: skip
+        ok, why = _probe_helper(helper)
+        native = ("appcontainer", ok, "AppContainer with a job object" if ok else why)
     else:
         native = ("limits", False, "no native sandbox on this platform")
     if requested == "limits":

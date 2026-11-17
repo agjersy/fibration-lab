@@ -18,6 +18,8 @@ Every dependency added to the project is recorded here in the same commit.
 | rusqlite (bundled SQLite) | MIT (SQLite: public domain) | index |
 | zstd | MIT (zstd: BSD-3-Clause) | snapshot store |
 | keyring (optional feature `keychain`) | MIT OR Apache-2.0 | API keys in the OS keychain |
+| windows-sys (Windows only) | MIT OR Apache-2.0 | AppContainer, ACLs, job objects in the sandbox helper |
+| libc (Unix only) | MIT OR Apache-2.0 | resource limits in the sandbox helper fallback |
 | rcgen, tokio-rustls (dev only) | MIT OR Apache-2.0 | TLS and proxy tests of the provider layer |
 
 ## Python (fixed bundled set, PROTOCOL 1.3)
