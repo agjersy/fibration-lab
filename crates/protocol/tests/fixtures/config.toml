@@ -1,0 +1,40 @@
+[defaults]
+model = "gateway/claude-opus-5-5"     # "<provider name>/<model id>"
+
+[network]
+proxy = "system"                      # system | none | "http://proxy.corp:8080"
+ca_bundle = "system"                  # system | path to a PEM file (added to the OS trust store, not replacing it)
+
+[[providers]]
+name = "gateway"
+kind = "anthropic"                    # anthropic | openai-compatible
+base_url = "https://llm-gateway.corp.example"
+auth = "bearer"                       # x-api-key (default for anthropic) | bearer | none
+key = "keychain:gateway"              # keychain:<entry> | env:<VAR>
+headers = { "X-Team" = "strategy" }   # extra headers, sent on every request
+location = "internal"                 # internal | external: shown in the chat header
+
+[[providers]]
+name = "gpu"
+kind = "openai-compatible"
+base_url = "http://gpu01.corp:8000/v1"
+auth = "none"
+location = "internal"
+
+[[models]]
+provider = "gateway"
+id = "claude-opus-5-5"                # sent verbatim; may be a gateway alias
+context_window = 1000000              # optional override of the probe
+vision = true                         # optional override
+max_output_tokens = 64000
+
+[embedding]
+kind = "bundled"                      # bundled | endpoint
+# provider = "gpu"; model = "..."     # when kind = "endpoint" (OpenAI-compatible /embeddings)
+
+[render]
+engine = "auto"                       # auto | powerpoint | libreoffice | none
+libreoffice_path = ""                 # optional explicit soffice path
+
+[ui]
+theme = "system"                      # system | light | dark

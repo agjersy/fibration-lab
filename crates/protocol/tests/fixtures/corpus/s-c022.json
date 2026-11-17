@@ -1,0 +1,105 @@
+{
+  "id": "s-c022",
+  "kind": "layout",
+  "layout": "Title Only",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t022",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Free elements"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": [
+    {
+      "id": "e-f1",
+      "x": 600000,
+      "y": 1800000,
+      "cx": 2400000,
+      "cy": 1200000,
+      "content": {
+        "type": "shape",
+        "id": "e-f1",
+        "shape": "rounded-rect",
+        "fill": "accent1",
+        "line": "dk2",
+        "text": {
+          "paragraphs": [
+            {
+              "runs": [
+                {
+                  "t": "A box"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e-f2",
+      "x": 3200000,
+      "y": 2400000,
+      "cx": 1500000,
+      "cy": 0,
+      "content": {
+        "type": "shape",
+        "id": "e-f2",
+        "shape": "arrow",
+        "line": "dk1"
+      }
+    },
+    {
+      "id": "e-f3",
+      "x": 4900000,
+      "y": 1800000,
+      "cx": 3000000,
+      "cy": 1200000,
+      "content": {
+        "type": "text",
+        "id": "e-f3",
+        "text": {
+          "paragraphs": [
+            {
+              "runs": [
+                {
+                  "t": "A free text box"
+                }
+              ]
+            },
+            {
+              "level": 1,
+              "runs": [
+                {
+                  "t": "with a second level"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e-f4",
+      "x": 600000,
+      "y": 3400000,
+      "cx": 1200000,
+      "cy": 1200000,
+      "content": {
+        "type": "shape",
+        "id": "e-f4",
+        "shape": "ellipse",
+        "fill": "accent3"
+      }
+    }
+  ]
+}

@@ -1,0 +1,197 @@
+{
+  "id": "s-c013",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t013",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Table with header, banding, and a merged cell"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "table",
+      "id": "e-tbl1",
+      "table": {
+        "columns": 3,
+        "header_row": true,
+        "banded_rows": true,
+        "rows": [
+          {
+            "cells": [
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "Region"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "Revenue"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "Change"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "EMEA"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "120.5",
+                          "cite": [
+                            "ref:r-q3rep@3f9a1c2b7e01#p11:c120-188"
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "+3%"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "AMER"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "200"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "−1%"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "cells": [
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "Total across all regions"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "span": 2
+              },
+              {
+                "text": {
+                  "paragraphs": [
+                    {
+                      "runs": [
+                        {
+                          "t": "455.5"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

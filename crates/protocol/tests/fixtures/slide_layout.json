@@ -1,0 +1,38 @@
+{
+  "id": "s-7f3a",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t1a0",
+      "text": { "paragraphs": [{ "runs": [{ "t": "Margin recovered to 18% on pricing actions" }] }] }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-b1a0",
+      "text": {
+        "paragraphs": [
+          { "level": 0, "runs": [{ "t": "Gross margin up 3.1 pts quarter on quarter", "cite": ["ref:r-q3rep@3f9a1c2b7e01#p11:c120-188"] }] },
+          { "level": 1, "runs": [{ "t": "Two thirds from list-price changes in EMEA", "cite": ["ref:r-q3rep@3f9a1c2b7e01#p12"] }] },
+          {
+            "level": 1,
+            "bullet": "none",
+            "align": "left",
+            "runs": [
+              { "t": "See the ", "cite": [] },
+              { "t": "pricing memo", "b": true, "i": false, "u": true, "color": "accent2", "link": "https://intranet.example/pricing" }
+            ]
+          }
+        ]
+      }
+    },
+    "idx:14": { "type": "empty" }
+  },
+  "elements": [],
+  "notes": { "paragraphs": [{ "runs": [{ "t": "Pause on the EMEA point; Sarah owns the follow-up." }] }] },
+  "locked": false,
+  "locked_elements": ["e-t1a0"],
+  "hidden": false,
+  "tags": ["finance", "q3"]
+}

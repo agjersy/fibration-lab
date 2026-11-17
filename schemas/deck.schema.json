@@ -1,0 +1,134 @@
+{
+  "$id": "https://personal-present.invalid/schemas/deck.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "DeckMode": {
+      "enum": [
+        "structured",
+        "code"
+      ],
+      "type": "string"
+    },
+    "Footer": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "type": "boolean"
+        },
+        "slide_numbers": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Section": {
+      "additionalProperties": false,
+      "properties": {
+        "slides": {
+          "items": {
+            "$ref": "#/definitions/SlideId"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "slides",
+        "title"
+      ],
+      "type": "object"
+    },
+    "Size": {
+      "additionalProperties": false,
+      "description": "A width and height in EMU.",
+      "properties": {
+        "cx": {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "cy": {
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cx",
+        "cy"
+      ],
+      "type": "object"
+    },
+    "SlideId": {
+      "pattern": "^s-[0-9a-z][0-9a-z-]{0,23}$",
+      "type": "string"
+    }
+  },
+  "description": "`deck/deck.json`.",
+  "properties": {
+    "author": {
+      "type": "string"
+    },
+    "brief": {
+      "description": "The user's brief, for the agent's context.",
+      "type": "string"
+    },
+    "classification": {
+      "description": "Rendered where the template provides a footer placeholder.",
+      "type": "string"
+    },
+    "footer": {
+      "$ref": "#/definitions/Footer"
+    },
+    "mode": {
+      "$ref": "#/definitions/DeckMode"
+    },
+    "properties": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Custom document properties.",
+      "type": "object"
+    },
+    "schema_version": {
+      "const": 1,
+      "description": "Always 1 for this protocol; see [`crate::SCHEMA_VERSION`].",
+      "type": "integer"
+    },
+    "sections": {
+      "description": "Every slide id appears exactly once, in order.",
+      "items": {
+        "$ref": "#/definitions/Section"
+      },
+      "type": "array"
+    },
+    "slide_size": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Size"
+        }
+      ],
+      "description": "Default from the template."
+    },
+    "template": {
+      "description": "`\"template/<file>.potx|pptx\"`.",
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "mode",
+    "schema_version",
+    "sections",
+    "template",
+    "title"
+  ],
+  "title": "Deck",
+  "type": "object"
+}

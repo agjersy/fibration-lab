@@ -1,0 +1,53 @@
+[task]
+name = "margin-story"
+prompt = "Build a five-slide board pre-read on Q3 margin from the references."
+mode = "build"                     # outline | build | polish
+timeout_s = 900
+max_steps = 40
+
+[fixture]
+dir = "fixture"
+
+[[checks]]
+kind = "opens_clean"
+[[checks]]
+kind = "checker_clean"
+max_warnings = 2
+[[checks]]
+kind = "slide_count"
+min = 4
+max = 6
+[[checks]]
+kind = "slide_count"
+exact = 5
+[[checks]]
+kind = "layout_used"
+layout = "Title Slide"
+min = 1
+[[checks]]
+kind = "uses_native"
+element = "chart"
+min = 1
+[[checks]]
+kind = "citation_coverage"
+min = 0.9
+[[checks]]
+kind = "numbers_verified"
+min = 0.95
+[[checks]]
+kind = "text_matches"
+slide = "s-7f3a"
+regex = "18\\s?%"
+[[checks]]
+kind = "text_matches"
+regex = "(?i)margin"
+[[checks]]
+kind = "locked_untouched"
+[[checks]]
+kind = "mode"
+mode = "structured"
+[[checks]]
+kind = "export_exists"
+format = "pdf"
+[[checks]]
+kind = "edits_within_scope"
