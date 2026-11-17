@@ -1,10 +1,19 @@
-// Figure bytes as data: URLs, keyed by session and repo-relative path. The
-// cache is a small LRU: figures can be megabytes each and a long session
-// produces hundreds, so only the most recently used ones are kept. Components
-// hold on to the URL they are showing, so eviction never blanks a visible figure.
+// Where a figure's <img> gets its bytes.
+//
+// Under Tauri, a figure whose file is on this machine (`file_abs`) is loaded
+// straight from disk through the asset protocol: no IPC call, nothing held in
+// JS memory, and the webview caches it.
+//
+// Otherwise (browser mode, or a remote figure not pulled yet) the bytes come
+// through `figure_data` as a data: URL, keyed by session and repo-relative
+// path. That cache is a small LRU: figures can be megabytes each and a long
+// session produces hundreds, so only the most recently used ones are kept.
+// Components hold on to the URL they are showing, so eviction never blanks a
+// visible figure.
 import { useEffect, useState } from "react";
 import { backend } from "../ipc";
-import type { SessionId } from "../ipc";
+import type { FigureView, SessionId } from "../ipc";
+import { figureAssetUrl } from "./figures";
 
 export const MAX_FIGURES_CACHED = 64;
 
@@ -79,11 +88,18 @@ export function figureCacheSize(): number {
   return cache.size;
 }
 
-/** data: URL for a figure, or null while loading. The component keeps its own reference. */
-export function useFigureData(session: SessionId, path: string): string | null {
+/**
+ * URL for a figure's <img>, or null while it is loading. With `enabled` false
+ * nothing is fetched (a thumbnail that has not scrolled into view yet).
+ */
+export function useFigureSrc(session: SessionId, figure: Pick<FigureView, "path" | "file_abs">, enabled = true): string | null {
+  const asset = figureAssetUrl(figure);
+  const path = figure.path;
   const key = keyOf(session, path);
   const [state, setState] = useState<{ key: string; url: string } | null>(null);
+  const fetchData = enabled && asset === null;
   useEffect(() => {
+    if (!fetchData) return;
     let live = true;
     ensureFigureData(session, path)
       .then((url) => {
@@ -93,6 +109,8 @@ export function useFigureData(session: SessionId, path: string): string | null {
     return () => {
       live = false;
     };
-  }, [session, path, key]);
+  }, [session, path, key, fetchData]);
+  if (!enabled) return null;
+  if (asset !== null) return asset;
   return state && state.key === key ? state.url : null;
 }

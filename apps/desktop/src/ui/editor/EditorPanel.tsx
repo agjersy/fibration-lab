@@ -5,13 +5,14 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { useEffect, useRef } from "react";
 import { loadBuffer, saveBuffer } from "../../state/actions";
 import { usePathDiagnostics } from "../../state/diagnostics";
-import { useBuffer, useFiles } from "../../state/files";
+import { registerTextSource, useBuffer, useFiles } from "../../state/files";
 import { useActiveSession } from "../../state/sessions";
 import { notifyError } from "../../state/ui";
 import { fileName } from "../workbench/controller";
 import { registerEditorView } from "./registry";
 import { toCmDiagnostics } from "./codemirror";
-import { createEditorState } from "./editorState";
+import { createEditorState, docText } from "./editorState";
+import { EditorSync } from "./editorSync";
 
 export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string }>) {
   const path = params.path;
@@ -21,6 +22,7 @@ export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string 
   const reveal = useFiles((s) => (session ? s.reveal[session] : null));
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const syncRef = useRef<EditorSync | null>(null);
   const appliedRevision = useRef(-1);
 
   useEffect(() => {
@@ -34,9 +36,23 @@ export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string 
     // Empty and read-only until the buffer arrives; the real state replaces it below.
     const view = new EditorView({ state: EditorState.create({ doc: "", extensions: [EditorState.readOnly.of(true)] }), parent: host });
     viewRef.current = view;
+    syncRef.current = null;
     appliedRevision.current = -1;
     const unregister = registerEditorView(path, view);
+    // The store does not mirror the text; whoever needs it (save, run, rename) asks here.
+    const source = () => {
+      const sync = syncRef.current;
+      const current = useFiles.getState().buffers[session]?.[path];
+      if (!sync || !current || current.loading || current.revision !== appliedRevision.current) return null;
+      return sync.snapshot(view.state, () => view.state);
+    };
+    const unregisterSource = registerTextSource(session, path, source);
     return () => {
+      // Unsaved text outlives this view (the panel is rebuilt for another
+      // session, or the file is being renamed): hand it to the store once.
+      if (syncRef.current?.isDirty && source()) useFiles.getState().stashContent(session, path, docText(view.state));
+      syncRef.current = null;
+      unregisterSource();
       unregister();
       view.destroy();
       viewRef.current = null;
@@ -50,8 +66,12 @@ export function EditorPanel({ params, api }: IDockviewPanelProps<{ path: string 
     if (buffer.revision === appliedRevision.current) return;
     appliedRevision.current = buffer.revision;
     if (!session) return;
+    const state = createEditorState(path, buffer.content, buffer.lineSeparator, (next) => syncRef.current?.docChanged(next));
+    const sync = new EditorSync(state, buffer.content === buffer.saved ? null : buffer.saved, (dirty) => useFiles.getState().setDirty(session, path, dirty));
+    syncRef.current = sync;
     // A fresh state, not a transaction: the load must not be on the undo stack.
-    view.setState(createEditorState(path, buffer.content, buffer.lineSeparator, (text) => useFiles.getState().updateContent(session, path, text)));
+    view.setState(state);
+    if (sync.isDirty !== buffer.dirty) useFiles.getState().setDirty(session, path, sync.isDirty);
   }, [buffer, session, path]);
 
   useEffect(() => {

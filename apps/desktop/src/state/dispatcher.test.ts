@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { RunView, SessionEvent, SessionInfo } from "../ipc";
-import { useChat } from "./chat";
+import { flushAgentText, useChat } from "./chat";
 import { useDiagnostics } from "./diagnostics";
 import { applyEvent } from "./dispatcher";
 import { useFiles } from "./files";
@@ -62,14 +62,17 @@ describe("applyEvent", () => {
     applyEvent(S, { type: "turn_started", conversation: C, turn: "t1" });
     applyEvent(S, { type: "agent_text", conversation: C, turn: "t1", delta: "Hello " });
     applyEvent(S, { type: "agent_text", conversation: C, turn: "t1", delta: "world" });
+    flushAgentText();
     let conv = useChat.getState().conversations[C]!;
     expect(conv.busy).toBe(true);
     expect(conv.items).toHaveLength(1);
-    expect(conv.items[0]).toMatchObject({ kind: "assistant", text: "Hello world", streaming: true });
+    expect(conv.items[0]).toMatchObject({ kind: "assistant", streaming: true });
+    expect(conv.stream?.text).toBe("Hello world");
     applyEvent(S, { type: "turn_done", conversation: C, turn: "t1", summary: { text: "done", files_changed: [], runs: [], figures: [] } });
     conv = useChat.getState().conversations[C]!;
     expect(conv.busy).toBe(false);
-    expect(conv.items[0]).toMatchObject({ kind: "assistant", streaming: false });
+    expect(conv.items[0]).toMatchObject({ kind: "assistant", text: "Hello world", streaming: false });
+    expect(conv.stream).toBeNull();
     expect(conv.items[1]).toMatchObject({ kind: "summary" });
   });
 
@@ -95,7 +98,7 @@ describe("applyEvent", () => {
     applyEvent(S, { type: "run_output", run_id: "r1", stream: "stdout", chunk: "a" });
     applyEvent(S, { type: "run_output", run_id: "r1", stream: "stdout", chunk: "b" });
     applyEvent(S, { type: "run_output", run_id: "r1", stream: "stderr", chunk: "e" });
-    const figure = { run_id: "r1", script: "scripts/decay_sim.py", path: "out/f.svg", name: "f", format: "svg" as const, sidecar: null, created_at: "", size: 1 };
+    const figure = { run_id: "r1", script: "scripts/decay_sim.py", path: "out/f.svg", name: "f", format: "svg" as const, sidecar: null, created_at: "", size: 1, file_abs: null };
     applyEvent(S, { type: "run_artifact", run_id: "r1", artifact: { kind: "figure", path: "out/f.svg", size: 1, created_at: "", rendered: true }, figure });
     // Chunks are batched per frame, so nothing is in the store yet.
     expect(useRuns.getState().output.r1).toBeUndefined();
@@ -114,12 +117,12 @@ describe("applyEvent", () => {
 
   it("keeps a pinned figure selected when a newer run arrives", () => {
     useRuns.getState().setFigures(S, []);
-    const fig = (id: string) => ({ run_id: id, script: "s", path: `out/${id}.svg`, name: "f", format: "svg" as const, sidecar: null, created_at: "", size: 1 });
+    const fig = (id: string) => ({ run_id: id, script: "s", path: `out/${id}/f.svg`, name: "f", format: "svg" as const, sidecar: null, created_at: "", size: 1, file_abs: null });
     applyEvent(S, { type: "run_started", run: run("r1") });
-    applyEvent(S, { type: "run_artifact", run_id: "r1", artifact: { kind: "figure", path: "out/r1.svg", size: 1, created_at: "", rendered: true }, figure: fig("r1") });
+    applyEvent(S, { type: "run_artifact", run_id: "r1", artifact: { kind: "figure", path: "out/r1/f.svg", size: 1, created_at: "", rendered: true }, figure: fig("r1") });
     useRuns.getState().togglePin(S, { name: "f", run_id: "r1" });
     applyEvent(S, { type: "run_started", run: run("r2") });
-    applyEvent(S, { type: "run_artifact", run_id: "r2", artifact: { kind: "figure", path: "out/r2.svg", size: 1, created_at: "", rendered: true }, figure: fig("r2") });
+    applyEvent(S, { type: "run_artifact", run_id: "r2", artifact: { kind: "figure", path: "out/r2/f.svg", size: 1, created_at: "", rendered: true }, figure: fig("r2") });
     expect(useRuns.getState().activeFigure[S]).toEqual({ name: "f", run_id: "r1" });
   });
 

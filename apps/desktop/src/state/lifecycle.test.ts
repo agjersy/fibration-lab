@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { setBackend } from "../ipc";
 import type { IpcError } from "../ipc";
 import type { MockBackend } from "../ipc/mock";
-import { probe, resetStores, strictMock, waitFor } from "../test/util";
+import { probe, resetStores, strictMock, typeIn, waitFor } from "../test/util";
 import type { Probe } from "../test/util";
 import {
   bootstrap,
@@ -22,7 +22,7 @@ import {
 } from "./actions";
 import { useChat } from "./chat";
 import { isSubscribed, subscribeSession } from "./dispatcher";
-import { useFiles } from "./files";
+import { bufferText, useFiles } from "./files";
 import { flushRunOutput, useRuns } from "./runs";
 import { useSessions } from "./sessions";
 import { bufferedTerminalChars, useTerminals } from "./terminals";
@@ -159,7 +159,7 @@ describe("creating and closing", () => {
     await bootstrap();
     const id = await createSession({ repo_abs: "/home/user/projects/x" });
     await loadBuffer(id, "notes.md");
-    useFiles.getState().updateContent(id, "notes.md", "changed\n");
+    typeIn(id, "notes.md", "changed\n");
     const closing = closeSession(id);
     const prompt = await waitFor(() => useUi.getState().unsavedPrompt);
     expect(prompt.message).toContain("notes.md");
@@ -334,15 +334,15 @@ describe("saving", () => {
       if (cmd === "fs_write") await gate;
       return next();
     };
-    useFiles.getState().updateContent(id, "notes.md", "first\n");
+    typeIn(id, "notes.md", "first\n");
     const saving = saveBuffer(id, "notes.md");
     await waitFor(() => b.calls.includes("fs_write"));
-    useFiles.getState().updateContent(id, "notes.md", "first\nsecond\n");
+    typeIn(id, "notes.md", "first\nsecond\n");
     release();
     expect(await saving).toBe(true);
     const buf = useFiles.getState().buffers[id]?.["notes.md"];
     expect(buf?.saved).toBe("first\n");
-    expect(buf?.content).toBe("first\nsecond\n");
+    expect(bufferText(id, "notes.md")).toBe("first\nsecond\n");
     expect(buf?.dirty).toBe(true);
     expect((await b.invoke("fs_read", { session: id, path: "notes.md" })).content).toBe("first\n");
     // The next save sends the hash the first one produced: no false conflict.
@@ -370,9 +370,9 @@ describe("saving", () => {
         active--;
       }
     };
-    useFiles.getState().updateContent(id, "notes.md", "one\n");
+    typeIn(id, "notes.md", "one\n");
     const a = saveBuffer(id, "notes.md");
-    useFiles.getState().updateContent(id, "notes.md", "two\n");
+    typeIn(id, "notes.md", "two\n");
     const c = saveBuffer(id, "notes.md");
     const d = saveBuffer(id, "notes.md");
     expect(await Promise.all([a, c, d])).toEqual([true, true, true]);
@@ -391,7 +391,7 @@ describe("saving", () => {
     const buf = useFiles.getState().buffers[id]?.["win.py"];
     expect(buf).toMatchObject({ dirty: false, lineSeparator: "\r\n", content: crlf });
     // What the editor reports after an edit (see editorState.test.ts) keeps the separator.
-    useFiles.getState().updateContent(id, "win.py", "a = 1\r\nb = 2\r\nc = 3\r\n");
+    typeIn(id, "win.py", "a = 1\r\nb = 2\r\nc = 3\r\n");
     expect(await saveBuffer(id, "win.py")).toBe(true);
     expect((await b.invoke("fs_read", { session: id, path: "win.py" })).content).toBe("a = 1\r\nb = 2\r\nc = 3\r\n");
   });
@@ -400,7 +400,7 @@ describe("saving", () => {
     const id = await session();
     await waitFor(() => kernel(id) === "ready");
     await loadBuffer(id, "scripts/decay_sim.py");
-    useFiles.getState().updateContent(id, "scripts/decay_sim.py", "print('edited')\n");
+    typeIn(id, "scripts/decay_sim.py", "print('edited')\n");
     b.intercept = (cmd, _a, next) => (cmd === "fs_write" ? Promise.reject<unknown>({ code: "io", message: "disk full" } satisfies IpcError) : next());
     b.calls.length = 0;
     expect(await runCurrentScript(id, "scripts/decay_sim.py")).toBeNull();

@@ -55,7 +55,7 @@ describe("MockBackend", () => {
     expect(events.find((e) => e.type === "diagnostics")).toBeDefined();
   });
 
-  it("streams a run with output, an SVG figure and run_done", async () => {
+  it("streams a run with output, one PNG figure and run_done", async () => {
     const b = fast();
     const { info, events } = await session(b);
     await waitFor(() => events.find((e) => e.type === "kernel_state" && e.state === "ready"));
@@ -66,10 +66,16 @@ describe("MockBackend", () => {
     const outputs = events.filter((e) => e.type === "run_output");
     expect(outputs.length).toBeGreaterThanOrEqual(3);
     const art = events.find((e) => e.type === "run_artifact" && e.figure !== null);
-    expect(art && art.type === "run_artifact" && art.figure?.format).toBe("svg");
+    expect(art && art.type === "run_artifact" && art.figure?.format).toBe("png");
+    // No local file behind the mock: the renderer goes through figure_data.
+    expect(art && art.type === "run_artifact" && art.figure?.file_abs).toBeNull();
+    // One file per figure: PNG only.
+    expect(events.filter((e) => e.type === "run_artifact" && e.figure !== null)).toHaveLength(1);
     const data = await b.invoke("figure_data", { session: info.id, path: art && art.type === "run_artifact" ? art.artifact.path : "" });
-    expect(data.mime).toBe("image/svg+xml");
-    expect(atob(data.base64)).toContain("<svg");
+    expect(data.mime).toBe("image/png");
+    const bytes = atob(data.base64);
+    expect(bytes.startsWith("\x89PNG\r\n\x1a\n")).toBe(true);
+    expect(bytes.length).toBe(art && art.type === "run_artifact" ? art.artifact.size : -1);
     const groups = await b.invoke("figures_list", { session: info.id });
     expect(groups[0]?.figures[0]?.name).toBe("decay-simulation");
     const full = await b.invoke("run_get", { session: info.id, run_id: run.meta.run_id });

@@ -13,7 +13,7 @@
 import type { Backend } from "./backend";
 import type { Commands } from "./commands";
 import { unifiedDiff } from "./mock/diff";
-import { decaySvg, residualsSvg, simParamsFromArgs, type SimParams } from "./mock/figure";
+import { decayPng, residualsPng, simParamsFromArgs, type MockPng, type SimParams } from "./mock/figure";
 import { DOUBLE_EXP_SNIPPET, RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED, fixtureFiles } from "./mock/fixtures";
 import { extractEquations, indexLibrary, parseScript } from "./mock/indexer";
 import type {
@@ -189,6 +189,25 @@ async function sha256(text: string): Promise<string> {
   let h = 0x811c9dc5;
   for (const b of bytes) h = Math.imul(h ^ b, 0x01000193) >>> 0;
   return h.toString(16).padStart(8, "0").repeat(8);
+}
+
+// Binary files (PNG figures) are kept in the file map as base64 text.
+const BINARY = /\.png$/;
+
+function fileSize(path: string, content: string): number {
+  if (!BINARY.test(path)) return encoder.encode(content).length;
+  const padding = content.endsWith("==") ? 2 : content.endsWith("=") ? 1 : 0;
+  return (content.length / 4) * 3 - padding;
+}
+
+function fileBase64(path: string, content: string): { mime: string; base64: string } {
+  if (BINARY.test(path)) return { mime: "image/png", base64: content };
+  const mime = path.endsWith(".svg") ? "image/svg+xml" : path.endsWith(".json") ? "application/json" : "text/plain";
+  return { mime, base64: base64Utf8(content) };
+}
+
+function artifactKind(path: string, other: Artifact["kind"]): Artifact["kind"] {
+  return /\.(png|svg|pdf)$/.test(path) ? "figure" : /\.json$/.test(path) ? "json" : /\.csv$/.test(path) ? "table" : other;
 }
 
 function base64Utf8(text: string): string {
@@ -442,9 +461,9 @@ export class MockBackend implements Backend {
     const started = new Date(Date.now() - 86000_000).toISOString();
     const finished = new Date(Date.now() - 85998_000).toISOString();
     const p = simParamsFromArgs(args);
-    const fig = decaySvg(p);
-    const figPath = `${out_dir}/figures/decay-simulation.svg`;
-    const size = encoder.encode(fig.svg).length;
+    const fig = decayPng(p);
+    const figPath = `${out_dir}/figures/decay-simulation.png`;
+    const size = fig.png.size;
     const sidecar = {
       run_id,
       script,
@@ -459,7 +478,7 @@ export class MockBackend implements Backend {
     const stdout =
       `Simulating n=${p.n} samples with tau=${p.tau}, amplitude=${p.amplitude}, noise=${p.noise} (seed ${p.seed})\n` +
       `Fitting single_exp with curve_fit...\ntau_fit = ${fig.tauFit.toFixed(3)}\nresidual rms = ${fig.rms.toFixed(4)}\n`;
-    s.files.set(figPath, fig.svg);
+    s.files.set(figPath, fig.png.base64);
     s.files.set(`${figPath}.meta.json`, JSON.stringify(sidecar, null, 2));
     s.files.set(`${out_dir}/run.json`, JSON.stringify({ run_id, script, args, started_at: started, host: "localhost", tree_hash: null }, null, 2));
     s.runs.unshift({
@@ -486,7 +505,7 @@ export class MockBackend implements Backend {
       },
       stdout,
       stderr: "",
-      figures: [{ run_id, script, path: figPath, name: "decay-simulation", format: "svg", sidecar, created_at: finished, size }],
+      figures: [{ run_id, script, path: figPath, name: "decay-simulation", format: "png", sidecar, created_at: finished, size, file_abs: null }],
       cancelled: false,
       timers: [],
     });
@@ -537,7 +556,7 @@ export class MockBackend implements Backend {
       if (!path.startsWith(prefix)) continue;
       const rest = path.slice(prefix.length);
       const slash = rest.indexOf("/");
-      if (slash < 0) names.set(rest, { kind: "file", size: encoder.encode(content).length });
+      if (slash < 0) names.set(rest, { kind: "file", size: fileSize(path, content) });
       else {
         const dir = rest.slice(0, slash);
         if (!names.has(dir)) names.set(dir, { kind: "dir", size: null });
@@ -630,7 +649,7 @@ export class MockBackend implements Backend {
       const art: Artifact = {
         kind,
         path,
-        size: encoder.encode(content).length,
+        size: fileSize(path, content),
         created_at: nowIso(),
         rendered: kind === "figure" || kind === "json" || kind === "text",
       };
@@ -639,8 +658,9 @@ export class MockBackend implements Backend {
       if (figure) run.figures.push(figure);
       if (live) this.emit(sid, { type: "run_artifact", run_id, artifact: structuredClone(art), figure: figure ? structuredClone(figure) : null });
     };
-    const makeFigure = (name: string, svg: string, p: SimParams, title: string, ylabel: string): FigureView => {
-      const path = `${out_dir}/figures/${name}.svg`;
+    // One file per figure: PNG only, as the capture backend writes by default.
+    const makeFigure = (name: string, png: MockPng, p: SimParams, title: string, ylabel: string): FigureView => {
+      const path = `${out_dir}/figures/${name}.png`;
       const sidecar = {
         run_id,
         script,
@@ -654,7 +674,8 @@ export class MockBackend implements Backend {
       };
       // The sidecar sits next to the figure as `<file>.meta.json`.
       s.files.set(`${path}.meta.json`, JSON.stringify({ ...sidecar, seed: p.seed }, null, 2));
-      return { run_id, script, path, name, format: "svg", sidecar, created_at: nowIso(), size: encoder.encode(svg).length };
+      // No local file behind the mock: the renderer falls back to `figure_data`.
+      return { run_id, script, path, name, format: "png", sidecar, created_at: nowIso(), size: png.size, file_abs: null };
     };
 
     const done = (async (): Promise<RunView> => {
@@ -709,14 +730,14 @@ export class MockBackend implements Backend {
           }
           output("stderr", "\n");
           await step(20);
-          const fig = decaySvg(p);
+          const fig = decayPng(p);
           output("stdout", `tau_fit = ${fig.tauFit.toFixed(3)}\n`);
           await step(180);
-          artifact(`${out_dir}/figures/decay-simulation.svg`, fig.svg, "figure", makeFigure("decay-simulation", fig.svg, p, "Decay simulation", "y"));
+          artifact(`${out_dir}/figures/decay-simulation.png`, fig.png.base64, "figure", makeFigure("decay-simulation", fig.png, p, "Decay simulation", "y"));
           if (opts.residuals) {
             await step(150);
-            const svg = residualsSvg(p);
-            artifact(`${out_dir}/figures/residuals.svg`, svg, "figure", makeFigure("residuals", svg, p, "Residuals", "y - fit"));
+            const png = residualsPng(p);
+            artifact(`${out_dir}/figures/residuals.png`, png.base64, "figure", makeFigure("residuals", png, p, "Residuals", "y - fit"));
           }
           await step(120);
           output("stdout", `residual rms = ${fig.rms.toFixed(4)}\n`);
@@ -1133,8 +1154,7 @@ export class MockBackend implements Backend {
       const s = this.requireOpen(session);
       const content = s.files.get(path);
       if (content === undefined) throw ipcError("not_found", `${path} not found`);
-      const mime = path.endsWith(".svg") ? "image/svg+xml" : path.endsWith(".json") ? "application/json" : "text/plain";
-      return { mime, base64: base64Utf8(content) };
+      return fileBase64(path, content);
     },
 
     fs_write: async ({ session, path, content, expected_hash }) => {
@@ -1205,7 +1225,7 @@ export class MockBackend implements Backend {
       const globRe = glob ? new RegExp("^" + glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, ".*").replace(/\*/g, "[^/]*") + "$") : null;
       const hits: Commands["fs_search"]["result"] = [];
       for (const [path, content] of s.files) {
-        if (globRe && !globRe.test(path)) continue;
+        if (BINARY.test(path) || (globRe && !globRe.test(path))) continue;
         content.split("\n").forEach((line, idx) => {
           const m = re.exec(line);
           if (m) hits.push({ path, line: idx + 1, col: m.index, text: line });
@@ -1260,8 +1280,8 @@ export class MockBackend implements Backend {
         .filter(([p]) => p.startsWith(`${prefix}/`))
         .map(([p, c]) => ({
           path: p,
-          size: encoder.encode(c).length,
-          kind: (/\.svg$/.test(p) ? "figure" : /\.json$/.test(p) ? "json" : /\.csv$/.test(p) ? "table" : "file") as Artifact["kind"],
+          size: fileSize(p, c),
+          kind: artifactKind(p, "file"),
           mtime: nowIso(),
         }));
       return { entries };
@@ -1272,7 +1292,9 @@ export class MockBackend implements Backend {
       const content = s.files.get(path);
       if (content === undefined) throw ipcError("not_found", `${path} not found`);
       const max = max_bytes ?? 16384;
-      const kind: Artifact["kind"] = /\.svg$/.test(path) ? "figure" : /\.json$/.test(path) ? "json" : /\.csv$/.test(path) ? "table" : "text";
+      const kind = artifactKind(path, "text");
+      // Images have no text preview; the renderer shows them through `figure_data`.
+      if (BINARY.test(path)) return { kind, preview: "", truncated: false, summary: null };
       return { kind, preview: content.slice(0, max), truncated: content.length > max, summary: null };
     },
 
@@ -1282,7 +1304,7 @@ export class MockBackend implements Backend {
       const s = this.requireOpen(session);
       const content = s.files.get(path);
       if (content === undefined) throw ipcError("not_found", `${path} not found`);
-      return { mime: path.endsWith(".svg") ? "image/svg+xml" : "application/octet-stream", base64: base64Utf8(content) };
+      return fileBase64(path, content);
     },
 
     eq_extract: ({ session, path }) => {
