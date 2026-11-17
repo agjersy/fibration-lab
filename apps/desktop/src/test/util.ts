@@ -1,10 +1,11 @@
 // Helpers shared by the vitest suites. Not part of the app bundle.
 import type { Backend, Commands, SessionEvent, SessionId } from "../ipc";
 import { MockBackend } from "../ipc/mock";
-import { useChat } from "../state/chat";
+import { flushAgentText, useChat } from "../state/chat";
 import { useDiagnostics } from "../state/diagnostics";
 import { unsubscribeAll } from "../state/dispatcher";
-import { useFiles } from "../state/files";
+import { registerTextSource, useFiles } from "../state/files";
+import { usePackages } from "../state/packages";
 import { flushRunOutput, useRuns } from "../state/runs";
 import { useSessions } from "../state/sessions";
 import { useTasks } from "../state/tasks";
@@ -30,9 +31,49 @@ export function waitFor<T>(check: () => T | undefined | null | false, timeoutMs 
   });
 }
 
+const editors = new Map<string, { type(text: string): void; close(): void }>();
+
+/**
+ * Types into a buffer the way an open editor does: the text lives outside the
+ * store (behind a registered text source) and only the dirty flag is reported.
+ */
+export function typeIn(session: SessionId, path: string, text: string): void {
+  const key = `${session}\n${path}`;
+  let editor = editors.get(key);
+  if (!editor) {
+    const buffer = useFiles.getState().buffers[session]?.[path];
+    if (!buffer) throw new Error(`no buffer for ${path}`);
+    let current = buffer.content;
+    let saved = buffer.saved;
+    const close = registerTextSource(session, path, () => {
+      const snapshot = current;
+      return {
+        text: snapshot,
+        markSaved: () => {
+          saved = snapshot;
+          return current !== saved;
+        },
+      };
+    });
+    editor = {
+      type: (next) => {
+        current = next;
+        useFiles.getState().setDirty(session, path, current !== saved);
+      },
+      close,
+    };
+    editors.set(key, editor);
+  }
+  editor.type(text);
+}
+
 export function resetStores(): void {
+  for (const e of editors.values()) e.close();
+  editors.clear();
   unsubscribeAll();
   flushRunOutput();
+  flushAgentText();
+  usePackages.setState({ lists: {}, stale: {}, loading: {} });
   useChat.setState({ conversations: {}, proposals: {}, drafts: {}, pendingAttachments: {}, responding: {} });
   useRuns.setState({ runs: {}, output: {}, outputOrder: [], figures: {}, selectedRun: {}, activeFigure: {}, pinned: {}, compare: {} });
   useDiagnostics.setState({ byPath: {} });

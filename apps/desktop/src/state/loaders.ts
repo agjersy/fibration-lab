@@ -5,10 +5,11 @@
 // when `kernel_state: ready` or `index_changed` arrives (IPC.md section 7).
 import { backend, isIpcError } from "../ipc";
 import type { ConversationId, RunId, SessionId, SessionInfo } from "../ipc";
-import { useChat } from "./chat";
+import { flushAgentText, useChat } from "./chat";
 import { stateEventSeq } from "./eventSeq";
 import { checkExternalChanges } from "./fileWatch";
 import { useFiles } from "./files";
+import { packagesChanged } from "./packages";
 import { discardQueuedOutput, flushRunOutput, useRuns } from "./runs";
 import { useSessions } from "./sessions";
 import { transcriptToChat } from "./transcript";
@@ -58,9 +59,14 @@ export async function reconcileSessionInfo(session: SessionId): Promise<SessionI
 const indexInFlight = new Map<SessionId, { promise: Promise<boolean>; again: boolean }>();
 
 /**
- * Refetches the script and library index. Returns false when the kernel is not
- * up yet; the index is then marked stale and fetched again on `kernel_state: ready`.
- * Other failures are thrown unless `quiet`.
+ * Refetches the script and library index. Called for `index_changed` and
+ * `kernel_state: ready` (and once per load or resync), not for file events.
+ * Requests are coalesced: callers during a fetch share it, and however many
+ * arrive meanwhile cause one follow-up fetch, since the index may have changed
+ * after the request in flight was answered.
+ *
+ * Returns false when the kernel is not up yet; the index is then marked stale
+ * and fetched again on `kernel_state: ready`. Other failures are thrown unless `quiet`.
  */
 export function refreshIndex(session: SessionId, quiet = true): Promise<boolean> {
   const running = indexInFlight.get(session);
@@ -203,6 +209,9 @@ export async function loadSessionData(session: SessionId): Promise<void> {
 export async function resyncSession(session: SessionId): Promise<void> {
   const b = backend();
   flushRunOutput();
+  flushAgentText();
+  // A dropped `packages_changed` cannot be told apart from none; ask again when the list is next shown.
+  packagesChanged(session);
   const before = useRuns.getState();
   const stale = new Set<RunId>((before.runs[session] ?? []).filter((r) => r.meta.status === "running").map((r) => r.meta.run_id));
   const selected = before.selectedRun[session];
@@ -229,7 +238,7 @@ export async function resyncSession(session: SessionId): Promise<void> {
     const conversations = { ...s.conversations };
     for (const c of info.conversations) {
       const cur = conversations[c.id];
-      if (cur && c.id !== info.active_conversation && !cur.busy) conversations[c.id] = { ...cur, items: [], loaded: false };
+      if (cur && c.id !== info.active_conversation && !cur.busy) conversations[c.id] = { ...cur, items: [], stream: null, loaded: false };
     }
     return { conversations };
   });

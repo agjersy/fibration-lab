@@ -1,14 +1,18 @@
-import { useState } from "react";
-import type { RunId, SessionId, TurnSummary } from "../../ipc";
+import { memo, useMemo, useRef, useState } from "react";
+import type { FigureView, RunId, SessionId, TurnSummary } from "../../ipc";
 import { useProposal, useResponding } from "../../state/chat";
-import { useFigureData } from "../../state/figureCache";
+import { useFigureSrc } from "../../state/figureCache";
+import { groupFigures } from "../../state/figures";
 import type { ChatItem } from "../../state/chat";
 import { useRuns } from "../../state/runs";
+import { useVisibleOnce } from "../common/useVisibleOnce";
 import { compactJson, formatDuration, shortArgs } from "../common/format";
 import { acceptProposal, rejectProposal } from "../editor/review";
 import { openFile, openProposal, showPanel } from "../workbench/controller";
 
-export function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
+// The cards are memoised: a conversation re-renders one card when its item or record changes, not all of them.
+
+export const ToolCard = memo(function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="card" data-testid="tool-card">
@@ -34,9 +38,9 @@ export function ToolCard({ item }: { item: Extract<ChatItem, { kind: "tool" }> }
       ) : null}
     </div>
   );
-}
+});
 
-export function ProposalCard({ proposalId }: { proposalId: string }) {
+export const ProposalCard = memo(function ProposalCard({ proposalId }: { proposalId: string }) {
   const record = useProposal(proposalId);
   const responding = useResponding(proposalId);
   if (!record) return null;
@@ -86,24 +90,29 @@ export function ProposalCard({ proposalId }: { proposalId: string }) {
       ) : null}
     </div>
   );
-}
+});
 
-function FigureThumb({ session, path, name, run_id }: { session: SessionId; path: string; name: string; run_id: RunId }) {
-  const data = useFigureData(session, path);
+/** Loads its image only once it scrolls into view: a long conversation holds many run cards. */
+function FigureThumb({ session, figure, name, run_id }: { session: SessionId; figure: FigureView; name: string; run_id: RunId }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const visible = useVisibleOnce(ref);
+  const data = useFigureSrc(session, figure, visible);
   const open = () => {
     useRuns.getState().setActiveFigure(session, { name, run_id });
     showPanel("figures");
   };
   return (
-    <button type="button" className="thumb" onClick={open} title={`Open ${name} in Figures`} aria-label={`Open figure ${name}`}>
-      {data ? <img src={data} alt={name} /> : <span className="subtle small">{name}</span>}
+    <button ref={ref} type="button" className="thumb" onClick={open} title={`Open ${name} in Figures`} aria-label={`Open figure ${name}`} data-testid="figure-thumb">
+      {data && figure.format !== "pdf" ? <img src={data} alt={name} loading="lazy" decoding="async" /> : <span className="subtle small">{name}</span>}
     </button>
   );
 }
 
-export function RunCard({ session, run_id }: { session: SessionId; run_id: RunId }) {
+export const RunCard = memo(function RunCard({ session, run_id }: { session: SessionId; run_id: RunId }) {
   const run = useRuns((s) => s.runs[session]?.find((r) => r.meta.run_id === run_id));
-  const figures = useRuns((s) => s.figures[session]?.find((g) => g.run.meta.run_id === run_id)?.figures);
+  const files = useRuns((s) => s.figures[session]?.find((g) => g.run.meta.run_id === run_id)?.figures);
+  // One thumbnail per figure, whatever formats it was saved in.
+  const figures = useMemo(() => groupFigures(files ?? []), [files]);
   if (!run) return null;
   const status = run.meta.status === "done" && run.meta.exit_code !== 0 ? "exit" : run.meta.status;
   const open = () => {
@@ -119,20 +128,20 @@ export function RunCard({ session, run_id }: { session: SessionId; run_id: RunId
         <span className={`status-${status}`}>{run.meta.status === "done" ? `exit ${run.meta.exit_code}` : run.meta.status}</span>
         <span className="subtle">{formatDuration(run.meta.started_at, run.meta.finished_at)}</span>
       </button>
-      {figures && figures.length > 0 ? (
+      {figures.length > 0 ? (
         <div className="card-body">
           <div className="thumbs">
             {figures.map((f) => (
-              <FigureThumb key={f.path} session={session} path={f.path} name={f.name} run_id={run_id} />
+              <FigureThumb key={f.name} session={session} figure={f.primary} name={f.name} run_id={run_id} />
             ))}
           </div>
         </div>
       ) : null}
     </div>
   );
-}
+});
 
-export function SummaryCard({ summary }: { summary: TurnSummary }) {
+export const SummaryCard = memo(function SummaryCard({ summary }: { summary: TurnSummary }) {
   return (
     <div className="card" data-testid="summary-card">
       <div className="card-header" style={{ cursor: "default" }}>
@@ -167,9 +176,9 @@ export function SummaryCard({ summary }: { summary: TurnSummary }) {
       ) : null}
     </div>
   );
-}
+});
 
-export function ErrorCard({ message }: { message: string }) {
+export const ErrorCard = memo(function ErrorCard({ message }: { message: string }) {
   return (
     <div className="card error" data-testid="error-card">
       <div className="card-header" style={{ cursor: "default" }}>
@@ -178,4 +187,4 @@ export function ErrorCard({ message }: { message: string }) {
       </div>
     </div>
   );
-}
+});

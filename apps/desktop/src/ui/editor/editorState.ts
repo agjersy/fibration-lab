@@ -14,7 +14,11 @@ export function docText(state: EditorState): string {
   return state.sliceDoc();
 }
 
-export function createEditorState(path: string, content: string, lineSeparator: LineSeparator, onChange: (text: string) => void, extra: Extension = []): EditorState {
+/**
+ * `onDocChanged` gets the new state after every document change. It must stay
+ * cheap (it runs per keystroke): compare documents, do not serialise them.
+ */
+export function createEditorState(path: string, content: string, lineSeparator: LineSeparator, onDocChanged: (state: EditorState) => void, extra: Extension = []): EditorState {
   return EditorState.create({
     doc: content,
     extensions: [
@@ -30,7 +34,7 @@ export function createEditorState(path: string, content: string, lineSeparator: 
       baseExtensions(),
       languageFor(path),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) onChange(docText(u.state));
+        if (u.docChanged) onDocChanged(u.state);
       }),
       extra,
     ],

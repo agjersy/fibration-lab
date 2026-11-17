@@ -24,8 +24,7 @@ describe("editor state", () => {
   });
 
   it("undo goes back to the loaded text, never past it", () => {
-    const changes: string[] = [];
-    let state = createEditorState("a.py", SOURCE, "\n", (t) => changes.push(t));
+    let state = createEditorState("a.py", SOURCE, "\n", () => undefined);
     state = state.update({ changes: { from: 0, insert: "# header\n" } }).state;
     expect(docText(state)).toBe(`# header\n${SOURCE}`);
     state = run(state, undo).state;

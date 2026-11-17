@@ -19,7 +19,12 @@ export function detectLineSeparator(content: string): LineSeparator {
 
 export interface EditorBuffer {
   path: string;
-  /** Current editor text, with the file's own line endings. */
+  /**
+   * The text handed to the editor when it (re)creates its state: what was
+   * loaded or last saved, or the unsaved text of an editor that was torn down.
+   * It is NOT kept up to date while typing; the live text is in the editor and
+   * is read through `bufferText` / `snapshotBuffer` when someone needs it.
+   */
   content: string;
   /** Text as last loaded from or written to disk. */
   saved: string;
@@ -27,6 +32,7 @@ export interface EditorBuffer {
   lineSeparator: LineSeparator;
   /** sha256 of `saved` as reported by the backend. */
   hash: string;
+  /** Reported by the editor from its own change tracking (document differs from the saved one). */
   dirty: boolean;
   /** Set when `files_changed` touched this path while the buffer is clean or dirty. */
   external: "none" | "changed" | "deleted";
@@ -63,9 +69,12 @@ interface FilesState {
   setBuffer(session: SessionId, buffer: EditorBuffer): void;
   loadingBuffer(session: SessionId, path: string): void;
   bufferError(session: SessionId, path: string, error: string): void;
-  updateContent(session: SessionId, path: string, content: string): void;
-  /** `written` is the exact text the backend stored; edits made while the save was in flight stay dirty. */
-  markSaved(session: SessionId, path: string, hash: string, written: string): void;
+  /** The editor's document started or stopped differing from the saved text. */
+  setDirty(session: SessionId, path: string, dirty: boolean): void;
+  /** Keeps the unsaved text of an editor that is going away, for the next one to pick up. */
+  stashContent(session: SessionId, path: string, content: string): void;
+  /** `written` is the exact text the backend stored; `dirty` says whether the editor has moved on since it was read. */
+  markSaved(session: SessionId, path: string, hash: string, written: string, dirty: boolean): void;
   markExternal(session: SessionId, paths: string[], kind: "changed" | "deleted"): void;
   clearExternal(session: SessionId, path: string): void;
   closeBuffer(session: SessionId, path: string): void;
@@ -142,22 +151,27 @@ export const useFiles = create<FilesState>((set, get) => ({
       if (!existing) return {};
       return { buffers: { ...s.buffers, [session]: { ...s.buffers[session], [path]: { ...existing, loading: false, error } } } };
     }),
-  updateContent: (session, path, content) =>
+  setDirty: (session, path, dirty) =>
     set((s) => {
       const existing = s.buffers[session]?.[path];
-      if (!existing || existing.content === content) return {};
-      return {
-        buffers: { ...s.buffers, [session]: { ...s.buffers[session], [path]: { ...existing, content, dirty: content !== existing.saved } } },
-      };
+      // Returning the state itself tells zustand nothing changed: no subscriber is notified.
+      if (!existing || existing.dirty === dirty) return s;
+      return { buffers: { ...s.buffers, [session]: { ...s.buffers[session], [path]: { ...existing, dirty } } } };
     }),
-  markSaved: (session, path, hash, written) =>
+  stashContent: (session, path, content) =>
+    set((s) => {
+      const existing = s.buffers[session]?.[path];
+      if (!existing || existing.content === content) return s;
+      return { buffers: { ...s.buffers, [session]: { ...s.buffers[session], [path]: { ...existing, content } } } };
+    }),
+  markSaved: (session, path, hash, written, dirty) =>
     set((s) => {
       const existing = s.buffers[session]?.[path];
       if (!existing) return {};
       return {
         buffers: {
           ...s.buffers,
-          [session]: { ...s.buffers[session], [path]: { ...existing, saved: written, hash, dirty: existing.content !== written, external: "none" } },
+          [session]: { ...s.buffers[session], [path]: { ...existing, content: written, saved: written, hash, dirty, external: "none" } },
         },
       };
     }),
@@ -194,7 +208,8 @@ export const useFiles = create<FilesState>((set, get) => ({
       const b = bufs[from];
       if (!b) return {};
       delete bufs[from];
-      bufs[to] = { ...b, path: to };
+      // The editor at the old path closes with the rename; its text moves along.
+      bufs[to] = { ...b, path: to, content: liveSnapshot(session, from)?.text ?? b.content };
       return { buffers: { ...s.buffers, [session]: bufs } };
     }),
   setIndex: (session, index) =>
@@ -221,6 +236,49 @@ export const useFiles = create<FilesState>((set, get) => ({
       };
     }),
 }));
+
+// ---- live editor text ----
+// The store does not mirror the editor's text. An open editor registers a
+// source here; consumers that need the text (save, run, rename) ask for a
+// snapshot, which is the only time the document is serialised.
+
+export interface TextSnapshot {
+  text: string;
+  /**
+   * Tells the editor this snapshot is now what is on disk. Returns whether the
+   * editor's document differs from it (text typed while the save was in flight).
+   */
+  markSaved(): boolean;
+}
+
+/** Returns null while the editor does not hold the buffer's text (still loading or reloading). */
+export type TextSource = () => TextSnapshot | null;
+
+const textSources = new Map<string, TextSource>();
+const sourceKey = (session: SessionId, path: string) => `${session}\n${path}`;
+
+export function registerTextSource(session: SessionId, path: string, source: TextSource): () => void {
+  const key = sourceKey(session, path);
+  textSources.set(key, source);
+  return () => {
+    if (textSources.get(key) === source) textSources.delete(key);
+  };
+}
+
+function liveSnapshot(session: SessionId, path: string): TextSnapshot | null {
+  return textSources.get(sourceKey(session, path))?.() ?? null;
+}
+
+/** The buffer's current text: from the open editor, else what the store holds. Null without a buffer. */
+export function snapshotBuffer(session: SessionId, path: string): TextSnapshot | null {
+  const buffer = useFiles.getState().buffers[session]?.[path];
+  if (!buffer) return null;
+  return liveSnapshot(session, path) ?? { text: buffer.content, markSaved: () => false };
+}
+
+export function bufferText(session: SessionId, path: string): string | null {
+  return snapshotBuffer(session, path)?.text ?? null;
+}
 
 export function dirtyPaths(session: SessionId): string[] {
   return Object.values(useFiles.getState().buffers[session] ?? {})

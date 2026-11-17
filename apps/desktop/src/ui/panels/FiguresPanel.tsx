@@ -1,6 +1,8 @@
-import { useMemo } from "react";
-import type { FigureGroup, FigureView, RunId, SessionId } from "../../ipc";
-import { useFigureData } from "../../state/figureCache";
+import { useMemo, useState } from "react";
+import type { FigureGroup, FigureView, RunId, RunView, SessionId } from "../../ipc";
+import { useFigureSrc } from "../../state/figureCache";
+import { groupFigures } from "../../state/figures";
+import type { FigureEntry } from "../../state/figures";
 import { useChat } from "../../state/chat";
 import { useRuns } from "../../state/runs";
 import type { FigureSelection } from "../../state/runs";
@@ -11,16 +13,54 @@ import { focusChatInput } from "../workbench/controller";
 const NO_GROUPS: FigureGroup[] = [];
 const NO_PINS: FigureSelection[] = [];
 
-function FigureFrame({ session, figure, label }: { session: SessionId; figure: FigureView; label: string }) {
-  const data = useFigureData(session, figure.path);
+function FigureImage({ session, file, alt }: { session: SessionId; file: FigureView; alt: string }) {
+  const src = useFigureSrc(session, file);
+  if (!src) return <div className="empty">Loading…</div>;
+  if (file.format === "pdf") {
+    return (
+      <object data={src} type="application/pdf" aria-label={alt}>
+        <div className="empty">This figure is a PDF and cannot be previewed here.</div>
+      </object>
+    );
+  }
+  return <img src={src} alt={alt} decoding="async" />;
+}
+
+/** One figure: the PNG (or the best format there is), with the other formats one click away in the caption row. */
+function FigureFrame({ session, entry, label }: { session: SessionId; entry: FigureEntry; label: string }) {
+  const [format, setFormat] = useState<FigureView["format"] | null>(null);
+  const file = entry.formats.find((f) => f.format === format) ?? entry.primary;
+  const meta = entry.primary;
   return (
     <div className="figure-frame" data-testid="figure-frame">
-      {data ? <img src={data} alt={figure.sidecar?.title ?? figure.name} /> : <div className="empty">Loading…</div>}
-      <div className="figure-caption truncate">
-        {label} · {figure.sidecar?.script ?? figure.script} {shortArgs(figure.sidecar?.args ?? [])}
+      <FigureImage session={session} file={file} alt={meta.sidecar?.title ?? entry.name} />
+      <div className="figure-caption">
+        <span className="truncate grow">
+          {label} · {meta.sidecar?.script ?? meta.script} {shortArgs(meta.sidecar?.args ?? [])}
+        </span>
+        {entry.formats.length > 1
+          ? entry.formats.map((f) => (
+              <button
+                key={f.format}
+                type="button"
+                className={`figure-format${f === file ? " active" : ""}`}
+                aria-pressed={f === file}
+                title={f.path}
+                onClick={() => setFormat(f.format)}
+                data-testid="figure-format"
+              >
+                {f.format}
+              </button>
+            ))
+          : null}
       </div>
     </div>
   );
+}
+
+interface RunFigures {
+  run: RunView;
+  entries: FigureEntry[];
 }
 
 export function FiguresPanel() {
@@ -31,32 +71,33 @@ export function FiguresPanel() {
   const pinned = useRuns((s) => (session ? (s.pinned[session] ?? NO_PINS) : NO_PINS));
   const compare = useRuns((s) => (session ? (s.compare[session] ?? null) : null));
 
-  // Figure names across runs, newest run first.
+  // One entry per figure and run (formats folded together), newest run first.
+  const runs = useMemo<RunFigures[]>(() => groups.map((g) => ({ run: g.run, entries: groupFigures(g.figures) })), [groups]);
+  // One tab per figure name across runs.
   const names = useMemo(() => {
     const seen: string[] = [];
-    for (const g of groups) for (const f of g.figures) if (!seen.includes(f.name)) seen.push(f.name);
+    for (const r of runs) for (const e of r.entries) if (!seen.includes(e.name)) seen.push(e.name);
     return seen;
-  }, [groups]);
+  }, [runs]);
 
   if (!session) return <div className="empty">No session</div>;
-  if (groups.length === 0) return <div className="empty">Figures appear here as runs produce them.</div>;
+  if (names.length === 0) return <div className="empty">Figures appear here as runs produce them.</div>;
 
   const name = active && names.includes(active.name) ? active.name : names[0];
-  const history = groups.filter((g) => g.figures.some((f) => f.name === name));
-  const selectedRun: RunId | null = active && history.some((g) => g.run.meta.run_id === active.run_id) ? active.run_id : (history[0]?.run.meta.run_id ?? null);
-  const current = history.find((g) => g.run.meta.run_id === selectedRun);
-  const figure = current?.figures.find((f) => f.name === name);
-  const compareGroup = compare ? history.find((g) => g.run.meta.run_id === compare && g.run.meta.run_id !== selectedRun) : undefined;
-  const compareFigure = compareGroup?.figures.find((f) => f.name === name);
-  const isPinned = figure ? pinned.some((p) => p.name === figure.name && p.run_id === figure.run_id) : false;
+  const entryOf = (r: RunFigures | undefined) => r?.entries.find((e) => e.name === name);
+  const history = runs.filter((r) => entryOf(r) !== undefined);
+  const selectedRun: RunId | null = active && history.some((r) => r.run.meta.run_id === active.run_id) ? active.run_id : (history[0]?.run.meta.run_id ?? null);
+  const figure = entryOf(history.find((r) => r.run.meta.run_id === selectedRun));
+  const compareFigure = compare ? entryOf(history.find((r) => r.run.meta.run_id === compare && r.run.meta.run_id !== selectedRun)) : undefined;
+  const isPinned = figure ? pinned.some((p) => p.name === figure.name && p.run_id === figure.primary.run_id) : false;
 
   const select = (n: string) => {
-    const latest = groups.find((g) => g.figures.some((f) => f.name === n));
+    const latest = runs.find((r) => r.entries.some((e) => e.name === n));
     if (latest) useRuns.getState().setActiveFigure(session, { name: n, run_id: latest.run.meta.run_id });
   };
   const sendToAgent = () => {
     if (!figure || !info) return;
-    useChat.getState().addAttachment(info.active_conversation, { kind: "figure", path: figure.path });
+    useChat.getState().addAttachment(info.active_conversation, { kind: "figure", path: figure.primary.path });
     focusChatInput();
   };
 
@@ -75,10 +116,10 @@ export function FiguresPanel() {
         <label className="row small muted">
           run
           <select aria-label="Figure run" value={selectedRun ?? ""} onChange={(e) => name && useRuns.getState().setActiveFigure(session, { name, run_id: e.target.value })}>
-            {history.map((g, i) => (
-              <option key={g.run.meta.run_id} value={g.run.meta.run_id}>
+            {history.map((r, i) => (
+              <option key={r.run.meta.run_id} value={r.run.meta.run_id}>
                 {i === 0 ? "latest · " : ""}
-                {formatTime(g.run.meta.started_at)} {shortArgs(g.run.meta.args)}
+                {formatTime(r.run.meta.started_at)} {shortArgs(r.run.meta.args)}
               </option>
             ))}
           </select>
@@ -88,15 +129,21 @@ export function FiguresPanel() {
           <select aria-label="Compare with run" value={compare ?? ""} onChange={(e) => useRuns.getState().setCompare(session, e.target.value || null)}>
             <option value="">none</option>
             {history
-              .filter((g) => g.run.meta.run_id !== selectedRun)
-              .map((g) => (
-                <option key={g.run.meta.run_id} value={g.run.meta.run_id}>
-                  {formatTime(g.run.meta.started_at)} {shortArgs(g.run.meta.args)}
+              .filter((r) => r.run.meta.run_id !== selectedRun)
+              .map((r) => (
+                <option key={r.run.meta.run_id} value={r.run.meta.run_id}>
+                  {formatTime(r.run.meta.started_at)} {shortArgs(r.run.meta.args)}
                 </option>
               ))}
           </select>
         </label>
-        <button type="button" className={`small${isPinned ? " primary" : ""}`} onClick={() => figure && useRuns.getState().togglePin(session, { name: figure.name, run_id: figure.run_id })} aria-pressed={isPinned} title="Keep this run selected when new runs arrive">
+        <button
+          type="button"
+          className={`small${isPinned ? " primary" : ""}`}
+          onClick={() => figure && useRuns.getState().togglePin(session, { name: figure.name, run_id: figure.primary.run_id })}
+          aria-pressed={isPinned}
+          title="Keep this run selected when new runs arrive"
+        >
           {isPinned ? "Pinned" : "Pin"}
         </button>
         <button type="button" className="small" onClick={sendToAgent} disabled={!figure}>
@@ -105,8 +152,8 @@ export function FiguresPanel() {
       </div>
       <div className="panel-body">
         <div className="figure-view">
-          {figure ? <FigureFrame session={session} figure={figure} label={formatTime(figure.created_at)} /> : null}
-          {compareFigure ? <FigureFrame session={session} figure={compareFigure} label={`compare · ${formatTime(compareFigure.created_at)}`} /> : null}
+          {figure ? <FigureFrame key={figure.primary.path} session={session} entry={figure} label={formatTime(figure.primary.created_at)} /> : null}
+          {compareFigure ? <FigureFrame key={compareFigure.primary.path} session={session} entry={compareFigure} label={`compare · ${formatTime(compareFigure.primary.created_at)}`} /> : null}
         </div>
       </div>
     </div>

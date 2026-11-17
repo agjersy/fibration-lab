@@ -940,11 +940,63 @@ table.grid tr.clickable:hover td {
   width: 100%;
 }
 .figure-caption {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 3px 8px;
   font-size: var(--font-size-small);
   color: #444;
   background: #f5f5f5;
   border-top: 1px solid var(--border);
+}
+
+.figure-caption .figure-format {
+  border: 1px solid #bbb;
+  background: transparent;
+  color: #444;
+  border-radius: 3px;
+  padding: 0 5px;
+  font-size: var(--font-size-small);
+  line-height: 1.5;
+}
+.figure-caption .figure-format.active {
+  background: #444;
+  border-color: #444;
+  color: #fff;
+}
+.figure-frame object {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
+/* ---- settings ---- */
+.policy-presets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+}
+.policy-preset {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.policy-preset.selected {
+  border-color: var(--accent);
+}
+.policy-preset input {
+  margin-top: 3px;
+}
+.settings-advanced > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  font-size: var(--font-size-small);
+  margin: 6px 0;
 }
 
 /* ---- equations ---- */
