@@ -41,3 +41,41 @@
 - Retrieval quality of the bundled embedding model on your real reference sets, versus FTS alone and versus an endpoint model if one becomes available.
 - Which open-weight models available on your internal servers meet the 128k + vision baseline, and how they score on the suite.
 - Gateway and open-weight server behavior on the same tasks (tool calling, document citations, caching, unknown-field handling) through the shared provider layer.
+
+## 4. Questions from the build
+
+Recorded while implementing phase 0 (BUILD-SPEC rule 10). Each lists what was built and what is left to confirm.
+
+### Deviations from the contracts (PROTOCOL.md was updated where noted)
+
+| Topic | What was built | Why |
+|---|---|---|
+| Vector search | Embeddings are stored as blobs in SQLite and searched by exact cosine similarity in Rust, not with the `sqlite-vec` extension | No native extension to ship on three platforms; exact search over a project's chunk counts takes milliseconds and is deterministic |
+| Test fonts | Liberation Sans, Carlito, and DejaVu Serif are vendored instead of Noto | Available offline under open licenses; metric-compatible with Arial and Calibri |
+| Sandbox placement | The macOS `sandbox-exec` profile and Linux `bwrap` wrappers live in the Python kernel (ported from Analyst's kernel); only the Windows AppContainer launcher is in the `wb-sandbox` crate | The kernel launches the sandboxed process, and Analyst's proven profile generator is Python |
+| Ids | Slide, element, reference, and snapshot id patterns are looser than first specified | The SDK emits ids such as `e-raw-1` and `e-ftr` |
+| Template description | Gains `default_table_style`, placeholder `anchor`, and per-level `mar_l` | Needed for native tables and text measurement |
+| Autofit | The SDK writes PowerPoint's shrink-to-fit scale into the file at save time | PowerPoint only recomputes it when text is edited, so generated files would otherwise overflow |
+| Hex colors | The slide schema accepts theme color names only; a literal color cannot be stored in a structured deck | Stronger than the planned `tpl.theme-colors` warning, which still applies to code-mode output |
+| Outline storage | An accepted outline is stored at `.present/outline.json` and shown to the agent in the project map | The contract did not say where it lives |
+| Transcript | Events gain `compaction` and `decision.modified`; `proposal` writes `targets` (reads `slides`) | Needed to replay a compacted conversation and to record accept-with-edits |
+| Evaluation fixtures | A fixture is `TEMPLATE` + `sources/` + optional `deck/`, `assets/`, `project.toml`, built into a fresh project by the harness | Avoids committing copied templates and pre-ingested references |
+| Proxy auto-configuration | System proxy settings are honored through environment variables, the Windows registry, and macOS system configuration; PAC scripts are not evaluated | Not supported by the HTTP library in use |
+| Combination charts | Bar-plus-line charts share one value axis; `axis: "secondary"` is accepted but not yet rendered | Not implemented yet |
+
+### Not verified in this environment
+
+- **Windows AppContainer sandbox.** The launcher type-checks for Windows targets but has not run on Windows. The isolation tests (BUILD-SPEC S1 a to e) run on the Windows CI job. Launch latency with a bundled runtime is unmeasured; the note in `docs/notes/sandbox-spike.md` explains the likely mitigation (a permanent read ACE on the runtime at install time).
+- **macOS `sandbox-exec`.** Ported and unit-tested for profile shape; the escape tests run on the macOS CI job.
+- **PowerPoint.** Both automation paths are tested with a mocked runner only. No exported file has been opened in PowerPoint; the phase 0 exit check needs a person with PowerPoint on Windows and macOS.
+- **ECMA-376 schema validation.** The checker validates when the XSDs are present under `vendor/ooxml-schemas`; they have not been fetched, pending confirmation that they may be redistributed.
+- **Embedding model.** No model could be downloaded here. The runner is tested against a tiny hand-built ONNX model; the candidate (`multilingual-e5-small`, int8 build) and its license, size, and quality are unconfirmed. Search works without it (full-text only).
+- **Real models.** Every agent test uses a scripted model. No run against Claude or an open-weight model has been made; six of the eight evaluation tasks need one.
+- **Runtime bundling.** `tools/bundle_runtime.py` (BUILD-SPEC W3) is not written yet; development uses the `uv` environment.
+
+### Decisions to confirm
+
+1. Diagram label size is capped at 24 pt even when the template's body text is larger; at the body size small diagrams looked oversized.
+2. In review mode the user is asked about every slide change; in auto mode a new slide is applied only when `scope_declare` announced new slides, otherwise the user is asked.
+3. Self-review (`slide_render` on every changed slide) is enforced with one reminder per turn, and only when the model has vision and a rendering engine exists.
+4. Evaluations run with edits, code, skill scripts, and exports all automatic, so `edits_within_scope` is the only signal for unwanted edits.

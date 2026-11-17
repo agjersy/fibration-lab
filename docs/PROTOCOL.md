@@ -496,6 +496,8 @@ Analyst PROTOCOL section 5 events, with `checkpoint.ref` replaced by `snapshot_i
   | { ts, type: "skill_loaded", skill: string }
   | { ts, type: "export", format: string, out: string, snapshot_id: string }
   | { ts, type: "summary", text: string, slides_changed: SlideId[], exports: string[] }
+  | { ts, type: "compaction", text: string, kept_messages: number }       // lets a compacted conversation replay to the same history
+  // `decision` gains `modified?: boolean` (accepted with the user's edits); `proposal` is written with `targets` (read as `slides` too)
 ```
 
 ### 6.3 Agent tools (phase 0 set)
@@ -595,7 +597,7 @@ Ids, default severities, and inputs. Severities are overridable in `[contract]`.
 CREATE TABLE refs (id TEXT PRIMARY KEY, version TEXT, kind TEXT, title TEXT, file TEXT, outline_json TEXT, status TEXT);
 CREATE TABLE chunks (rowid INTEGER PRIMARY KEY, ref_id TEXT, version TEXT, loc TEXT, heading_path TEXT, text TEXT);
 CREATE VIRTUAL TABLE chunks_fts USING fts5(text, heading_path, content='chunks', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2');
-CREATE VIRTUAL TABLE chunks_vec USING vec0(embedding float[<dims>]);   -- sqlite-vec, rowid = chunks.rowid
+CREATE TABLE chunks_vec (rowid INTEGER PRIMARY KEY, dims INTEGER NOT NULL, embedding BLOB NOT NULL);   -- unit-length little-endian f32; searched by exact cosine similarity in the core
 ```
 
 Chunking: 800 to 1200 characters on paragraph boundaries within a heading section, 150-character overlap, never across pages for PDFs. Only the current version of each reference is searchable; older versions stay resolvable for citations.
@@ -649,7 +651,7 @@ Same layout and harness as Analyst PROTOCOL section 8: `evals/tasks/<name>/task.
 | `checker_clean` | `max_warnings?` | no errors; warnings <= max |
 | `slide_count` | `min?`, `max?`, `exact?` | visible slides within range |
 | `layout_used` | `layout`, `min?` | layout used at least `min` times |
-| `uses_native` | `kind: "chart"|"table"|"diagram"`, `min?` | that many native elements exist in the export |
+| `uses_native` | `element: "chart"|"table"|"diagram"`, `min?` | that many native elements exist in the export |
 | `citation_coverage` | `min` (0..1) | factual paragraphs with citations / factual paragraphs >= min |
 | `numbers_verified` | `min` (0..1) | green or amber numbers / cited numbers >= min |
 | `text_matches` | `slide?`, `regex` | a slide's text (or any) matches |
@@ -659,3 +661,5 @@ Same layout and harness as Analyst PROTOCOL section 8: `evals/tasks/<name>/task.
 | `edits_within_scope` | — | only declared slides changed |
 
 `evals/fake_model_server.py` is reused from Analyst (OpenAI-compatible, stdlib only) with scripted plays for Present tasks.
+
+**Fixture layout.** `fixture/TEMPLATE` holds the path of a template under `evals/templates` (for example `corp/corp.potx`); `fixture/sources/` holds files the harness adds as references; `fixture/deck/` is an optional starting deck (its `template` field is rewritten); `fixture/assets/` and `fixture/project.toml` are copied when present. The harness builds a fresh project from these for every run.
