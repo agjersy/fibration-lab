@@ -234,6 +234,9 @@ def child_env(spec: SandboxSpec, extra: dict[str, str]) -> dict[str, str]:
                 "TEMP": str(spec.scratch), "TMP": str(spec.scratch), "MPLCONFIGDIR": str(spec.scratch / "mpl"),
                 "MPLBACKEND": "Agg", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8",
                 "PRESENT_RLIMIT_AS": str(spec.memory)})  # fmt: skip
+    # Text measurement inside the sandbox must see the same fonts as the kernel does.
+    if os.environ.get("PRESENT_FONT_DIRS"):
+        env["PRESENT_FONT_DIRS"] = os.environ["PRESENT_FONT_DIRS"]
     env.update(extra)
     return env
 

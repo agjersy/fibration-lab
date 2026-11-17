@@ -35,7 +35,9 @@ def _hello(kernel) -> dict[str, Any]:
 
 def _spec(kernel, scratch: Path, extra_ro: list[Path] | None = None) -> sb.SandboxSpec:
     project = kernel.project
-    ro = [*sb.interpreter_dirs(Path(sys.executable)), *sb.code_dirs(),
+    from present_sdk.fonts import system_font_dirs
+
+    ro = [*sb.interpreter_dirs(Path(sys.executable)), *sb.code_dirs(), *system_font_dirs(),
           project / "template", project / "assets", project / "deck", project / "references",
           project / ".present" / "cache" / "refs", *(extra_ro or [])]  # fmt: skip
     return sb.SandboxSpec(cwd=scratch, scratch=scratch, read_only=ro)
