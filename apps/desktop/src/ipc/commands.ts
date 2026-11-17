@@ -31,6 +31,7 @@ import type {
   TargetInfo,
   TaskId,
   TerminalId,
+  TerminalOpened,
   TranscriptEvent,
   TurnId,
   WriteResult,
@@ -62,7 +63,7 @@ export interface Commands {
   fs_search: { args: S & { pattern: string; glob?: string; max_results?: number }; result: SearchHit[] };
   index_get: { args: S; result: IndexResult };
   check_run: { args: S & { paths?: string[] }; result: Diagnostic[] };
-  run_start: { args: S & { script: string; args: string[]; network?: boolean }; result: RunView };
+  run_start: { args: S & { script: string; args: string[] }; result: RunView };
   run_cancel: { args: S & { run_id: RunId }; result: null };
   runs_list: { args: S & { limit?: number }; result: RunView[] };
   run_get: { args: S & { run_id: RunId }; result: RunDetail };
@@ -88,7 +89,7 @@ export interface Commands {
   model_probe: { args: { model: string }; result: ModelEntry };
   targets_list: { args: Record<string, never>; result: TargetInfo[] };
   target_bootstrap: { args: { target: string }; result: TaskId };
-  terminal_open: { args: S & { cols: number; rows: number }; result: TerminalId };
+  terminal_open: { args: S & { cols: number; rows: number }; result: TerminalOpened };
   terminal_write: { args: { terminal_id: TerminalId; data: string }; result: null };
   terminal_resize: { args: { terminal_id: TerminalId; cols: number; rows: number }; result: null };
   terminal_close: { args: { terminal_id: TerminalId }; result: null };

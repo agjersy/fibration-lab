@@ -193,7 +193,10 @@ describe("MockBackend", () => {
     const b = fast();
     const { info, events } = await session(b);
     await waitFor(() => events.find((e) => e.type === "kernel_state" && e.state === "ready"));
-    const id = await b.invoke("terminal_open", { session: info.id, cols: 80, rows: 24 });
+    const opened = await b.invoke("terminal_open", { session: info.id, cols: 80, rows: 24 });
+    // The result says whether the shell is off the network; a local one is.
+    expect(opened).toMatchObject({ network_isolated: true, network_isolation: "bwrap", network_isolation_note: null });
+    const id = opened.terminal_id;
     const text = () =>
       events
         .filter((e) => e.type === "terminal_data" && e.terminal_id === id)

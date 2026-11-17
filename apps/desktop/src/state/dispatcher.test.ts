@@ -33,8 +33,9 @@ function info(): SessionInfo {
     created_at: "",
     last_opened_at: "",
     open: true,
-    policy: { edits: "review", runs: "auto", packages: "ask", shell: "ask", network: "deny", git: "ask", protected: [], max_steps: 10 },
+    policy: { edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask", protected: [], max_steps: 10 },
     kernel: "ready",
+    kernel_network_isolation: "bwrap",
     sandbox: null,
     python_abs: null,
     conversations: [{ id: C, title: "c", model: null, mode: "build", created_at: "", turns: 0, busy: false }],
@@ -168,14 +169,14 @@ describe("applyEvent", () => {
     const detach = attachTerminalSink("t1", (d) => got.push(d));
     applyEvent(S, { type: "terminal_data", terminal_id: "t1", data: "late" });
     expect(got).toEqual(["early", "late"]);
-    useTerminals.getState().add(S, "t1");
+    useTerminals.getState().add(S, "t1", { isolated: true, kind: "bwrap", note: null });
     applyEvent(S, { type: "terminal_exit", terminal_id: "t1", code: 0 });
     expect(useTerminals.getState().terminals[S]![0]!.exit).toBe(0);
     detach();
   });
 
   it("updates kernel state, tasks and session info", () => {
-    applyEvent(S, { type: "kernel_state", state: "starting", message: null });
+    applyEvent(S, { type: "kernel_state", state: "starting", message: null, network_isolation: null });
     expect(useSessions.getState().kernel[S]).toEqual({ state: "starting", message: null });
     applyEvent(S, { type: "task_log", task_id: "k", line: "one" });
     applyEvent(S, { type: "task_done", task_id: "k", ok: true, message: null });

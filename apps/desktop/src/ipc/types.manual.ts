@@ -173,7 +173,6 @@ export interface PolicyView {
   runs: "auto" | "ask";
   packages: "ask" | "auto" | "deny";
   shell: "ask" | "auto" | "deny";
-  network: "deny" | "ask" | "allow";
   git: "ask" | "auto" | "deny";
   protected: string[];
   max_steps: number;
@@ -192,6 +191,8 @@ export interface ConversationSummary {
 export interface SessionInfo extends SessionSummary {
   policy: PolicyView;
   kernel: KernelState;
+  /** How the kernel process is kept off the network: "bwrap", "sandbox-exec", "none"; null before a start. */
+  kernel_network_isolation: string | null;
   sandbox: string | null;
   python_abs: string | null;
   conversations: ConversationSummary[];
@@ -319,6 +320,15 @@ export interface ProposalView {
   reason: "review" | "ask" | "out_of_scope" | "protected";
 }
 
+/** Result of `terminal_open` (IPC.md section 7): the id, and whether the shell is off the network. */
+export interface TerminalOpened {
+  terminal_id: TerminalId;
+  network_isolated: boolean;
+  /** "bwrap", "sandbox-exec" or "none". */
+  network_isolation: string;
+  network_isolation_note: string | null;
+}
+
 /** One row of `provider_keys_status` (IPC.md section 7). `source` is "env", "stored" or null. */
 export interface ProviderKeyStatus {
   provider: string;
@@ -377,7 +387,7 @@ export type SessionEvent =
   | { type: "index_changed" }
   | { type: "terminal_data"; terminal_id: TerminalId; data: string }
   | { type: "terminal_exit"; terminal_id: TerminalId; code: number | null }
-  | { type: "kernel_state"; state: KernelState; message: string | null }
+  | { type: "kernel_state"; state: KernelState; message: string | null; network_isolation: string | null }
   | { type: "packages_changed" }
   | { type: "task_log"; task_id: TaskId; line: string }
   | { type: "task_done"; task_id: TaskId; ok: boolean; message: string | null }
