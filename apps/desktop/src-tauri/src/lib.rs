@@ -71,6 +71,47 @@ pub fn workbench_from_env() -> Arc<Workbench> {
     Arc::new(workbench)
 }
 
+/// Use the runtime an installer placed in the app's resources: the Python interpreter named
+/// by `runtime/runtime.json` and the sandbox launcher next to it. Settings made through the
+/// environment win. Returns whether a bundled runtime was found.
+pub fn apply_bundled_runtime(workbench: &Workbench, resources: &std::path::Path) -> bool {
+    let runtime = resources.join("runtime");
+    let Some(interpreter) = std::fs::read(runtime.join("runtime.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|m| m["interpreter"].as_str().map(str::to_string))
+    else {
+        return false;
+    };
+    let python = runtime.join(interpreter);
+    if !python.is_file() {
+        tracing::warn!(
+            "the bundled runtime names {} but it is missing",
+            python.display()
+        );
+        return false;
+    }
+    let mut options = workbench.options.lock().unwrap_or_else(|e| e.into_inner());
+    if options.runtime_python.is_none() {
+        options.runtime_python = Some(python.to_string_lossy().into_owned());
+    }
+    let helper = resources.join(if cfg!(windows) {
+        "present-sandbox.exe"
+    } else {
+        "present-sandbox"
+    });
+    let key = "PRESENT_SANDBOX_HELPER";
+    if helper.is_file()
+        && std::env::var_os(key).is_none()
+        && !options.kernel_env.iter().any(|(k, _)| k == key)
+    {
+        options
+            .kernel_env
+            .push((key.into(), helper.to_string_lossy().into_owned()));
+    }
+    true
+}
+
 /// The command names registered in `generate_handler!`, kept in one place so a test can check
 /// them against docs/IPC.md section 4.
 pub const COMMANDS: &[&str] = &[
@@ -142,9 +183,21 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
     use commands::*;
     let state = AppState::new(workbench.clone());
     let shutdown_wb = workbench.clone();
+    let setup_wb = workbench.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        .setup(move |app| {
+            match app.path().resource_dir() {
+                Ok(dir) => {
+                    if apply_bundled_runtime(&setup_wb, &dir) {
+                        tracing::info!("using the bundled runtime in {}", dir.display());
+                    }
+                }
+                Err(e) => tracing::warn!("no resource directory: {e}"),
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let label = window.label().to_string();
@@ -267,6 +320,47 @@ mod tests {
         let registered: BTreeSet<String> = COMMANDS.iter().map(|c| c.to_string()).collect();
         assert_eq!(registered.len(), COMMANDS.len(), "duplicate command names");
         assert_eq!(registered, documented());
+    }
+
+    #[test]
+    fn a_bundled_runtime_is_used_unless_the_environment_says_otherwise() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resources = tmp.path().join("res");
+        let wb = present_core::service::Workbench::new(&tmp.path().join("home"));
+        assert!(!super::apply_bundled_runtime(&wb, &resources));
+
+        let runtime = resources.join("runtime");
+        std::fs::create_dir_all(runtime.join("bin")).unwrap();
+        std::fs::write(
+            runtime.join("runtime.json"),
+            r#"{"interpreter": "bin/python3"}"#,
+        )
+        .unwrap();
+        // The manifest alone is not enough: the interpreter must exist.
+        assert!(!super::apply_bundled_runtime(&wb, &resources));
+        std::fs::write(runtime.join("bin/python3"), b"").unwrap();
+        let helper = if cfg!(windows) {
+            "present-sandbox.exe"
+        } else {
+            "present-sandbox"
+        };
+        std::fs::write(resources.join(helper), b"").unwrap();
+        assert!(super::apply_bundled_runtime(&wb, &resources));
+        {
+            let options = wb.options.lock().unwrap();
+            assert!(options
+                .runtime_python
+                .as_deref()
+                .unwrap()
+                .ends_with("python3"));
+            assert_eq!(options.kernel_env.len(), 1);
+        }
+        // An interpreter chosen earlier (PRESENT_PYTHON) is kept, and nothing is added twice.
+        wb.options.lock().unwrap().runtime_python = Some("/custom/python".into());
+        assert!(super::apply_bundled_runtime(&wb, &resources));
+        let options = wb.options.lock().unwrap();
+        assert_eq!(options.runtime_python.as_deref(), Some("/custom/python"));
+        assert_eq!(options.kernel_env.len(), 1);
     }
 
     #[test]

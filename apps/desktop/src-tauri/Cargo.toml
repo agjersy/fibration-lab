@@ -30,6 +30,9 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [features]
 # Enabled by `tauri build`: embeds the frontend from `frontendDist`.
 custom-protocol = ["tauri/custom-protocol"]
