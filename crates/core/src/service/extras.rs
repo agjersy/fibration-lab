@@ -98,7 +98,62 @@ impl Workbench {
     }
 }
 
+impl Workbench {
+    /// Close every open project (app exit).
+    pub async fn shutdown(&self) {
+        let ids: Vec<String> = self
+            .open
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        for id in ids {
+            let _ = self.project_close(&id).await;
+        }
+    }
+}
+
 impl ProjectRuntime {
+    /// Write a policy change into the project's `project.toml` so it outlives the session.
+    /// The file is rewritten from its parsed form: values are kept, comments are not.
+    pub fn persist_policy(&self, patch: &PolicyPatch) -> R<()> {
+        let path = self.ws.project.root.join(".present").join("project.toml");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(err(IpcErrorCode::Io, e)),
+        };
+        let mut doc: toml::Table = text
+            .parse()
+            .map_err(|e| IpcError::invalid(format!("project.toml: {e}")))?;
+        let policy = doc
+            .entry("policy")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| IpcError::invalid("project.toml: [policy] is not a table"))?;
+        for (key, value) in [
+            ("edits", &patch.edits),
+            ("code", &patch.code),
+            ("skills_scripts", &patch.skills_scripts),
+            ("code_mode", &patch.code_mode),
+            ("export", &patch.export),
+        ] {
+            if let Some(v) = value {
+                policy.insert(key.into(), toml::Value::String(v.clone()));
+            }
+        }
+        if let Some(n) = patch.max_steps {
+            policy.insert("max_steps".into(), toml::Value::Integer(i64::from(n)));
+        }
+        let updated =
+            toml::to_string_pretty(&doc).map_err(|e| IpcError::internal(e.to_string()))?;
+        // Refuse values the configuration does not accept before anything is written.
+        toml::from_str::<present_protocol::config::ProjectConfig>(&updated)
+            .map_err(|e| IpcError::invalid(format!("not a valid policy: {e}")))?;
+        write_atomic(&path, updated.as_bytes()).map_err(|e| err(IpcErrorCode::Io, e))
+    }
+
     /// One small image per template layout, for the layout picker.
     pub async fn template_thumbnails(&self) -> R<Vec<LayoutThumbnail>> {
         let deck = self.ws.deck().read_deck()?;

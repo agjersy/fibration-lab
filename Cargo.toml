@@ -9,6 +9,7 @@ members = [
     "crates/protocol",
     "crates/core",
     "crates/cli",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
@@ -46,3 +47,6 @@ ts-rs = { version = "12", features = ["serde-compat"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 zstd = "0.13"
 rand = "0.8"
+tauri = "2"
+tauri-build = "2"
+tauri-plugin-dialog = "2"

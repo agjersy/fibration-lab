@@ -11,3 +11,10 @@ tools/.cache/
 vendor/ooxml-schemas/
 vendor/models/
 .DS_Store
+playwright-report/
+test-results/
+apps/desktop/e2e/screenshots/
+*.tsbuildinfo
+apps/desktop/dist/
+apps/desktop/src-tauri/gen/
+node_modules/

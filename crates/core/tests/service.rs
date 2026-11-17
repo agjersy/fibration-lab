@@ -590,6 +590,30 @@ async fn assets_previews_analyst_imports_and_template_replacement() {
     .await;
     assert!(!refused);
 
+    // A persisted policy change survives; an invalid one is refused and writes nothing.
+    use present_protocol::ui::PolicyPatch;
+    let patch = PolicyPatch {
+        edits: Some("auto".into()),
+        max_steps: Some(12),
+        ..Default::default()
+    };
+    rt.persist_policy(&patch).unwrap();
+    let view = rt.set_policy(PolicyPatch::default());
+    assert_eq!((view.edits.as_str(), view.max_steps), ("auto", 12));
+    let invalid = PolicyPatch {
+        code: Some("whenever".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        rt.persist_policy(&invalid).unwrap_err().code,
+        IpcErrorCode::Invalid
+    );
+    let saved = std::fs::read_to_string(tmp.join("p/.present/project.toml")).unwrap();
+    assert!(
+        saved.contains("max_steps = 12") && !saved.contains("whenever"),
+        "{saved}"
+    );
+
     // Keys: unknown providers are reported, nothing is stored.
     assert_eq!(
         rig.wb.provider_set_key("nope", "sk-x").unwrap_err().code,
