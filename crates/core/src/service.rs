@@ -1452,7 +1452,9 @@ impl ProjectRuntime {
             .ok_or_else(|| IpcError::internal("restored snapshot not found"))
     }
 
-    pub fn history_restore(self: &Arc<Self>, snapshot_id: &str) -> R<SnapshotView> {
+    pub async fn history_restore(self: &Arc<Self>, snapshot_id: &str) -> R<SnapshotView> {
+        // Not while a check or render is reading the deck files.
+        let _scratch = self.ws.scratch_lock.lock().await;
         let id = self
             .ws
             .snapshots()
@@ -1465,7 +1467,8 @@ impl ProjectRuntime {
         self.after_restore(id)
     }
 
-    pub fn history_revert_turn(self: &Arc<Self>, turn: &str) -> R<SnapshotView> {
+    pub async fn history_revert_turn(self: &Arc<Self>, turn: &str) -> R<SnapshotView> {
+        let _scratch = self.ws.scratch_lock.lock().await;
         let id = self
             .ws
             .snapshots()

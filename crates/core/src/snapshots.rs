@@ -182,7 +182,7 @@ impl SnapshotStore {
                 let rel = crate::util::rel_slash(&self.project, entry.path());
                 let managed = rel.ends_with(".json") || rel.ends_with(".py");
                 if managed && !wanted.contains(rel.as_str()) {
-                    std::fs::remove_file(entry.path())?;
+                    crate::util::remove_file_patiently(entry.path())?;
                 }
             }
         }

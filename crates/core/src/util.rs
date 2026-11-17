@@ -35,8 +35,44 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(bytes)?;
     tmp.flush()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    // On Windows a file another process has open for reading cannot be replaced; readers
+    // (the kernel, a virus scanner) hold files only briefly, so wait for them.
+    let mut attempt = 0;
+    loop {
+        match tmp.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(e) if attempt < BUSY_RETRIES && is_busy(&e.error) => {
+                attempt += 1;
+                std::thread::sleep(BUSY_WAIT);
+                tmp = e.file;
+            }
+            Err(e) => return Err(e.error),
+        }
+    }
+}
+
+const BUSY_RETRIES: u32 = 20;
+const BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A sharing violation or a transient denial while another process has the file open.
+fn is_busy(e: &std::io::Error) -> bool {
+    cfg!(windows)
+        && (e.kind() == std::io::ErrorKind::PermissionDenied
+            || matches!(e.raw_os_error(), Some(32 | 33)))
+}
+
+/// Remove a file, waiting briefly when another process has it open (Windows).
+pub fn remove_file_patiently(path: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_file(path) {
+            Err(e) if attempt < BUSY_RETRIES && is_busy(&e) => {
+                attempt += 1;
+                std::thread::sleep(BUSY_WAIT);
+            }
+            other => return other,
+        }
+    }
 }
 
 /// Pretty JSON with a trailing newline, the on-disk form of deck documents.

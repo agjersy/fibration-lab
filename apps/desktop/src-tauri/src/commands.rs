@@ -415,7 +415,7 @@ pub async fn history_restore(
     project: String,
     snapshot_id: String,
 ) -> R<SnapshotView> {
-    rt_of(&state, &project)?.history_restore(&snapshot_id)
+    rt_of(&state, &project)?.history_restore(&snapshot_id).await
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -424,7 +424,7 @@ pub async fn history_revert_turn(
     project: String,
     turn: String,
 ) -> R<SnapshotView> {
-    rt_of(&state, &project)?.history_revert_turn(&turn)
+    rt_of(&state, &project)?.history_revert_turn(&turn).await
 }
 
 // ---- exports ----

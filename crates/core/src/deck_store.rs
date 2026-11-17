@@ -192,7 +192,7 @@ impl DeckStore {
             return Err(DeckError::NotFound(id.to_string()));
         }
         self.write_deck(&deck)?;
-        let _ = std::fs::remove_file(self.slide_path(id));
+        let _ = crate::util::remove_file_patiently(&self.slide_path(id));
         Ok(())
     }
 

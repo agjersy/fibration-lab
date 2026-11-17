@@ -315,7 +315,7 @@ async fn a_turn_streams_events_and_waits_for_the_users_decision() {
         history.iter().any(|s| s.turn.as_deref() == Some("main-1")),
         "{history:?}"
     );
-    rt.history_revert_turn("main-1").unwrap();
+    rt.history_revert_turn("main-1").await.unwrap();
     assert_eq!(rt.deck_get().unwrap().slides.len(), 0);
 
     // The transcript is readable and the conversation is free again.
