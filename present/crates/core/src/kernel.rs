@@ -119,29 +119,6 @@ pub fn resolve_runtime_python(home: &Path, configured: Option<&str>) -> Option<P
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// `bwrap --bind / /` mounts the file system without device access, so the kernel could not
-/// open `/dev/null` (which every `subprocess.DEVNULL` does). Bind `/` with its devices
-/// instead; the network stays unshared. This changes nothing once the shared wrapper binds
-/// devices itself, and nothing for the other isolation kinds.
-fn keep_devices(mut wrapped: no_network::Wrapped) -> no_network::Wrapped {
-    if wrapped.isolation == NetIsolation::Bubblewrap {
-        let end = wrapped
-            .argv
-            .iter()
-            .position(|a| a == "--")
-            .unwrap_or(wrapped.argv.len());
-        for i in 0..end.saturating_sub(2) {
-            if wrapped.argv[i] == "--bind"
-                && wrapped.argv[i + 1] == "/"
-                && wrapped.argv[i + 2] == "/"
-            {
-                wrapped.argv[i] = "--dev-bind".into();
-            }
-        }
-    }
-    wrapped
-}
-
 impl KernelClient {
     /// Spawn the kernel and complete `kernel.hello`.
     ///
@@ -168,7 +145,7 @@ impl KernelClient {
         .into_iter()
         .map(OsStr::to_os_string)
         .collect();
-        let wrapped = keep_devices(no_network::wrap(argv));
+        let wrapped = no_network::wrap(argv);
         if let NetIsolation::None(why) = &wrapped.isolation {
             tracing::warn!(reason = %why, "the deck kernel is running without network isolation");
         }
@@ -298,35 +275,5 @@ impl KernelClient {
         if let Some(mut child) = self.inner.child.lock().await.take() {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_wrapper_keeps_devices_and_only_touches_its_own_arguments() {
-        let argv = |w: &no_network::Wrapped| -> Vec<String> {
-            w.argv
-                .iter()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect()
-        };
-        // A kernel argument that looks like the wrapper's own is left alone.
-        let command = ["python", "--bind", "/", "/"];
-        let w = keep_devices(no_network::wrap_with(&NetIsolation::Bubblewrap, command));
-        let a = argv(&w);
-        let split = a.iter().position(|x| x == "--").unwrap();
-        assert!(a[..split].contains(&"--unshare-net".to_string()));
-        assert!(!a[..split].contains(&"--bind".to_string()));
-        assert!(a[..split].contains(&"--dev-bind".to_string()));
-        assert_eq!(a[split + 1..], command);
-
-        let none = NetIsolation::None("why".into());
-        let w = keep_devices(no_network::wrap_with(&none, command));
-        assert_eq!(argv(&w), command);
-        let w = keep_devices(no_network::wrap_with(&NetIsolation::SandboxExec, command));
-        assert_eq!(argv(&w)[3..], command);
     }
 }
