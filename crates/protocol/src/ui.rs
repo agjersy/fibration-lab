@@ -403,6 +403,11 @@ pub struct FigureView {
     pub sidecar: Option<FigureSidecar>,
     pub created_at: String,
     pub size: u64,
+    /// Absolute local path of the image file when it exists on this machine; the renderer
+    /// loads it through the webview's asset protocol instead of `figure_data`. Null when the
+    /// file has not been pulled from a remote target yet.
+    #[serde(default)]
+    pub file_abs: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
