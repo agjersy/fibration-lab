@@ -1,5 +1,7 @@
 name: ci
 
+# One pipeline for the merged repository. Linux and macOS are the supported platforms;
+# Windows is parked (its code stays in the tree and is not gated here).
 on:
   push:
   pull_request:
@@ -8,117 +10,173 @@ jobs:
   rust:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
       - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Kernel environments (core integration tests drive the real kernels)
+        run: |
+          (cd python/kernel && uv sync)
+          (cd present/python/kernel && uv sync)
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # The desktop shells need a system WebView toolkit on Linux; they have their own job.
+      - run: cargo clippy --workspace --exclude analyst-desktop --exclude present-desktop --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude analyst-desktop --exclude present-desktop
+        env:
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
 
-  kernel:
+  python:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        project: [python/kernel, present/python/sdk, present/python/kernel]
     defaults:
       run:
-        working-directory: python/kernel
+        working-directory: ${{ matrix.project }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - name: Install LibreOffice and bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run pytest -q
+        env:
+          PRESENT_TEST_ARTIFACTS: ${{ runner.temp }}/present-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.project == 'present/python/kernel' && runner.os == 'Linux'
+        with:
+          name: rendered-diagrams
+          path: ${{ runner.temp }}/present-artifacts
+          if-no-files-found: ignore
 
-  loop-smoke:
+  frontend:
     runs-on: ubuntu-latest
-    needs: [rust, kernel]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Shared UI package
+        working-directory: packages/wb-ui
+        run: pnpm typecheck && pnpm lint && pnpm test
+      - name: Analysis workbench renderer
+        working-directory: apps/desktop
+        run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
+      - name: Deck workbench renderer
+        working-directory: present/apps/desktop
+        run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
+      - name: Browser tests against the mock backends
+        run: |
+          pnpm --dir apps/desktop exec playwright install --with-deps chromium
+          pnpm --dir apps/desktop test:e2e -- --trace off
+          pnpm --dir present/apps/desktop test:e2e -- --trace off
+
+  desktop:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: WebView build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libsoup-3.0-dev libxdo-dev patchelf
+      - run: cargo clippy -p analyst-desktop -p present-desktop --all-targets -- -D warnings
+      - run: cargo test -p analyst-desktop -p present-desktop
+      - run: cargo build -p analyst-desktop -p present-desktop
+
+  loop:
+    runs-on: ${{ matrix.os }}
+    needs: [rust, python]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
-      - run: cd python/kernel && uv sync
-      - run: cargo build -p analyst-cli
-      - name: Drive the agent loop with the scripted model server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install LibreOffice and bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap
+      - run: |
+          (cd python/kernel && uv sync)
+          (cd present/python/kernel && uv sync)
+      - run: cargo build -p analyst-cli -p present-cli -p wb-sandbox
+      - name: Analysis loop against the scripted model server
+        shell: bash
         env:
           ANALYST_HOME: ${{ runner.temp }}/analyst-home
         run: |
           mkdir -p "$ANALYST_HOME"
           printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8765/v1"\n' > "$ANALYST_HOME/config.toml"
           python3 evals/fake_model_server.py --port 8765 &
+          server=$!
           sleep 1
           ./target/debug/analyst eval run --model fake/scripted --tasks evals/tasks --task parameter-sweep --auto --results "$ANALYST_HOME/results"
           ./target/debug/analyst eval run --model fake/scripted --tasks evals/tasks --task reuse-library-function --auto --results "$ANALYST_HOME/results"
-
-  desktop-frontend:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/desktop
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: apps/desktop/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
-      - run: pnpm build
-      - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
-
-  desktop-tauri:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Linux webview dependencies
-        if: runner.os == 'Linux'
+          kill $server
+      - name: Deck CLI walk-through against the scripted model server
+        shell: bash
+        run: present/tools/cli_walkthrough.sh
+      - name: Deck loop against the scripted model server
+        shell: bash
+        working-directory: present
+        env:
+          PRESENT_HOME: ${{ runner.temp }}/present-home
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev patchelf
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p analyst-desktop
-      - run: cargo test -p analyst-desktop
+          mkdir -p "$PRESENT_HOME"
+          printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8766/v1"\nauth = "none"\nlocation = "internal"\n' > "$PRESENT_HOME/config.toml"
+          python evals/fake_model_server.py --port 8766 &
+          sleep 2
+          ../target/debug/present eval run --task spreadsheet-to-charts --results "$PRESENT_HOME/results"
+          ../target/debug/present eval run --task fix-checker-failures --results "$PRESENT_HOME/results"
 
   desktop-smoke:
     runs-on: ubuntu-latest
-    needs: [desktop-frontend, desktop-tauri, kernel]
+    needs: [frontend, desktop, python]
     steps:
       - uses: actions/checkout@v4
       - name: Linux webview dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev patchelf webkit2gtk-driver xvfb bubblewrap
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: cargo install tauri-driver --locked
       - run: cd python/kernel && uv sync
-      - run: cd apps/desktop && pnpm install --frozen-lockfile && pnpm build
+      - run: pnpm install --frozen-lockfile && pnpm --dir apps/desktop build
       - run: cargo build -p analyst-desktop --features custom-protocol
       - name: Prepare a repo with the sweep fixture
         run: |
@@ -132,3 +190,25 @@ jobs:
         with:
           name: desktop-smoke
           path: ${{ runner.temp }}/smoke-out
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+      - uses: astral-sh/setup-uv@v5
+      - name: Python license check (deck kernel)
+        working-directory: present/python/kernel
+        run: |
+          uv sync
+          uv run --with pip-licenses pip-licenses --format=csv > licenses.csv
+          python3 ../../tools/check_python_licenses.py licenses.csv
+
+  boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shared crates must not depend on workbench crates
+        run: python3 tools/check_wb_boundaries.py

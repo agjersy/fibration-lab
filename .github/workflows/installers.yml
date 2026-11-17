@@ -1,17 +1,9 @@
 name: installers
 
-# Builds the Windows and macOS installers with the Python runtime bundled inside. Heavy, so it
-# runs on demand, on version tags, and when the packaging itself changes.
+# Builds the deck workbench installers with the Python runtime bundled inside. Parked while the
+# two apps are folded into one and Linux and macOS packaging is redone: it runs on demand only.
 on:
   workflow_dispatch:
-  push:
-    branches: ["**"]
-    tags: ["v*"]
-    paths:
-      - ".github/workflows/installers.yml"
-      - "apps/desktop/src-tauri/bundle/**"
-      - "apps/desktop/src-tauri/tauri.conf.json"
-      - "tools/bundle_runtime.py"
 
 jobs:
   build:
@@ -37,7 +29,7 @@ jobs:
           cache: pnpm
 
       - name: Bundle the Python runtime (interpreter, packages, kernel, SDK, schemas, skills)
-        run: uv run --no-project --python 3.12 python tools/bundle_runtime.py --out dist-runtime
+        run: uv run --no-project --python 3.12 python present/tools/bundle_runtime.py --out dist-runtime
 
       - name: Sandbox launcher
         if: runner.os == 'Windows'
@@ -46,10 +38,10 @@ jobs:
       - name: Frontend
         run: |
           pnpm install --frozen-lockfile
-          pnpm --dir apps/desktop build
+          pnpm --dir present/apps/desktop build
 
       - name: Installer
-        run: pnpm --dir apps/desktop tauri build --config src-tauri/bundle/${{ matrix.config }}.json
+        run: pnpm --dir present/apps/desktop tauri build --config src-tauri/bundle/${{ matrix.config }}.json
 
       - name: macOS installer package
         if: runner.os == 'macOS'

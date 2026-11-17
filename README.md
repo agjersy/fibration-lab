@@ -4,6 +4,19 @@ A desktop workbench for scientific, technical, and numerical analysis: an AI age
 
 Model agnostic (open-weight models via Ollama or any OpenAI-compatible server, frontier models via API keys), local first, sandboxed execution, with runs on this machine or on a remote Linux host over SSH.
 
+## Merged repository (in progress)
+
+This repository now also holds Personal Present, with its history. The two apps are being folded into one desktop app with an analysis workbench and a deck workbench under one control loop.
+
+| Path | Contents |
+|---|---|
+| `crates/wb-*` | Shared core modules: `wb-net` (the network gate, egress ledger, and `.env` secrets), providers, policy, transcript, skills, sandbox launcher |
+| `crates/protocol`, `crates/core`, `crates/cli`, `apps/desktop`, `python/kernel`, `evals/`, `docs/` | The analysis workbench (Personal Analyst) |
+| `present/` | The deck workbench (Personal Present): its crates, desktop shell, Python kernel and SDK, evaluations, and documents, see [present/README.md](present/README.md) |
+| `packages/wb-ui` | Shared UI package |
+
+One Cargo workspace and one pnpm workspace cover everything; `.github/workflows/ci.yml` runs both test suites on Linux and macOS. Windows is parked.
+
 ## Status
 
 **Phase 0 (headless core) and phase 1 (desktop workbench) are built.** What exists:

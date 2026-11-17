@@ -12,9 +12,9 @@ path = "src/main.rs"
 [dependencies]
 present-core = { path = "../core" }
 present-protocol = { path = "../protocol" }
-wb-policy = { path = "../wb-policy" }
-wb-providers = { path = "../wb-providers" }
-wb-transcript = { path = "../wb-transcript" }
+wb-policy = { path = "../../../crates/wb-policy" }
+wb-providers = { path = "../../../crates/wb-providers" }
+wb-transcript = { path = "../../../crates/wb-transcript" }
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true

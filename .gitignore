@@ -10,3 +10,5 @@
 /evals/results/
 /out/
 .analyst/env.sh
+node_modules/
+*.tsbuildinfo

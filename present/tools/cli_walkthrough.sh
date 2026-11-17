@@ -4,7 +4,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${1:-$REPO/target/debug/present}"
+BIN="${1:-$REPO/../target/debug/present}"
 WORK="$(mktemp -d)"
 PORT="${PRESENT_FAKE_PORT:-8766}"
 export PRESENT_HOME="$WORK/home"

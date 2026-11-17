@@ -7,10 +7,10 @@ publish.workspace = true
 
 [dependencies]
 present-protocol = { path = "../protocol" }
-wb-providers = { path = "../wb-providers" }
-wb-policy = { path = "../wb-policy" }
-wb-transcript = { path = "../wb-transcript" }
-wb-skills = { path = "../wb-skills" }
+wb-providers = { path = "../../../crates/wb-providers" }
+wb-policy = { path = "../../../crates/wb-policy" }
+wb-transcript = { path = "../../../crates/wb-transcript" }
+wb-skills = { path = "../../../crates/wb-skills" }
 json-patch = "4"
 serde.workspace = true
 serde_json.workspace = true

@@ -1,6 +1,23 @@
 [workspace]
 resolver = "2"
-members = ["crates/protocol", "crates/core", "crates/cli", "apps/desktop/src-tauri"]
+members = [
+    # Shared core modules
+    "crates/wb-providers",
+    "crates/wb-policy",
+    "crates/wb-transcript",
+    "crates/wb-skills",
+    "crates/wb-sandbox",
+    # Analysis workbench
+    "crates/protocol",
+    "crates/core",
+    "crates/cli",
+    "apps/desktop/src-tauri",
+    # Deck workbench (to be folded into the single app)
+    "present/crates/protocol",
+    "present/crates/core",
+    "present/crates/cli",
+    "present/apps/desktop/src-tauri",
+]
 
 [workspace.package]
 version = "0.0.1"
@@ -37,6 +54,11 @@ notify = "8"
 ignore = "0.4"
 portable-pty = "0.9"
 trash = "5"
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+schemars = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+zstd = "0.13"
+rand = "0.8"
 tauri = "2"
 tauri-build = "2"
 tauri-plugin-dialog = "2"
