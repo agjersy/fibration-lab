@@ -26,6 +26,28 @@ jobs:
         env:
           PRESENT_FONT_DIRS: ${{ github.workspace }}/vendor/fonts
 
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Shared UI package
+        working-directory: packages/wb-ui
+        run: pnpm typecheck && pnpm lint && pnpm test
+      - name: Desktop renderer
+        working-directory: apps/desktop
+        run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
+      - name: Browser tests against the mock backend
+        working-directory: apps/desktop
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e -- --trace off
+
   desktop:
     runs-on: ${{ matrix.os }}
     strategy:

@@ -25,6 +25,17 @@ Every dependency added to the project is recorded here in the same commit.
 | tauri, tauri-build, tauri-plugin-dialog | MIT OR Apache-2.0 | desktop shell, native dialogs (links the system WebView: WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) |
 | rcgen, tokio-rustls (dev only) | MIT OR Apache-2.0 | TLS and proxy tests of the provider layer |
 
+## JavaScript (desktop renderer)
+
+| Package | License | Used for |
+|---|---|---|
+| react, react-dom | MIT | UI |
+| zustand | MIT | state stores |
+| dockview-react | MIT | dockable panel layout |
+| @tauri-apps/api | MIT OR Apache-2.0 | calls into the Rust core |
+| vite, @vitejs/plugin-react, vitest, jsdom, eslint, typescript-eslint, eslint-plugin-react-hooks, globals (dev only) | MIT | build, tests, lint |
+| typescript, @playwright/test, @tauri-apps/cli (dev only) | Apache-2.0 (tauri-cli: MIT OR Apache-2.0) | type checking, browser tests, packaging |
+
 ## Python (fixed bundled set, PROTOCOL 1.3)
 
 | Package | License | Used for |

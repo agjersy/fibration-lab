@@ -176,6 +176,7 @@ test.describe("workbench (mock backend)", () => {
     await expect(rows).toHaveCount(8);
     const input = page.getByLabel("Title of slide 5");
     await expect(input).toHaveValue("Pricing changes follow four steps");
+    await input.click();
     await input.fill("Pricing follows four steps");
     await input.press("Enter");
     await expect(page.getByTestId("slide-canvas")).toContainText("Pricing follows four steps");
@@ -195,7 +196,7 @@ test.describe("workbench (mock backend)", () => {
     // Clicking a marker does not start editing.
     await expect(page.locator("[data-slide-editor]")).toHaveCount(0);
     await page.getByTestId("rail-item").nth(3).click();
-    await page.getByTestId("slide-canvas").locator(".sp-cite").nth(2).click();
+    await page.getByTestId("slide-canvas").locator('.sp-cite[data-marker$="Q3!A4:B4"]').click();
     await expect(page.getByTestId("source-table").locator("td.hl")).toHaveText(["APAC", "90"]);
   });
 

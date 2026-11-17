@@ -263,7 +263,10 @@ export function canonicalText(text: Text): string {
 export function mergeEdited(original: Text, edited: Text): Text {
   const paragraphs = edited.paragraphs.map((p, i) => {
     const o = original.paragraphs[i];
-    return o && canonicalText({ paragraphs: [o] }) === canonicalText({ paragraphs: [p] }) ? o : p;
+    if (!o) return p;
+    if (canonicalText({ paragraphs: [o] }) === canonicalText({ paragraphs: [p] })) return o;
+    // A changed paragraph keeps the original's explicit `level: 0`, which the DOM cannot tell from an absent level.
+    return o.level === 0 && p.level === undefined ? { level: 0, ...p } : p;
   });
   return { ...original, paragraphs };
 }
