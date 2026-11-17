@@ -6,7 +6,7 @@ Phase 0 is a headless build: the Rust core and CLI, the Python deck kernel and S
 
 ```
 Cargo.toml             Rust workspace
-crates/wb-providers/   shared-to-be: model adapters, capability probe, proxy and CA handling
+crates/wb-providers/   shared-to-be: model adapters, capability probe (HTTP only through crates/wb-net)
 crates/wb-policy/      shared-to-be: policy decisions, edit gates, scope, locks
 crates/wb-transcript/  shared-to-be: transcript events and store, replay, compaction
 crates/wb-skills/      shared-to-be: Agent Skills discovery and loading
@@ -93,7 +93,7 @@ present eject                       # switch to code generation mode
 present build
 ```
 
-Providers are configured in `config.toml` under the home directory (PROTOCOL.md section 4.1). In phase 0 the CLI reads keys from environment variables (`key = "env:MY_KEY"`); keychain storage is behind the `keychain` cargo feature of `wb-providers`.
+Providers are configured in `config.toml` under the home directory (PROTOCOL.md section 4.1). A provider's key is named by `key = "env:MY_KEY"` and read from the environment, then from `.env` in the home directory (the settings dialog writes it there). The app reaches the network only for model endpoints, package installs, and SSH targets, through the network gate in `crates/wb-net`, which logs each decision to `egress.jsonl` in the home directory; there is no proxy, CA bundle, or keychain support. The deck kernel is started with no network (`bwrap` on Linux, `sandbox-exec` on macOS).
 
 ## Evaluation suite
 

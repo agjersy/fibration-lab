@@ -13,6 +13,7 @@ Conventions: types are written as TypeScript; `?` marks optional; all paths cros
 - Launched by the core as `<runtime_python> -I -m present_kernel --project <project_abs> --home <present_home_abs> [--engine auto|powerpoint|libreoffice|none] [--sandbox auto|native|limits]`.
 - `<runtime_python>` resolution: `PRESENT_RUNTIME_PYTHON`, then `runtime_python` in `config.toml`, then the bundled runtime under `<home>/runtime/` (installed builds), then `python/kernel/.venv` in a development checkout.
 - Framing is identical to Analyst PROTOCOL 1.1: newline-delimited JSON-RPC 2.0 on stdio, UTF-8, stderr for logs only, kernel may answer out of order, notifications only from kernel to core, first request `kernel.hello`, last `kernel.shutdown`.
+- The core starts the kernel with no network (`bwrap --unshare-net` on Linux, `sandbox-exec` denying `network*` on macOS; unchanged where neither works). The isolation in effect is reported as `AppInfo.kernel_network` (`bwrap` | `sandbox-exec` | `none`). The per-run sandbox and the fidelity engine run inside it.
 - One kernel per open project. Long operations (ingest, render, build) report progress with `task.progress` notifications carrying the request id.
 
 ### 1.2 Errors
@@ -321,16 +322,12 @@ Location: `~/.present/config.toml` (macOS, Linux) or `%APPDATA%\Present\config.t
 [defaults]
 model = "gateway/claude-opus-5-5"     # "<provider name>/<model id>"
 
-[network]
-proxy = "system"                      # system | none | "http://proxy.corp:8080"
-ca_bundle = "system"                  # system | path to a PEM file (added to the OS trust store, not replacing it)
-
 [[providers]]
 name = "gateway"
 kind = "anthropic"                    # anthropic | openai-compatible
 base_url = "https://llm-gateway.corp.example"
 auth = "bearer"                       # x-api-key (default for anthropic) | bearer | none
-key = "keychain:gateway"              # keychain:<entry> | env:<VAR>
+key = "env:GATEWAY_API_KEY"           # env:<VAR>: read from the environment, then from .env
 headers = { "X-Team" = "strategy" }   # extra headers, sent on every request
 location = "internal"                 # internal | external: shown in the chat header
 
@@ -360,7 +357,7 @@ libreoffice_path = ""                 # optional explicit soffice path
 theme = "system"                      # system | light | dark
 ```
 
-Keys live in the OS keychain (`keyring` crate: Keychain on macOS, Credential Manager on Windows). `env:` is for development and CI.
+A key is named by `env:<VAR>` and read from the process environment, then from the untracked `.env` file in the home directory (`~/.present/.env`, mode 0600), which is where the settings dialog writes it. There is no keychain storage; a `keychain:<entry>` reference is an error that says so. There are no network settings: a `[network]` table in an older file is ignored. A provider's `base_url` is what allows its host at the network gate.
 
 ### 4.2 Project `.present/project.toml`
 
@@ -374,7 +371,7 @@ edits = "review"                      # review | auto-new-slides | auto
 code = "ask"                          # builds and generated slides: ask | auto | deny
 skills_scripts = "ask"                # ask | auto | deny
 code_mode = "allow"                   # allow | deny (switching to code generation mode)
-mcp = "ask"
+mcp = "ask"                           # reserved; there is no MCP client
 export = "auto"
 max_steps = 60
 build_timeout_s = 60
@@ -478,7 +475,7 @@ deck.save()                                    # writes to the output path provi
 Identical to Analyst PROTOCOL section 4 (tool name mapping `.` to `_` and `mcp.<server>.<tool>` to `mcp__<server>__<tool>`, both adapters, the internal `ModelEvent` stream, the text-protocol fallback), with these additions:
 
 - **Auth and headers:** `auth = "bearer"` sends `Authorization: Bearer <key>` instead of `x-api-key`; `headers` are added to every request.
-- **Network:** requests go through the configured proxy and trust store (`reqwest` with `rustls-platform-verifier`; system proxy discovery including PAC through the OS on Windows and macOS).
+- **Network:** every request is built by the network gate (`wb_net::gate().request`), which refuses any host and port that is not a configured provider `base_url` and records the decision in `<home>/egress.jsonl`. Connections are direct (no proxy) and verified against the bundled web trust roots (no custom CA bundle).
 - **Unknown-field downgrade:** if an endpoint answers 400 naming a request field the adapter sent optionally (`stream_options`, `cache_control`, `citations`, document blocks), the adapter retries once without it and records the field as unsupported in the capability record.
 - **Document blocks:** the Anthropic adapter can send `{type: "document", source: {type: "base64", media_type: "application/pdf", data}, citations: {enabled: true}, title}` blocks and maps returned `citations` (`page_location`) to `Cite` strings; used only when the capability record says `documents: true`.
 - **Prompt caching:** the Anthropic adapter puts `cache_control: {type: "ephemeral"}` on the last system block and the last tool definition when `caching: true` in the capability record.

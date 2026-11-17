@@ -17,7 +17,7 @@
 | P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Decided (shared) |
 | P10 | Checkpoints | App-owned content-addressed snapshot store in `.present/history/`; no git dependency or integration (a user may still version the folder with git) | Decided (OQ-P10) |
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
-| P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, system proxy and trust store, local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
+| P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, a network gate that allows only configured model endpoints (no proxy or custom CA support), local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Decided (shared) |
 | P14 | Code sharing with Analyst | A third repository of shared Rust crates and a UI package, consumed by both apps as pinned git dependencies, extracted gradually starting with the provider layer and policy engine. One skill format (Agent Skills `SKILL.md`) across both apps | Decided (OQ-P11) |
 | P15 | Name | "Personal Present": binary `present`, config `~/.present` (`%APPDATA%\Present` on Windows), bundle id `dev.personal-present.app` | Decided (OQ-P12) |
@@ -41,7 +41,7 @@ flowchart LR
     AL[Agent loop]
     PE[Policy engine + slide gating]
     MP[Model providers\nAnthropic Messages | OpenAI-compat]
-    TR[Tool registry + MCP client]
+    TR[Tool registry]
     SK[Skill loader + runner]
     DS[Deck store + snapshots]
     RI[Reference index\nSQLite FTS5]
@@ -58,13 +58,12 @@ flowchart LR
   end
 
   LLM[(Model endpoints)]
-  MCP[(MCP servers)]
   Files[(Project folder\nreferences on disk)]
   AN[(Personal Analyst repo)]
 
   UI <-- typed IPC --> Core
   AL --> MP --> LLM
-  AL --> TR --> MCP
+  AL --> TR
   AL --> PE
   AL --> SK
   AL --> DS
@@ -93,7 +92,7 @@ Same as Analyst (section 3 there) unless listed:
 | Charts in the UI preview | A small chart renderer over the deck's chart data (Vega-Lite or hand-written SVG) styled from the template theme colors | New. The exported chart is a native PowerPoint chart regardless. |
 | Python runtime | `python-build-standalone` + pinned wheels, bundled in the installer; no download at first run | Analyst fetches with `uv` at runtime; enterprise offline installs cannot. |
 | Fidelity renderer | LibreOffice headless (`soffice --convert-to pdf`) bundled as an optional component or found on the system; PowerPoint automation (COM on Windows, AppleScript on macOS) when PowerPoint is installed | New. See OQ-P6. |
-| TLS and proxy | `rustls` with the OS trust store (`rustls-platform-verifier`), system proxy settings and PAC, optional client certificates | Analyst assumes a personal network. |
+| Network | The network gate (`wb-net`) builds every HTTP request and refuses any host that is not a configured model endpoint. `rustls` with the bundled web trust roots, direct connections: no proxy, custom CA bundle, or client certificate support | Shared with Analyst. The app reaches the network only for model endpoints, package installs, and SSH targets. |
 | CodeMirror editor | Included for code generation mode, generated slides, and skills, with per-hunk review as in Analyst | Hidden in structured mode except as a developer JSON view. |
 | Terminal, SSH | Not included | The user is not assumed to be a programmer. |
 
@@ -103,7 +102,7 @@ Licensing rule from Analyst kept: permissive dependencies only (no GPL or AGPL).
 
 | Entity | Definition | Owned by |
 |---|---|---|
-| Workspace | Providers, models, global skills, template library, MCP servers, list of projects, managed policy. | `~/.present/` + managed config |
+| Workspace | Providers, models, global skills, template library, list of projects, managed policy. | `~/.present/` + managed config |
 | Project | One deck + one template + its references + one or more conversations + layout + export history. One tab per project. | project folder |
 | Template | A `.potx`/`.pptx` whose slide masters, layouts, placeholders, and theme define what the deck may use. Inspected once into a template description. | project `template/`, or the library |
 | Template description | Machine-readable summary of a template: layouts with placeholder types, positions, sizes, and text styles per level; theme colors and fonts; slide size. Given to the agent as the layout catalog and to the renderer for previews. | computed, cached |
@@ -116,7 +115,7 @@ Licensing rule from Analyst kept: permissive dependencies only (no GPL or AGPL).
 | Snapshot | The deck document before an agent turn, content-addressed. | `.present/history/` |
 | Export | A rendered output file with its format, preset, deck snapshot id, and checker result. | `exports/` |
 | Skill | Agent Skill folder. | `~/.present/skills/`, project `.present/skills/`, managed library |
-| Provider / Model | Endpoint, auth back end, model id, probed capabilities. | config + keychain |
+| Provider / Model | Endpoint, auth back end, model id, probed capabilities. | config; keys in the environment or `~/.present/.env` |
 | Policy | Gating rules, locked keys from managed config. | `.present/project.toml` + managed config |
 
 ## 5. The deck document (P3)
@@ -245,7 +244,6 @@ A project is in one of two modes, chosen at creation and switchable later.
 | `skill.load`, `skill.read_resource` | read |
 | `skill.run_script` | run (OQ-P7) |
 | `export.run` | export |
-| `mcp.<server>.<tool>` | per server |
 
 No shell tool, no general code REPL, no file write outside the deck store, no network tool in the first version. Code runs only as a deck build, a generated slide, or a skill script.
 
@@ -324,12 +322,12 @@ Export presets (format, options, file naming) live in project config. Each expor
 
 | Provider kind | Wire format | Authentication |
 |---|---|---|
-| `anthropic` | Anthropic Messages | API key or bearer token from the keychain; `base_url` for an internal gateway that speaks Messages; optional extra headers the gateway requires |
+| `anthropic` | Anthropic Messages | API key or bearer token from the environment or `.env`; `base_url` for an internal gateway that speaks Messages; optional extra headers the gateway requires |
 | `openai-compatible` | Chat completions | API key, bearer token, or none; covers vLLM, Ollama, TGI, LM Studio, LiteLLM and other gateways |
 
-**Decided (OQ-P2): first-version endpoints** are the Anthropic API directly, internal API gateways (Anthropic Messages or OpenAI-compatible, typically behind a corporate proxy with a private CA), and open-weight models on internal GPU servers. These are exactly Analyst's two wire adapters, so the provider layer can be shared as is. Amazon Bedrock (SigV4 and the AWS credential chain), Google Vertex AI (Application Default Credentials), and Microsoft Foundry (key or Entra ID) are later additions: they are authentication back ends on the Anthropic Messages adapter and change nothing above it.
+**Decided (OQ-P2): first-version endpoints** are the Anthropic API directly, internal API gateways (Anthropic Messages or OpenAI-compatible; they must be reachable directly with a publicly trusted certificate, since proxies and private CAs are not supported), and open-weight models on internal GPU servers. These are exactly Analyst's two wire adapters, so the provider layer can be shared as is. Amazon Bedrock (SigV4 and the AWS credential chain), Google Vertex AI (Application Default Credentials), and Microsoft Foundry (key or Entra ID) are later additions: they are authentication back ends on the Anthropic Messages adapter and change nothing above it.
 
-Gateway realities the adapters must handle: private CA certificates and system proxy settings (section 3); extra required headers; model ids that are gateway aliases rather than vendor ids (capabilities are probed, not inferred from the name); gateways that strip or reject newer request fields (unknown-field errors trigger a capability downgrade rather than a failure); and missing model-listing endpoints (manual model entry).
+Gateway realities the adapters must handle: extra required headers; model ids that are gateway aliases rather than vendor ids (capabilities are probed, not inferred from the name); gateways that strip or reject newer request fields (unknown-field errors trigger a capability downgrade rather than a failure); and missing model-listing endpoints (manual model entry).
 
 Features that differ by platform are probed or configured, not assumed. Relevant here:
 
@@ -377,7 +375,7 @@ Where the isolation primitive is unavailable (for example AppContainer blocked b
 [policy]
 edits    = "review"          # review | auto-new-slides | auto
 skills_scripts = "ask"       # ask | auto | deny
-mcp      = "ask"
+mcp      = "ask"             # reserved; there is no MCP client
 export   = "auto"
 locked_slides = []           # also set from the UI
 max_steps = 60
@@ -431,7 +429,8 @@ Docking with `dockview` and undockable windows as in Analyst (a presenter-style 
 ~/.present/  (or %APPDATA%\Present on Windows)
   config.toml           providers, models, UI prefs
   skills/  templates/   user libraries
-  mcp.json
+  .env                  provider keys (mode 0600), written by the settings dialog
+  egress.jsonl          one line per network decision (destination and purpose, never content)
   runtime/              bundled Python runtime and kernel (installed by the installer)
   audit/                audit log (JSONL, rotated)
   projects/<id>/
@@ -461,11 +460,11 @@ Managed configuration (read-only, admin-owned):
 
 ## 16. Security and privacy
 
-- No telemetry. Network calls only to configured model providers, configured MCP servers, and (if enabled) the update server. Updates can be disabled by managed config.
-- Credentials (API keys, gateway tokens) in the OS keychain. Never logged, never given to skill scripts or MCP servers unless configured.
+- No telemetry, no update server, no MCP servers. The app reaches the network only for configured model endpoints, package installs, and SSH targets, and only from the Rust core through the network gate (`wb-net`), which records every decision in `egress.jsonl`. Present itself uses only the first of these. The deck kernel runs with no network.
+- Credentials (API keys, gateway tokens) come from the process environment or the untracked `.env` file in the home directory. Never logged, never given to skill scripts.
 - Reference content leaves the machine only as excerpts in model requests; each request is recorded in the audit log.
-- Managed configuration can lock: allowed providers and models, disabled features (skill scripts, MCP, specific export formats), checker severities, required templates, the data-classification footer.
-- Skill scripts run sandboxed without network; MCP servers go through the policy engine.
+- Managed configuration can lock: allowed providers and models, disabled features (skill scripts, specific export formats), checker severities, required templates, the data-classification footer.
+- Skill scripts run sandboxed without network.
 - Exports carry no hidden data from the app beyond stable ids and document properties; an option strips citations from notes.
 
 ## 17. Testing and evaluation
@@ -482,11 +481,10 @@ The normative layout, including the shared-to-be `wb-*` crates and `packages/wb-
 
 | Package | Contents | Extraction order |
 |---|---|---|
-| `wb-providers` (crate) | `ModelClient`, Anthropic Messages and OpenAI-compatible adapters, SSE parsing, capability probing, proxy and private-CA TLS, gateway quirks, audit hook | Phase 0 of Present (first) |
+| `wb-providers` (crate) | `ModelClient`, Anthropic Messages and OpenAI-compatible adapters, SSE parsing, capability probing, gateway quirks, audit hook; all requests built by the network gate (`wb-net`) | Phase 0 of Present (first) |
 | `wb-policy` (crate) | Policy evaluation, ask/deny/review states, scope declaration, protected items | Phase 0 (first) |
 | `wb-transcript` (crate) | Turn and event types, JSONL store, compaction and pinned facts | Phase 0 |
 | `wb-skills` (crate) | Agent Skills loader (`SKILL.md`, resources, script manifests), progressive disclosure tools, Analyst legacy front matter (`triggers`, `paths`, `always`) as optional extensions | Phase 0 |
-| `wb-mcp` (crate) | MCP client wrapper over `rmcp`, tool schema bridging | Phase 1 |
 | `wb-sandbox` (crate + profiles) | macOS `sandbox-exec` profile generation, Linux `bubblewrap`, Windows AppContainer + job object | Phase 1 (Present needs Windows; Analyst gains it for its phase 4) |
 | `@wb/ui` (npm package) | Theme tokens (Analyst's `theme.css`), chat panel and card components, dialogs, toasts, palette, dockview setup, IPC `Backend` interface and mock helpers | Phase 1 |
 
