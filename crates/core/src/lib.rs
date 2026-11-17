@@ -10,3 +10,4 @@ pub mod project;
 pub mod refs;
 pub mod snapshots;
 pub mod util;
+pub mod workspace;
