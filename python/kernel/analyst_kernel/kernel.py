@@ -53,8 +53,13 @@ class Kernel:
         sandbox: str = "auto",
         notify: Notify | None = None,
         data_dirs: list[str] | None = None,
+        prewarm: bool = True,
     ) -> None:
         self.python = python
+        self.prewarm = prewarm
+        self._prewarmed = False
+        self._packages_cache: tuple[Any, list[dict[str, Any]]] | None = None
+        self._packages_lock = threading.Lock()
         self.root = Path(root).resolve()
         self.runs_dir = Path(runs_dir).resolve()
         self.config: ProjectConfig = load_config(self.root)
@@ -153,6 +158,7 @@ class Kernel:
             data_dirs=list(self.data_dirs),
             support_dirs=[self.mpl_dir / "analyst_mpl"],
             tooling_dir=tooling_dir(),
+            cache_dirs=[self.runs.mpl_config_dir],
             derived_dir=derived if derived.is_dir() else None,
             network=False,
             rlimit_as=self.config.rlimit_as(),
@@ -163,7 +169,6 @@ class Kernel:
         run_dir = self.runs_dir / f"_{name}"
         out_dir = self.root / self.out_dir_name / f"_{name}"
         env = self.runs._build_env(f"_{name}", run_dir, out_dir, {})
-        (run_dir / "mplconfig").mkdir(parents=True, exist_ok=True)
         (run_dir / "tmp").mkdir(parents=True, exist_ok=True)
         return env
 
@@ -174,6 +179,7 @@ class Kernel:
             raise invalid_params(f"protocol_version {pv!r} is not supported (kernel speaks {PROTOCOL_VERSION})")
         for w in self.warnings:
             log.warning("%s", w)
+        self._prewarm_equations()
         return {
             "kernel_version": __version__,
             "protocol_version": PROTOCOL_VERSION,
@@ -210,6 +216,33 @@ class Kernel:
                 self._eq = EqWorker()
             return self._eq
 
+    def _prewarm_equations(self) -> None:
+        """Start the equation worker (the SymPy import) in the background, once.
+
+        Called from ``kernel.hello``; returns at once. The first ``eq.extract`` then finds a
+        worker that is ready, or one that is already part-way through starting, instead of
+        paying the whole import itself. Nothing else waits on it.
+        """
+        if not self.prewarm or self._prewarmed or self._closed:
+            return
+        self._prewarmed = True
+
+        def warm() -> None:
+            try:
+                from .equations import EqWorker
+
+                with self._eq_lock:  # close() sets _closed before it takes this lock
+                    if self._closed:
+                        return
+                    if self._eq is None:
+                        self._eq = EqWorker()
+                    worker = self._eq
+                worker.prewarm()
+            except Exception:
+                log.debug("equation worker prewarm failed", exc_info=True)
+
+        threading.Thread(target=warm, name="eq-prewarm", daemon=True).start()
+
     # ---- environment -------------------------------------------------------------------
     def m_env_info(self, params: dict[str, Any]) -> dict[str, Any]:
         from .envinfo import env_info
@@ -217,9 +250,18 @@ class Kernel:
         return env_info(self.python, self.sandbox, self.host, self.os_name)
 
     def m_env_packages(self, params: dict[str, Any]) -> dict[str, Any]:
-        from .envinfo import env_packages
+        from .envinfo import env_packages, packages_stamp
 
-        return {"packages": env_packages(self.python, self.root)}
+        # The listing spawns ``uv``; its answer only changes when the lockfile, the project
+        # file, or the environment's site-packages change, so it is cached on their mtimes.
+        with self._packages_lock:
+            stamp = packages_stamp(self.python, self.root)
+            cached = self._packages_cache
+            if cached is None or cached[0] != stamp:
+                packages = env_packages(self.python, self.root)
+                # Stamp taken before the listing: a change during it invalidates the entry.
+                cached = self._packages_cache = (stamp, packages)
+            return {"packages": [dict(p) for p in cached[1]]}
 
     # ---- indexes --------------------------------------------------------------------
     def m_scripts_index(self, params: dict[str, Any]) -> dict[str, Any]:

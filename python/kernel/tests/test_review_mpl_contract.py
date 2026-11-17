@@ -19,10 +19,15 @@ from analyst_kernel.runs import _ArtifactScanner, valid_sidecar
 KERNEL_DIR = Path(__file__).resolve().parent.parent
 
 
-def run_mpl(tmp_path: Path, body: str, name: str = "plot.py") -> tuple[subprocess.CompletedProcess, Path]:
+def run_mpl(
+    tmp_path: Path, body: str, name: str = "plot.py", formats: str | None = None
+) -> tuple[subprocess.CompletedProcess, Path]:
     out = tmp_path / "outdir"
     out.mkdir(exist_ok=True)
     env = dict(os.environ)
+    env.pop("ANALYST_FIGURE_FORMATS", None)
+    if formats is not None:
+        env["ANALYST_FIGURE_FORMATS"] = formats
     env.update(
         MPLBACKEND="module://analyst_mpl", PYTHONPATH=str(KERNEL_DIR), MPLCONFIGDIR=str(tmp_path / "mplcfg"),
         ANALYST_OUT_DIR=str(out), ANALYST_RUN_ID="20260101-000000-abcdef", ANALYST_ROOT=str(tmp_path),
@@ -100,6 +105,7 @@ def test_k8_pause_and_nonblocking_show_keep_the_figure_and_save_the_last_frame(t
         "plt.show(block=False)\nassert plt.get_fignums() == [1]\n"
         "fig.show()\nassert plt.get_fignums() == [1]\n"
         "ax.set_xlabel('final')\n",  # changed after the last save: the exit hook stores the final state
+        formats="png,svg",
     )
     assert proc.returncode == 0, proc.stderr
     names = sorted(p.name for p in (out / "figures").iterdir())
@@ -145,8 +151,8 @@ def test_run_reports_figures_with_new_sidecars(kernel: Kernel, repo: Path, notes
     run_id = kernel.call("run.start", {"script": "scripts/fit_decay.py"})["run_id"]
     notes.wait_for("run.done", run_id)
     arts = {a["artifact"]["path"].rsplit("/", 1)[-1]: a["artifact"] for a in notes.of("run.artifact", run_id)}
-    assert set(arts) == {"decay-fit.png", "decay-fit.svg", "fit.json"}
-    assert arts["decay-fit.png"]["sidecar"]["title"] == "Decay fit" and arts["decay-fit.svg"]["sidecar"]["title"] == "Decay fit"
+    assert set(arts) == {"decay-fit.png", "fit.json"}  # one file per figure by default
+    assert arts["decay-fit.png"]["sidecar"]["title"] == "Decay fit"
     listed = {e["path"].rsplit("/", 1)[-1] for e in kernel.call("out.list", {"run_id": run_id})["entries"]}
     assert "decay-fit.png.meta.json" in listed
 

@@ -3,7 +3,8 @@
 See docs/PROTOCOL.md sections 1.6 and 9. Selected with ``MPLBACKEND=module://analyst_mpl``.
 It subclasses the Agg backend:
 
-- ``show()`` saves every open figure as PNG and SVG and closes it;
+- ``show()`` saves every open figure and closes it. One file per figure, PNG, unless
+  ``ANALYST_FIGURE_FORMATS`` (a comma list of ``png``, ``svg``, ``pdf``) asks for more;
 - ``show(block=False)``, ``plt.pause()`` and ``fig.show()`` save without closing, under a
   stem that stays the same for that figure, so a live-update loop ends with its last frame;
 - figures still open when the interpreter exits are saved;
@@ -32,6 +33,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 __all__ = [
     "FigureCanvas",
     "FigureManager",
+    "figure_formats",
     "figures_dir",
     "new_figure_manager",
     "show",
@@ -43,6 +45,8 @@ _UTC = timezone.utc  # noqa: UP017 - the UTC alias needs 3.11; session venvs may
 BACKEND_NAME = "module://analyst_mpl"
 SIDECAR_SUFFIX = ".meta.json"
 _FIGURE_EXTS = (".png", ".svg", ".pdf")
+FORMATS_ENV = "ANALYST_FIGURE_FORMATS"
+DEFAULT_FORMATS = (".png",)
 _SIDECAR_KEYS = ("run_id", "script", "args", "title", "axes", "created_at", "width_in", "height_in", "dpi")
 
 
@@ -51,6 +55,20 @@ def figures_dir() -> Path:
     base = os.environ.get("ANALYST_OUT_DIR")
     root = Path(base) if base else Path.cwd() / "out"
     return root / "figures"
+
+
+def figure_formats() -> tuple[str, ...]:
+    """Extensions ``show()`` saves, from ``ANALYST_FIGURE_FORMATS`` (default: PNG only).
+
+    The kernel sets the variable from ``[figures] formats`` in ``project.toml``. Unknown
+    names are ignored; if nothing usable is left the default applies.
+    """
+    out: list[str] = []
+    for part in os.environ.get(FORMATS_ENV, "").split(","):
+        ext = "." + part.strip().lower().lstrip(".")
+        if ext in _FIGURE_EXTS and ext not in out:
+            out.append(ext)
+    return tuple(out) or DEFAULT_FORMATS
 
 
 def slugify(text: str) -> str:
@@ -196,7 +214,9 @@ def _stem_for(fig, directory: Path) -> str:
 
 
 def save_figure(fig) -> list[Path]:
-    """Save one figure as PNG and SVG with sidecars; returns the written image paths.
+    """Save one figure in each configured format (PNG by default) with a sidecar per file.
+
+    Returns the written image paths.
 
     Saving the same figure again overwrites its earlier files.
     """
@@ -205,7 +225,7 @@ def save_figure(fig) -> list[Path]:
     stem = _stem_for(fig, directory)
     written: list[Path] = []
     canvas = fig.canvas
-    for ext in (".png", ".svg"):
+    for ext in figure_formats():
         target = directory / f"{stem}{ext}"
         FigureCanvasAgg.print_figure(canvas, str(target))
         write_sidecar(fig, target)
@@ -250,7 +270,7 @@ def new_figure_manager_given_figure(num, figure):
 
 
 def show(*args, **kwargs):
-    """Save every open figure (PNG + SVG + sidecars) under the figures directory.
+    """Save every open figure (and its sidecar) under the figures directory.
 
     A blocking ``show()`` then closes the figures, as an interactive backend would once its
     windows are closed. ``show(block=False)`` and ``plt.pause()`` leave them open so the

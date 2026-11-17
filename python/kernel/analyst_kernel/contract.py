@@ -34,7 +34,7 @@ DEFAULT_SEVERITY = {
     "cli.help-text": "error",
     "cli.main-function": "error",
     "cli.main-guard": "error",
-    "cli.option-for-every-input": "error",
+    "cli.option-for-every-input": "warn",  # heuristic, so advisory (like lib.near-duplicate)
     "cli.no-absolute-paths": "error",
     "lib.script-defines-logic": "error",
     "lib.duplicate": "error",

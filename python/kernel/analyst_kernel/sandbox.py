@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import SANDBOX_UNAVAILABLE, RpcError
+from .runstate import limits_preexec
 
 KINDS = ("auto", "bwrap", "sandbox-exec", "limits", "none")
 DEFAULT_RLIMIT_AS: int | None = None  # no address-space limit unless [limits] asks for one
@@ -32,6 +33,7 @@ class SandboxSpec:
     data_dirs: list[Path] = field(default_factory=list)
     support_dirs: list[Path] = field(default_factory=list)  # kernel-owned code the run imports (analyst_mpl)
     tooling_dir: Path | None = None
+    cache_dirs: list[Path] = field(default_factory=list)  # shared, writable (the Matplotlib cache)
     derived_dir: Path | None = None
     home: Path | None = None
     python: Path | None = None  # session interpreter; its base installation is made readable
@@ -57,6 +59,7 @@ class SandboxSpec:
         if self.derived_dir is not None and self.derived_dir.exists():
             dirs.append(self.derived_dir)
         dirs.append(self.run_dir)
+        dirs += [d for d in self.cache_dirs if d.exists()]
         return _dedupe(_with_realpaths(dirs))
 
 
@@ -204,32 +207,6 @@ def host_os() -> str:
 
 
 # ---- limits --------------------------------------------------------------------
-
-
-def limits_preexec(rlimit_as: int | None, rlimit_nofile: int | None) -> Callable[[], None]:
-    """Return a preexec_fn that applies RLIMIT_AS and RLIMIT_NOFILE in the child."""
-
-    def _apply() -> None:
-        try:
-            import resource
-        except ImportError:  # pragma: no cover - windows
-            return
-        if rlimit_as:
-            try:
-                _, hard = resource.getrlimit(resource.RLIMIT_AS)
-                soft = rlimit_as if hard == resource.RLIM_INFINITY else min(rlimit_as, hard)
-                resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
-            except (ValueError, OSError):
-                pass
-        if rlimit_nofile:
-            try:
-                _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-                soft = rlimit_nofile if hard == resource.RLIM_INFINITY else min(rlimit_nofile, hard)
-                resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
-            except (ValueError, OSError):
-                pass
-
-    return _apply
 
 
 def rlimit_prologue(rlimit_as: int | None, rlimit_nofile: int | None) -> str:

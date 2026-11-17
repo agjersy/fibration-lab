@@ -8,7 +8,13 @@ bookkeeping even when the kernel restarts (PROTOCOL.md 1.4 step 7).
 
 Usage:
     python -m analyst_kernel._supervise --run-dir DIR [--timeout S]
-        [--rlimit-as BYTES] [--rlimit-nofile N] -- ARGV...
+        [--rlimit-as BYTES] [--rlimit-nofile N] [--exit-fd FD] -- ARGV...
+
+``--exit-fd`` is the write end of a pipe whose read end the launching kernel holds. The
+supervisor never writes to it: it closes it the moment the result is on disk (``status``
+and ``meta.json``), and the kernel sees end-of-file at once instead of finding out on its
+next poll. If the supervisor dies first the kernel sees the same end-of-file and marks
+the run failed. The descriptor is never inherited by the script.
 
 Everything printed goes to stderr.log; this process never touches the kernel's stdio.
 """
@@ -25,8 +31,7 @@ import time
 from pathlib import Path
 
 from .paths import utc_now_iso
-from .runstate import proc_start_token, read_status_line, transition, write_atomic
-from .sandbox import limits_preexec
+from .runstate import limits_preexec, proc_start_token, read_status_line, transition, write_atomic
 
 GRACE_S = 5.0
 
@@ -57,11 +62,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=None)
     parser.add_argument("--rlimit-as", type=int, default=None)
     parser.add_argument("--rlimit-nofile", type=int, default=None)
+    parser.add_argument("--exit-fd", type=int, default=None)
     parser.add_argument("cmd", nargs=argparse.REMAINDER)
     ns = parser.parse_args(argv)
     cmd = ns.cmd[1:] if ns.cmd and ns.cmd[0] == "--" else ns.cmd
     run_dir = Path(ns.run_dir)
     timeout = ns.timeout if ns.timeout and ns.timeout > 0 else None
+    exit_fd = ns.exit_fd
+    if exit_fd is not None:
+        try:
+            os.set_inheritable(exit_fd, False)
+        except OSError:
+            exit_fd = None
 
     # The supervisor must outlive a SIGTERM aimed at the group so it can record the result.
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -81,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         stderr.write(f"analyst: could not start {cmd[0] if cmd else '?'}: {exc}\n".encode())
         finish(run_dir, "failed", None)
+        _signal_exit(exit_fd)
         return 1
     _write_child_pid(run_dir, proc.pid)
     try:
@@ -88,13 +101,26 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.TimeoutExpired:
         stderr.write(f"analyst: run exceeded its {timeout:g}s time limit and was stopped\n".encode())
         finish(run_dir, "timeout", None)
+        # The exit pipe stays open until the group is gone (the final SIGKILL closes it), so
+        # the kernel flushes the logs only after the last process has stopped writing.
         _kill_group(proc)
         return 0
     if rc >= 0:
         finish(run_dir, f"done:{rc}", rc)
     else:
         finish(run_dir, "failed", rc)
+    _signal_exit(exit_fd)
     return 0
+
+
+def _signal_exit(fd: int | None) -> None:
+    """Tell the kernel the result is recorded: closing the pipe is the whole message."""
+    if fd is None:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
 
 
 def _write_child_pid(run_dir: Path, pid: int) -> None:
