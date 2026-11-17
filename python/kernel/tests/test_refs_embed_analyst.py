@@ -211,7 +211,7 @@ def test_analyst_import_figure(kernel, analyst_repo):
     assert info["analyst"] == {"repo": str(analyst_repo.resolve()), "item": f"out/figures/fit_model/{RUN}/residuals.png", "run_id": RUN}
     refs_dir = kernel.project / "references"
     assert sorted(p.suffix for p in refs_dir.glob(f"{info['version']}.*")) == [".json", ".png", ".svg"]
-    assert json.loads((refs_dir / f"{info['version']}.json").read_text())["sidecar"]["script"] == "scripts/fit_model.py"
+    assert json.loads((refs_dir / f"{info['version']}.json").read_text(encoding="utf-8"))["sidecar"]["script"] == "scripts/fit_model.py"
     result = call("refs.ingest", {"path": info["file"], "ref_id": info["ref_id"]})
     assert result["kind"] == "analyst-figure" and result["title"] == "Residuals by week"
     assert result["images"] == [{"loc": info["loc"], "png": info["file"], "width": 200, "height": 120, "caption": "Residuals by week"}]
@@ -225,7 +225,7 @@ def test_analyst_import_table_is_bounded(kernel, analyst_repo):
     call = kernel.dispatcher.call
     info = call("analyst.import", {"repo_abs": str(analyst_repo), "item": f"out/tables/{RUN}/summary.csv", "max_rows": 10})
     assert info["kind"] == "analyst-table" and info["loc"] == f"run:{RUN}/summary" and info["file"].endswith(".csv")
-    assert len((kernel.project / info["file"]).read_text().splitlines()) == 11  # header + 10 rows
+    assert len((kernel.project / info["file"]).read_text(encoding="utf-8").splitlines()) == 11  # header + 10 rows
     result = call("refs.ingest", {"path": info["file"]})
     assert result["ref_id"] == info["ref_id"] and result["kind"] == "analyst-table"
     assert result["tables"] == [{"loc": info["loc"], "rows": 11, "cols": 3, "title": "summary"}]
@@ -236,7 +236,7 @@ def test_analyst_import_table_is_bounded(kernel, analyst_repo):
     chunk = result["chunks"][0]
     assert chunk["loc"] == info["loc"] and call("refs.read", {"ref_id": info["ref_id"], "loc": info["loc"]})["text"] == chunk["text"]
     full = call("analyst.import", {"repo_abs": str(analyst_repo), "item": f"out/tables/{RUN}/summary.csv"})
-    assert full["version"] != info["version"] and len((kernel.project / full["file"]).read_text().splitlines()) == 101
+    assert full["version"] != info["version"] and len((kernel.project / full["file"]).read_text(encoding="utf-8").splitlines()) == 101
 
 
 def test_analyst_import_errors(kernel, analyst_repo):

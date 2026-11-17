@@ -152,7 +152,7 @@ def test_eject_inlines_generated_slides(kernel_for, tmp_path):
     project = gen_project(tmp_path)
     out = kernel_for(project).dispatcher.call("deck.eject", {})
     assert out["verified"], out.get("diff")
-    assert "generated slide script (inlined)" in (project / "deck/build.py").read_text()
+    assert "generated slide script (inlined)" in (project / "deck/build.py").read_text(encoding="utf-8")
 
 
 def test_profiles_and_argv_shapes(tmp_path):
@@ -162,10 +162,13 @@ def test_profiles_and_argv_shapes(tmp_path):
     scratch.mkdir()
     spec = SandboxSpec(cwd=scratch, scratch=scratch, read_only=[home / "proj" / "deck"])
     profile = sandbox_exec_profile(spec, home)
-    assert "(deny network*)" in profile and f'(deny file-read* (subpath "{home}"))' in profile
-    assert f'(allow file-read* (subpath "{home / "proj" / "deck"}"))' in profile
-    assert f'(allow file-read-metadata (literal "{home / "proj"}"))' in profile
-    assert f'(allow file-read* file-write* (subpath "{scratch}"))' in profile
+    def q(path):  # the profile's string quoting: backslashes doubled (Windows paths in this test)
+        return '"' + str(path).replace("\\", "\\\\") + '"'
+
+    assert "(deny network*)" in profile and f"(deny file-read* (subpath {q(home)}))" in profile
+    assert f"(allow file-read* (subpath {q(home / 'proj' / 'deck')}))" in profile
+    assert f"(allow file-read-metadata (literal {q(home / 'proj')}))" in profile
+    assert f"(allow file-read* file-write* (subpath {q(scratch)}))" in profile
     argv = bwrap_argv(spec, ["python", "x"], home)
     assert "--unshare-net" in argv and argv[-2:] == ["python", "x"]
     assert ["--bind", str(scratch), str(scratch)] == argv[argv.index("--bind"):argv.index("--bind") + 3]
@@ -184,7 +187,7 @@ def test_skill_script_runs_and_returns_files(kernel_for, tmp_path):
     (skill / "scripts" / "make.py").write_text("import sys, json\njson.dump({'args': sys.argv[1:]}, open('result.json', 'w'))\nprint('ok')\n")
     out = kernel_for(project).dispatcher.call("skill.run_script", {"script_abs": str(skill / "scripts" / "make.py"), "skill_dir_abs": str(skill), "args": ["a", "b"]})
     assert out["exit_code"] == 0 and "ok" in out["stdout"]
-    assert json.loads((project / out["files"][0]).read_text()) == {"args": ["a", "b"]}
+    assert json.loads((project / out["files"][0]).read_text(encoding="utf-8")) == {"args": ["a", "b"]}
 
 
 # ---- isolation (PROTOCOL 9, BUILD-SPEC S1): only meaningful where a native sandbox exists --------
@@ -210,7 +213,7 @@ def test_native_sandbox_blocks_escapes(kernel_for, tmp_path, attempt, monkeypatc
     secret.write_text("top secret")
     target = Path.home() / ".present-sandbox-test-target"
     target.unlink(missing_ok=True)
-    before = (project / "deck" / "deck.json").read_text()
+    before = (project / "deck" / "deck.json").read_text(encoding="utf-8")
     # The escape scripts read their targets from the environment, which the kernel scrubs; bake them in.
     script = ESCAPES[attempt].replace("os.environ['PRESENT_TEST_SECRET']", repr(str(secret))).replace(
         "os.environ['PRESENT_TEST_TARGET']", repr(str(target)))  # fmt: skip
@@ -220,7 +223,7 @@ def test_native_sandbox_blocks_escapes(kernel_for, tmp_path, attempt, monkeypatc
             build(kernel_for, project)
         assert "ESCAPED" not in err.value.extra.get("stdout", "")
         assert not target.exists()
-        assert (project / "deck" / "deck.json").read_text() == before
+        assert (project / "deck" / "deck.json").read_text(encoding="utf-8") == before
     finally:
         secret.unlink(missing_ok=True)
         target.unlink(missing_ok=True)

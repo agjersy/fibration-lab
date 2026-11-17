@@ -63,8 +63,16 @@ def _dedupe(paths: list[Path]) -> list[Path]:
 def interpreter_dirs(python: Path) -> list[Path]:
     """The interpreter's installation and, for a venv, its base installation."""
     prefixes = [Path(sys.prefix), Path(sys.base_prefix)]
-    real = Path(os.path.realpath(python))
-    prefixes.append(real.parent.parent if real.parent.name in ("bin", "Scripts") else real.parent)
+    # Every hop of the interpreter's symlink chain: a venv may point at its base through a
+    # symlinked directory (uv's minor-version alias) that a hidden home would otherwise break.
+    hops, cur = [Path(os.path.realpath(python))], Path(python)
+    for _ in range(16):
+        if not cur.is_symlink():
+            break
+        cur = Path(os.path.normpath(cur.parent / os.readlink(cur)))
+        hops.append(cur)
+    for hop in hops:
+        prefixes.append(hop.parent.parent if hop.parent.name in ("bin", "Scripts") else hop.parent)
     return [p for p in _dedupe(prefixes) if p.exists() and p != Path(p.anchor)]
 
 
@@ -84,7 +92,7 @@ def _userns_usable() -> bool:
     try:
         for name, bad in (("/proc/sys/kernel/unprivileged_userns_clone", "0"), ("/proc/sys/user/max_user_namespaces", "0")):
             p = Path(name)
-            if p.exists() and p.read_text().strip() == bad:
+            if p.exists() and p.read_text(encoding="utf-8").strip() == bad:
                 return False
     except OSError:
         return False

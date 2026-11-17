@@ -590,19 +590,34 @@ impl Session {
         for grant in plan {
             // Record first: a failed SetNamedSecurityInfoW may still have changed some children.
             session.granted.push(grant.path.clone());
-            edit_dacl(
+            let result = edit_dacl(
                 &grant.path,
                 sid,
                 GRANT_ACCESS,
                 grant.mask,
                 grant.inheritance,
-            )
-            .map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!("granting the sandbox access to {}: {e}", grant.display),
-                )
-            })?;
+            );
+            match result {
+                Ok(()) => {}
+                // A read-only directory this user may not re-permission (a system folder such
+                // as the fonts directory) is either readable by the sandbox already or not
+                // needed badly enough to stop the run.
+                Err(e)
+                    if grant.mask == READ_MASK && e.kind() == io::ErrorKind::PermissionDenied =>
+                {
+                    session.granted.pop();
+                    warn(format!(
+                        "read access to {} was not added ({e}); continuing with its existing permissions",
+                        grant.display
+                    ));
+                }
+                Err(e) => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("granting the sandbox access to {}: {e}", grant.display),
+                    ))
+                }
+            }
         }
         Ok(session)
     }

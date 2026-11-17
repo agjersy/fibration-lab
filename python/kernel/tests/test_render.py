@@ -35,7 +35,7 @@ def test_render_reopens_and_tags_every_element(kernel_for, corpus_project):
     result = render(kernel_for, corpus_project)
     prs = Presentation(str(corpus_project / result["out"]))
     slides = list(prs.slides)
-    deck = json.loads((corpus_project / "deck/deck.json").read_text())
+    deck = json.loads((corpus_project / "deck/deck.json").read_text(encoding="utf-8"))
     order = [sid for sec in deck["sections"] for sid in sec["slides"]]
     assert [T.read_slide_tags(s.part)["present.slide"] for s in slides] == order
     by_slide: dict[str, set[str]] = {}
@@ -43,7 +43,7 @@ def test_render_reopens_and_tags_every_element(kernel_for, corpus_project):
         sid = T.read_slide_tags(slide.part)["present.slide"]
         by_slide[sid] = {T.read_shape_tags(slide.part, sh._element).get("present.element", "") for sh in slide.shapes}
     for sid in order:
-        doc = json.loads((corpus_project / f"deck/slides/{sid}.json").read_text())
+        doc = json.loads((corpus_project / f"deck/slides/{sid}.json").read_text(encoding="utf-8"))
         wanted = {item["id"] for item in doc["placeholders"].values() if item.get("type") != "empty"}
         wanted |= {el["id"] for el in doc.get("elements", [])}
         assert wanted <= by_slide[sid], f"{sid}: missing {wanted - by_slide[sid]}"
