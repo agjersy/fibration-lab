@@ -526,7 +526,24 @@ class Deck:
                 })  # fmt: skip
         return emap
 
+    def _apply_autofit(self) -> None:
+        """Write the shrink scale into shrink-on-overflow placeholders whose text needs it."""
+        from .fit import measure_shape, placeholder_info, write_autofit
+        from .measure import Measurer
+
+        measurer = Measurer()
+        fonts = self.description["theme"]["fonts"]
+        for slide in self.slides:
+            for sp in slide.raw.shapes._spTree.iterfind(f"{{{P}}}sp"):
+                info = placeholder_info(slide.layout, sp)
+                if info is None or info["autofit"] != "shrink":
+                    continue
+                got = measure_shape(sp, info, fonts, measurer)
+                if got is not None and got[1].scale < 1.0:
+                    write_autofit(sp, got[1])
+
     def to_bytes(self) -> tuple[bytes, list[dict[str, Any]]]:
+        self._apply_autofit()
         self._write_sections()
         emap = self._finalize()
         props = {"present.schema_version": "1", "present.mode": self.mode}

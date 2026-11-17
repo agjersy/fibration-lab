@@ -113,6 +113,8 @@ interface Table { columns: string[]; rows: (string|number|null)[][]; loc: string
 
 ### 1.4 Determinism
 
+**Autofit.** For placeholders whose template setting is shrink-on-overflow, the SDK measures the text at save time and writes the resulting `fontScale` and `lnSpcReduction` into the slide's `a:normAutofit`, because PowerPoint only recomputes them when text is edited. The checker uses the same measurement.
+
 `deck.render` is a pure function of (deck document files, referenced assets, template file, `present_sdk` version): identical inputs produce byte-identical output except for the `docProps/core.xml` modified time, which is fixed to the snapshot time. The test suite asserts this.
 
 ### 1.5 Diagnostics
@@ -154,8 +156,8 @@ interface Deck {
   brief?: string;                   // the user's brief, for the agent's context
   properties?: Record<string, string>;   // custom document properties
 }
-type SlideId = string;              // ^s-[0-9a-z]{4,12}$, stable for the life of the slide
-type ElementId = string;            // ^e-[0-9a-z]{4,12}$
+type SlideId = string;              // ^s-[0-9a-z][0-9a-z-]{0,23}$, stable for the life of the slide
+type ElementId = string;            // ^e-[0-9A-Za-z][0-9A-Za-z-]{0,31}$ (the SDK also emits e-raw-<n>, e-ftr, e-sldNum, e-dt)
 ```
 
 ### 2.2 Slide
@@ -201,7 +203,7 @@ interface Crop { l: number; t: number; r: number; b: number }   // fractions 0..
 type Cite = string;    // "ref:<ref_id>@<version>#<loc>"
 ```
 
-`ref_id` is `^r-[0-9a-z]{4,12}$`; `version` is the first 12 hex digits of the reference file's SHA-256. Location grammar (`loc`), by reference kind:
+`ref_id` is `^r-[0-9a-z][0-9a-z-]{0,23}$`; `version` is the first 12 hex digits of the reference file's SHA-256. Location grammar (`loc`), by reference kind:
 
 | kind | loc | example |
 |---|---|---|
@@ -286,6 +288,7 @@ interface TemplateDescription {
   theme: { name: string, colors: Record<ThemeColor, string /*hex*/>, fonts: { major: string, minor: string, ea?: string, cs?: string } };
   masters: { name: string, layouts: LayoutInfo[] }[];
   table_styles: { id: string, name: string }[];
+  default_table_style?: string;      // the template's default table style id, applied to new tables
   fonts_missing: string[];           // theme or placeholder fonts not installed on this machine
 }
 interface LayoutInfo {
@@ -299,7 +302,8 @@ interface PlaceholderInfo {
   type: "title"|"ctrTitle"|"subTitle"|"body"|"obj"|"pic"|"chart"|"tbl"|"dgm"|"media"|"clipArt"|"dt"|"ftr"|"sldNum";
   idx: number; x: number; y: number; cx: number; cy: number;
   autofit: "none"|"shrink"|"resize";
-  levels: { level: number, font: string, size_pt: number, bold: boolean, color: ThemeColor|string, bullet: boolean, space_before_pt: number, line_spacing: number }[];
+  anchor: string;                    // vertical anchor of the text: "t" | "ctr" | "b"
+  levels: { level: number, font: string, size_pt: number, bold: boolean, color: ThemeColor|string, bullet: boolean, space_before_pt: number, line_spacing: number, mar_l: number }[];
   insets: { l: number, t: number, r: number, b: number };
   accepts: ("text"|"image"|"chart"|"table"|"diagram")[];
 }
@@ -415,7 +419,7 @@ snapshots/<snapshot_id>.json    manifest
 log.jsonl                       append-only: { ts, snapshot_id, parent, reason: "turn"|"mode-switch"|"export"|"restore"|"manual", turn_id?, label? }
 ```
 
-Manifest: `{ snapshot_id, created, parent, mode, files: { path: sha256 }[], assets: sha256[], refs: { id, version }[] }`. `snapshot_id` is `^h-[0-9a-z]{10}$`. Assets and references are already content-addressed in the project and are only listed, never copied. Restore writes the files of a snapshot to `deck/` and records a new `restore` snapshot (history is append-only). Pruning keeps every `mode-switch` and `export` snapshot, the last 200 `turn` snapshots, and all from the last 14 days.
+Manifest: `{ snapshot_id, created, parent, mode, files: { path: sha256 }[], assets: sha256[], refs: { id, version }[] }`. `snapshot_id` is `^h-[0-9a-z]{1,16}$` (the core generates 10 characters). Assets and references are already content-addressed in the project and are only listed, never copied. Restore writes the files of a snapshot to `deck/` and records a new `restore` snapshot (history is append-only). Pruning keeps every `mode-switch` and `export` snapshot, the last 200 `turn` snapshots, and all from the last 14 days.
 
 ### 4.5 Project tree
 
@@ -579,7 +583,7 @@ Ids, default severities, and inputs. Severities are overridable in `[contract]`.
 | `struct.titles` | error | both | every visible slide has a unique non-empty title |
 | `img.resolution` | warn | both | effective image DPI at placed size >= 150 |
 | `code.hardcoded-style` | warn | code | literal hex colors or font names in scripts (AST check) |
-| `out.opens-clean` | error | both | the `.pptx` validates against ECMA-376 transitional schemas, re-opens in `python-pptx`, and converts in the fidelity engine when present |
+| `out.opens-clean` | error | both | the `.pptx` re-opens in `python-pptx`, validates against the ECMA-376 transitional schemas when they are installed (`vendor/ooxml-schemas`), and converts in the fidelity engine, with one page per visible slide, when an engine is present |
 
 "Factual" paragraphs: a paragraph is factual if it contains a digit, a currency or percent sign, or a proper noun outside the title, or if the agent tagged it `cite` at all; the agent can mark a paragraph non-factual with an empty `cite: []`, which the review card shows.
 

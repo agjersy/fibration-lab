@@ -22,7 +22,9 @@
         </p:nvSpPr>
         <p:spPr/>
         <p:txBody>
-          <a:bodyPr/>
+          <a:bodyPr>
+            <a:normAutofit fontScale="87500" lnSpcReduction="10000"/>
+          </a:bodyPr>
           <a:lstStyle/>
           <a:p>
             <a:r>
