@@ -17,6 +17,8 @@ Every dependency added to the project is recorded here in the same commit.
 | schemars, ts-rs | MIT | schema and TypeScript generation |
 | rusqlite (bundled SQLite) | MIT (SQLite: public domain) | index |
 | zstd | MIT (zstd: BSD-3-Clause) | snapshot store |
+| serde_yaml_ng | MIT OR Apache-2.0 | skill front matter |
+| json-patch | MIT OR Apache-2.0 | RFC 6902 patches on slide documents |
 | keyring (optional feature `keychain`) | MIT OR Apache-2.0 | API keys in the OS keychain |
 | windows-sys (Windows only) | MIT OR Apache-2.0 | AppContainer, ACLs, job objects in the sandbox helper |
 | libc (Unix only) | MIT OR Apache-2.0 | resource limits in the sandbox helper fallback |
