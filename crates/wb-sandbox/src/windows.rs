@@ -565,6 +565,24 @@ impl Session {
             }
         }
 
+        // Enter-only directories: an entry on the directory itself that its children do not
+        // inherit. Skipped when a recursive grant already covers the path.
+        for path in &spec.enter {
+            if read.contains(path) || write.contains(path) || !path.is_dir() {
+                continue;
+            }
+            let wide_path = wide(path.as_os_str())?;
+            if all_packages_allowed(&wide_path, READ_MASK, true) {
+                continue;
+            }
+            plan.push(Grant {
+                path: wide_path,
+                display: path.to_string_lossy().into_owned(),
+                mask: READ_MASK,
+                inheritance: NO_INHERITANCE,
+            });
+        }
+
         // The journal goes to disk before the first DACL changes.
         if let Some(dir) = &dir {
             let record = Journal {

@@ -155,13 +155,22 @@ def test_eject_inlines_generated_slides(kernel_for, tmp_path):
     assert "generated slide script (inlined)" in (project / "deck/build.py").read_text(encoding="utf-8")
 
 
+def _quoted(path) -> str:
+    return '"' + str(path).replace("\\", "\\\\") + '"'
+
+
 def test_profiles_and_argv_shapes(tmp_path):
     home = tmp_path / "home"
     (home / "proj" / "deck").mkdir(parents=True)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    spec = SandboxSpec(cwd=scratch, scratch=scratch, read_only=[home / "proj" / "deck"])
+    spec = SandboxSpec(cwd=scratch, scratch=scratch, read_only=[home / "proj" / "deck"], enter=[home / "proj"])
     profile = sandbox_exec_profile(spec, home)
+    assert f"(allow file-read* (literal {_quoted(home / 'proj')}))" in profile
+    from present_kernel.runner.sandbox import helper_argv
+
+    helper = helper_argv("present-sandbox", spec, ["python"])
+    assert helper[helper.index("--enter") + 1] == str(home / "proj") and helper[-2:] == ["--", "python"]
     def q(path):  # the profile's string quoting: backslashes doubled (Windows paths in this test)
         return '"' + str(path).replace("\\", "\\\\") + '"'
 

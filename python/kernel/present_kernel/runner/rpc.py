@@ -40,7 +40,7 @@ def _spec(kernel, scratch: Path, extra_ro: list[Path] | None = None) -> sb.Sandb
     ro = [*sb.interpreter_dirs(Path(sys.executable)), *sb.code_dirs(), *system_font_dirs(),
           project / "template", project / "assets", project / "deck", project / "references",
           project / ".present" / "cache" / "refs", *(extra_ro or [])]  # fmt: skip
-    return sb.SandboxSpec(cwd=scratch, scratch=scratch, read_only=ro)
+    return sb.SandboxSpec(cwd=scratch, scratch=scratch, read_only=ro, enter=[project])
 
 
 def run_job(kernel, job: dict[str, Any], timeout: float, scratch: Path, env: dict[str, str] | None = None,

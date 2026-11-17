@@ -13,7 +13,8 @@ use crate::{SandboxSpec, DEFAULT_MEMORY, DEFAULT_PROCESSES};
 
 pub const USAGE: &str = "\
 usage: present-sandbox --cwd <dir> [--memory <bytes>] [--processes <n>]
-                       [--read <dir>]... [--write <dir>]... -- <cmd> [args...]
+                       [--read <dir>]... [--write <dir>]... [--enter <dir>]...
+                       -- <cmd> [args...]
 
 Runs <cmd> in the code sandbox with the standard streams and the environment inherited,
 and exits with its exit code (125 if the helper itself fails).
@@ -23,6 +24,7 @@ and exits with its exit code (125 if the helper itself fails).
   --processes <n>    live-process cap; 0 for none (default: 64)
   --read <dir>       grant read and execute access (repeatable)
   --write <dir>      grant modify access (repeatable)
+  --enter <dir>      allow entering and listing this directory only, not its contents (repeatable)
   -h, --help         print this text
   -V, --version      print the version
 ";
@@ -65,6 +67,7 @@ where
     let mut processes = DEFAULT_PROCESSES;
     let mut read = Vec::new();
     let mut write = Vec::new();
+    let mut enter = Vec::new();
     let mut command: Option<Vec<OsString>> = None;
 
     while let Some(arg) = args.next() {
@@ -87,6 +90,7 @@ where
             "--cwd" => cwd = Some(PathBuf::from(value(name)?)),
             "--read" => read.push(PathBuf::from(value(name)?)),
             "--write" => write.push(PathBuf::from(value(name)?)),
+            "--enter" => enter.push(PathBuf::from(value(name)?)),
             "--memory" => memory = number(name, &value(name)?)?,
             "--processes" => {
                 let n: u64 = number(name, &value(name)?)?;
@@ -111,6 +115,7 @@ where
         cwd: cwd.unwrap_or_else(|| PathBuf::from(".")),
         read,
         write,
+        enter,
         memory,
         processes,
         command,
@@ -158,6 +163,8 @@ mod tests {
             r"C:\proj\template",
             "--write",
             r"C:\scratch",
+            "--enter",
+            r"C:\proj",
             "--",
             r"C:\rt\python.exe",
             "-I",

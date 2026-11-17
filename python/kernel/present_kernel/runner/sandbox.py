@@ -36,6 +36,9 @@ class SandboxSpec:
     scratch: Path  # writable; also HOME for the child
     read_only: list[Path] = field(default_factory=list)
     writable: list[Path] = field(default_factory=list)
+    # Directories the child may enter and list without reading what is in them (the project
+    # root, whose granted subdirectories relative paths are resolved against).
+    enter: list[Path] = field(default_factory=list)
     memory: int = DEFAULT_MEMORY
     processes: int = DEFAULT_PROCESSES
 
@@ -205,6 +208,8 @@ def sandbox_exec_profile(spec: SandboxSpec, home: Path | None = None) -> str:
         ancestors += _ancestors_under(d, home)
     for a in _dedupe(ancestors):
         lines.append(f"(allow file-read-metadata (literal {_q(a)}))")
+    for d in _dedupe(_with_realpaths([d for d in spec.enter if d.is_dir()])):
+        lines.append(f"(allow file-read* (literal {_q(d)}))")
     for d in ro:
         lines.append(f"(allow file-read* (subpath {_q(d)}))")
     for d in rw:
@@ -234,6 +239,9 @@ def helper_argv(helper: str, spec: SandboxSpec, cmd: list[str]) -> list[str]:
         argv += ["--read", str(d)]
     for d in spec.rw():
         argv += ["--write", str(d)]
+    for d in spec.enter:
+        if d.is_dir():
+            argv += ["--enter", str(d)]
     return [*argv, "--", *cmd]
 
 

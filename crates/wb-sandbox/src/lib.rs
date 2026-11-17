@@ -49,6 +49,9 @@ pub struct SandboxSpec {
     pub read: Vec<PathBuf>,
     /// Directories (or files) the child may also modify.
     pub write: Vec<PathBuf>,
+    /// Directories the child may enter and list, without access to what is in them: the
+    /// working directory when only some of its subdirectories are granted.
+    pub enter: Vec<PathBuf>,
     /// Memory cap in bytes, per process and for the whole job; `0` means no cap.
     pub memory: u64,
     /// Maximum number of live processes in the sandbox; `0` means no cap.
@@ -72,6 +75,7 @@ impl SandboxSpec {
             cwd: cwd.into(),
             read: Vec::new(),
             write: Vec::new(),
+            enter: Vec::new(),
             memory: DEFAULT_MEMORY,
             processes: DEFAULT_PROCESSES,
             command: command.into_iter().map(Into::into).collect(),
