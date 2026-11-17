@@ -40,6 +40,9 @@ pub const DEFAULT_PACKAGE_INDEX: &str = "https://pypi.org/simple";
 /// the tool fail rather than contact an index.
 pub const OFFLINE_ENV: &[(&str, &str)] = &[("UV_OFFLINE", "1"), ("PIP_NO_INDEX", "1")];
 
+/// How long the gate's HTTP client waits for a connection to be established.
+pub const CONNECT_TIMEOUT_SECS: u64 = 15;
+
 /// What an outbound connection is for. There are no other classes.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -103,6 +106,9 @@ impl Gate {
         let for_redirects = allow.clone();
         let http = reqwest::Client::builder()
             .no_proxy()
+            // An unreachable endpoint fails fast instead of waiting on the caller's
+            // response timeout.
+            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::custom(move |attempt| {
                 if attempt.previous().len() >= 5 {
                     return attempt.error("too many redirects");

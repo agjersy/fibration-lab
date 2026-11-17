@@ -212,3 +212,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Shared crates must not depend on workbench crates
         run: python3 tools/check_wb_boundaries.py
+      - name: Only the network gate can reach the network
+        run: python3 tools/check_egress.py
