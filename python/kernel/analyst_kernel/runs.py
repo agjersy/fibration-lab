@@ -282,7 +282,7 @@ class RunManager:
         )
         return env
 
-    def sandbox_spec(self, run_dir: Path, out_abs: Path, network: bool) -> SandboxSpec:
+    def sandbox_spec(self, run_dir: Path, out_abs: Path) -> SandboxSpec:
         derived = self.root / "data" / "derived"
         return SandboxSpec(
             root=self.root,
@@ -294,7 +294,6 @@ class RunManager:
             support_dirs=[self.mpl_dir / "analyst_mpl"],
             tooling_dir=tooling_dir(),
             derived_dir=derived if derived.is_dir() else None,
-            network=network,
             rlimit_as=self.config.rlimit_as(),
             rlimit_nofile=self.config.open_files,
         )
@@ -306,7 +305,6 @@ class RunManager:
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
         timeout_s: float | None = None,
-        network: bool = False,
         tree_hash: str | None = None,
     ) -> dict[str, Any]:
         args = [str(a) for a in (args or [])]
@@ -349,7 +347,7 @@ class RunManager:
         (run_dir / "stderr.log").touch()
         (run_dir / "artifacts.jsonl").touch()
         write_atomic(run_dir / "status", "running\n")
-        write_atomic(run_dir / "launch.json", json.dumps({"timeout_s": timeout, "network": network}))
+        write_atomic(run_dir / "launch.json", json.dumps({"timeout_s": timeout}))
         write_atomic(
             out_abs / "run.json",
             json.dumps(
@@ -367,7 +365,7 @@ class RunManager:
         )
 
         cmd = [self.python, str(script_abs), *args]
-        wrapped = wrap(self.sandbox_kind, self.sandbox_spec(run_dir, out_abs, network), cmd)
+        wrapped = wrap(self.sandbox_kind, self.sandbox_spec(run_dir, out_abs), cmd)
         sup = [
             self.supervisor_python,
             "-m",

@@ -35,7 +35,6 @@ class SandboxSpec:
     derived_dir: Path | None = None
     home: Path | None = None
     python: Path | None = None  # session interpreter; its base installation is made readable
-    network: bool = False
     rlimit_as: int | None = DEFAULT_RLIMIT_AS  # bytes; None or 0 means unlimited
     rlimit_nofile: int | None = DEFAULT_RLIMIT_NOFILE
 
@@ -267,9 +266,9 @@ def bwrap_argv(spec: SandboxSpec, cmd: list[str], bwrap: str = "bwrap") -> list[
         argv += ["--ro-bind", str(d), str(d)]
     for d in spec.writable_dirs():
         argv += ["--bind", str(d), str(d)]
-    if not spec.network:
-        argv.append("--unshare-net")
+    # Sandboxed code never has network access; there is no setting that grants it.
     argv += [
+        "--unshare-net",
         "--die-with-parent",
         "--new-session",
         "--unshare-pid",
@@ -346,10 +345,8 @@ def sandbox_exec_profile(spec: SandboxSpec) -> str:
     lines.append("(allow process*)")
     lines.append("(allow sysctl-read)")
     lines.append("(allow mach-lookup)")
-    if spec.network:
-        lines.append("(allow network*)")
-    else:
-        lines.append("(deny network*)")
+    # Sandboxed code never has network access; there is no setting that grants it.
+    lines.append("(deny network*)")
     return "\n".join(lines) + "\n"
 
 

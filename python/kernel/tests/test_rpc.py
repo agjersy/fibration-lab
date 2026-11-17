@@ -180,6 +180,11 @@ def test_run_and_script_not_found(kernel):
     with pytest.raises(RpcError) as exc:
         kernel.call("run.start", {"script": 5})
     assert exc.value.code == INVALID_PARAMS
+    # There is no network grant: asking for one is an error, not a run with network.
+    with pytest.raises(RpcError) as exc:
+        kernel.call("run.start", {"script": "scripts/fit.py", "network": True})
+    assert exc.value.code == INVALID_PARAMS
+    assert "network" in str(exc.value)
 
 
 def test_hello_and_shutdown(kernel, repo):

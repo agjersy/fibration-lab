@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tomllib
@@ -60,8 +61,11 @@ def env_packages(python: str, root: Path) -> list[dict[str, Any]]:
         cmd = [uv, "pip", "list", "--format", "json", "--python", python]
     else:
         cmd = [python, "-m", "pip", "list", "--format", "json"]
+    # Listing reads the environment on disk. The kernel has no network access and installs
+    # are the core's job, so the tools are told not to look for an index at all.
+    env = {**os.environ, "UV_OFFLINE": "1", "PIP_NO_INDEX": "1"}
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(root))
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(root), env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         raise RpcError(TOOL_MISSING, f"package listing failed: {exc}", tool="uv" if uv else "pip") from exc
     if proc.returncode != 0:

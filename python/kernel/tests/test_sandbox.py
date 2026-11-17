@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ from analyst_kernel.sandbox import (
 )
 
 
-def spec(tmp_path: Path, network=False) -> SandboxSpec:
+def spec(tmp_path: Path) -> SandboxSpec:
     root = tmp_path / "repo"
     (root / "data" / "derived").mkdir(parents=True)
     venv = root / ".venv"
@@ -46,7 +47,6 @@ def spec(tmp_path: Path, network=False) -> SandboxSpec:
         tooling_dir=tooling,
         derived_dir=root / "data" / "derived",
         home=tmp_path / "home",
-        network=network,
         python=venv / "bin" / "python",
     )
 
@@ -147,7 +147,10 @@ def test_bwrap_argv(tmp_path: Path):
         assert flag in argv
     assert "--proc /proc --dev /dev" in text
     assert argv[argv.index("--") + 1 :] == cmd
-    assert "--unshare-net" not in bwrap_argv(spec(tmp_path / "b", network=True), cmd)
+    # No field of the spec can turn the network on.
+    assert "network" not in {f.name for f in dataclasses.fields(SandboxSpec)}
+    with pytest.raises(TypeError):
+        SandboxSpec(root=s.root, venv=None, run_dir=s.run_dir, out_dir=s.out_dir, network=True)
 
 
 def test_sandbox_exec_profile_and_argv(tmp_path: Path):
@@ -166,7 +169,7 @@ def test_sandbox_exec_profile_and_argv(tmp_path: Path):
     assert '(allow file-write* (subpath "/private/var/folders"))' in lines
     for rule in ("(allow process*)", "(allow sysctl-read)", "(allow mach-lookup)", "(deny network*)"):
         assert rule in lines
-    assert "(allow network*)" in sandbox_exec_profile(spec(tmp_path / "n", network=True))
+    assert not any("allow network" in line for line in lines)
     argv = sandbox_exec_argv(s, ["/py", "s.py"])
     assert argv[:2] == ["sandbox-exec", "-p"] and argv[2] == prof and argv[3:] == ["/py", "s.py"]
 
