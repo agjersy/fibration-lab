@@ -74,6 +74,9 @@ def main() -> int:
                           capture_output=True, text=True, check=True).stdout.strip()  # fmt: skip
     shutil.copytree(REPO / "schemas", Path(site) / "schemas")
 
+    # 3b. The built-in skills.
+    shutil.copytree(REPO / "skills", out / "skills")
+
     # 4. Prove it runs with no network and no reference to the checkout.
     env = {k: v for k, v in os.environ.items() if k.upper() not in ("PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT_ENVIRONMENT")}
     dead = "http://127.0.0.1:9"

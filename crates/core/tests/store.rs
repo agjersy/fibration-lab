@@ -525,3 +525,26 @@ fn audit_log_holds_metadata_only_and_exports_csv() {
         assert!(!fields.iter().any(|f| f == forbidden));
     }
 }
+
+#[test]
+fn built_in_skills_load_without_diagnostics() {
+    let tmp = tempfile::tempdir().unwrap();
+    let set = present_core::session::discover_skills(&tmp.path().join("home"), tmp.path());
+    let mut names = set.names();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "chart-selection",
+            "deck-contract",
+            "executive-summary",
+            "storyline"
+        ]
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+    let (_, diagnostics) = wb_skills::SkillSet::discover(&[wb_skills::SkillRoot::new(
+        wb_skills::SkillSource::Builtin,
+        root,
+    )]);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}

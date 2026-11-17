@@ -95,8 +95,15 @@ pub fn policy_for(project: &ProjectConfig) -> Result<Policy> {
 
 /// Skills visible to a project: built-in, user, then project (PROTOCOL 11).
 pub fn discover_skills(home: &Path, project: &Path) -> SkillSet {
+    // Built-in skills ship with the runtime; a development checkout reads them from the
+    // repository, and `PRESENT_SKILLS_DIR` names them for an installed app.
+    let builtin = std::env::var_os("PRESENT_SKILLS_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| Some(home.join("runtime").join("skills")).filter(|p| p.is_dir()))
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills"));
     let roots = [
-        SkillRoot::new(SkillSource::Builtin, home.join("runtime").join("skills")),
+        SkillRoot::new(SkillSource::Builtin, builtin),
         SkillRoot::new(SkillSource::User, home.join("skills")),
         SkillRoot::new(
             SkillSource::Project,

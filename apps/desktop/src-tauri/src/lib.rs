@@ -91,6 +91,11 @@ pub fn apply_bundled_runtime(workbench: &Workbench, resources: &std::path::Path)
         );
         return false;
     }
+    let skills = runtime.join("skills");
+    if skills.is_dir() && std::env::var_os("PRESENT_SKILLS_DIR").is_none() {
+        // Read by the core when it lists skills; set once, at startup.
+        std::env::set_var("PRESENT_SKILLS_DIR", &skills);
+    }
     let mut options = workbench.options.lock().unwrap_or_else(|e| e.into_inner());
     if options.runtime_python.is_none() {
         options.runtime_python = Some(python.to_string_lossy().into_owned());
