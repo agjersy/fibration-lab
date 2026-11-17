@@ -1,0 +1,25 @@
+{
+ "kind": "csv",
+ "title": "month, units, price, note",
+ "pages": null,
+ "outline": [],
+ "chunks": [
+  {
+   "loc": "r1-34",
+   "heading_path": [],
+   "text": "month\tunits\tprice\tnote\n2026-01\t341\t93.89\tbatch 1; checked\n2026-02\t414\t64.79\tbatch 2; checked\n2026-03\t84\t81.48\tbatch 3; checked\n2026-04\t106\t36.84\tbatch 4; checked\n2026-05\t69\t90.15\tbatch 5; checked\n2026-06\t229\t4.67\tbatch 6; checked\n2026-07\t454\t41.98\tbatch 7; checked\n2026-08\t256\t9.89\tbatch 8; checked\n2026-09\t444\t6.79\tbatch 9; checked\n2026-10\t589\t13.13\tbatch 10; checked\n2026-11\t238\t62.80\tbatch 11; checked\n2026-12\t606\t93.88\tbatch 12; checked\n2026-01\t600\t58.38\tbatch 13; checked\n2026-02\t60\t96.67\tbatch 14; checked\n2026-03\t57\t55.55\tbatch 15; checked\n2026-04\t146\t29.38\tbatch 16; checked\n2026-05\t157\t53.99\tbatch 17; checked\n2026-06\t594\t31.23\tbatch 18; checked\n2026-07\t845\t67.84\tbatch 19; checked\n2026-08\t115\t58.00\tbatch 20; checked\n2026-09\t664\t19.41\tbatch 21; checked\n2026-10\t109\t54.68\tbatch 22; checked\n2026-11\t74\t56.31\tbatch 23; checked\n2026-12\t643\t21.18\tbatch 24; checked\n2026-01\t706\t53.11\tbatch 25; checked\n2026-02\t805\t31.79\tbatch 26; checked\n2026-03\t609\t91.50\tbatch 27; checked\n2026-04\t380\t30.38\tbatch 28; checked\n2026-05\t823\t18.62\tbatch 29; checked\n2026-06\t808\t24.92\tbatch 30; checked\n2026-07\t598\t30.42\tbatch 31; checked\n2026-08\t516\t86.76\tbatch 32; checked\n2026-09\t756\t44.99\tbatch 33; checked"
+  },
+  {
+   "loc": "r35-41",
+   "heading_path": [],
+   "text": "2026-10\t633\t97.06\tbatch 34; checked\n2026-11\t130\t51.17\tbatch 35; checked\n2026-12\t178\t75.20\tbatch 36; checked\n2026-01\t165\t92.46\tbatch 37; checked\n2026-02\t441\t4.84\tbatch 38; checked\n2026-03\t694\t8.61\tbatch 39; checked\n2026-04\t581\t57.16\tbatch 40; checked"
+  }
+ ],
+ "tables": [
+  {
+   "loc": "r1-41",
+   "rows": 41,
+   "cols": 4
+  }
+ ]
+}

@@ -1,0 +1,52 @@
+{
+  "id": "s-st11",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst11",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Support is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst11",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Support point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Support point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

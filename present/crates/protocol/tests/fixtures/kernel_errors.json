@@ -1,0 +1,8 @@
+[
+  { "code": 2000, "message": "not found", "data": { "detail": "no slide s-zzzz" } },
+  { "code": 2002, "message": "schema validation failed", "data": { "detail": "2 errors", "errors": [{ "pointer": "/placeholders/body/type", "message": "'txt' is not one of ['text', 'image', 'chart', 'table', 'diagram', 'empty']" }, { "pointer": "", "message": "'layout' is a required property" }] } },
+  { "code": 2004, "message": "render failed", "data": { "detail": "asset missing", "element_id": "e-im01" } },
+  { "code": 2004, "message": "render failed", "data": { "detail": "template has no slide master" } },
+  { "code": 2005, "message": "build script failed", "data": { "detail": "exit code 1", "stdout": "", "stderr": "Traceback (most recent call last): ...", "exit_code": 1 } },
+  { "code": 2010, "message": "transform failed", "data": { "detail": "no column Region", "step_index": 1 } }
+]

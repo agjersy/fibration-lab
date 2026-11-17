@@ -1,0 +1,53 @@
+{
+  "id": "s-st01",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst01",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Summary is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst01",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Summary point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Summary point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": [],
+  "locked": true
+}

@@ -1,0 +1,37 @@
+[package]
+name = "wb-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# OS keychain key storage (Keychain on macOS, Credential Manager on Windows). Off by default so
+# headless Linux CI needs no secret service; the app crates turn it on.
+keychain = ["dep:keyring"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+base64 = { workspace = true }
+keyring = { version = "3.6", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+reqwest = { workspace = true, features = ["macos-system-configuration"] }
+keyring = { version = "3.6", optional = true, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6", optional = true, features = ["windows-native"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+rcgen = "0.13"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

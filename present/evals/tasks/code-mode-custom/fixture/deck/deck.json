@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "mode": "structured",
+  "title": "Capability radar",
+  "template": "template/placeholder.pptx",
+  "sections": [
+    {
+      "title": "",
+      "slides": [
+        "s-cm01"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "mode": "structured",
+  "title": "Corpus deck",
+  "author": "Test",
+  "template": "template/corp.potx",
+  "sections": [
+    {
+      "title": "Part one",
+      "slides": [
+        "s-c001",
+        "s-c002",
+        "s-c003",
+        "s-c004",
+        "s-c005",
+        "s-c006",
+        "s-c007",
+        "s-c008",
+        "s-c009",
+        "s-c010",
+        "s-c011",
+        "s-c012",
+        "s-c013",
+        "s-c014",
+        "s-c015",
+        "s-c016"
+      ]
+    },
+    {
+      "title": "Part two",
+      "slides": [
+        "s-c017",
+        "s-c018",
+        "s-c019",
+        "s-c020",
+        "s-c021",
+        "s-c022",
+        "s-c023",
+        "s-c024",
+        "s-c025",
+        "s-c026",
+        "s-c027",
+        "s-c028",
+        "s-c029",
+        "s-c030",
+        "s-c031",
+        "s-c032"
+      ]
+    }
+  ],
+  "footer": {
+    "text": "Corpus",
+    "slide_numbers": true
+  },
+  "classification": "Internal"
+}

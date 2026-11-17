@@ -1,0 +1,5 @@
+{"ts":"2026-11-15T10:00:05Z","snapshot_id":"h-zzzzzzzzz9","parent":null,"reason":"manual","label":"project created"}
+{"ts":"2026-11-15T10:20:00Z","snapshot_id":"h-0a1b2c3d4e","parent":"h-zzzzzzzzz9","reason":"turn","turn_id":"t-0001"}
+{"ts":"2026-11-15T10:30:00Z","snapshot_id":"h-1111111111","parent":"h-0a1b2c3d4e","reason":"mode-switch"}
+{"ts":"2026-11-15T10:31:00Z","snapshot_id":"h-2222222222","parent":"h-1111111111","reason":"export"}
+{"ts":"2026-11-15T10:32:00Z","snapshot_id":"h-3333333333","parent":"h-2222222222","reason":"restore","label":"back to turn 1"}

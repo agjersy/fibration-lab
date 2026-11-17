@@ -1,0 +1,30 @@
+{
+ "kind": "eml",
+ "title": "Q3 shipment numbers",
+ "pages": null,
+ "outline": [
+  {
+   "title": "units.csv",
+   "loc": "att1/r1-41",
+   "children": []
+  },
+  {
+   "title": "notes.txt",
+   "loc": "att3/c0-3030",
+   "children": []
+  }
+ ],
+ "chunks": [
+  {
+   "loc": "c0-1036",
+   "heading_path": [],
+   "text": "Subject: Q3 shipment numbers\nFrom: Ana Diaz <ana@example.invalid>\nTo: Ben Okoro <ben@example.invalid>\nDate: 2026-11-04T11:32:00+00:00\n\nHi Ben,\n\nAttached are the monthly units.\n\nFreight forecast variance supplier quarter inventory forecast guidance. Inventory supplier quarter growth inventory channel guidance logistics outlook headcount volume. Forecast margin variance shipment pricing volume shipment variance invoice. Volume volume headcount growth growth renewal order inventory volume supplier budget. Customer outlook logistics volume volume productivity invoice pricing.\n\nChannel freight quarter backlog shipment retention shipment variance freight utilization volume pipeline capacity. Guidance retention customer renewal pricing margin invoice pipeline variance retention. Pricing forecast warehouse pricing shipment logistics variance growth forecast churn pipeline forecast. Pricing shipment contract supplier freight growth demand supply churn invoice demand. Forecast demand inventory demand margin backlog demand freight."
+  },
+  {
+   "loc": "c887-1521",
+   "heading_path": [],
+   "text": "Pricing shipment contract supplier freight growth demand supply churn invoice demand. Forecast demand inventory demand margin backlog demand freight.\n\nPartner revenue pipeline budget retention logistics renewal quarter inventory forecast growth volume pricing. Renewal warehouse supply outlook supply variance channel outlook pricing warehouse capacity warehouse. Inventory invoice forecast outlook order pricing retention budget contract quarter forecast productivity volume. Partner budget capacity volume productivity capacity guidance partner churn quarter. Freight churn backlog guidance pricing productivity invoice volume.\n\nAna"
+  }
+ ],
+ "tables": []
+}

@@ -1,0 +1,72 @@
+{
+  "path": "template/corp-2026.potx",
+  "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "slide_size": { "cx": 12192000, "cy": 6858000 },
+  "theme": {
+    "name": "Corp 2026",
+    "colors": {
+      "dk1": "000000", "lt1": "FFFFFF", "dk2": "1F3864", "lt2": "E7E6E6",
+      "accent1": "4472C4", "accent2": "ED7D31", "accent3": "A5A5A5", "accent4": "FFC000",
+      "accent5": "5B9BD5", "accent6": "70AD47", "hlink": "0563C1", "folHlink": "954F72"
+    },
+    "fonts": { "major": "Noto Serif", "minor": "Noto Sans", "ea": "Noto Sans CJK JP" }
+  },
+  "masters": [
+    {
+      "name": "Corp Master",
+      "layouts": [
+        {
+          "name": "Title and Content",
+          "master": "Corp Master",
+          "index": 1,
+          "description": "One message with up to five supporting points",
+          "placeholders": [
+            {
+              "key": "title", "type": "title", "idx": 0,
+              "x": 838200, "y": 365125, "cx": 10515600, "cy": 1325563,
+              "autofit": "shrink",
+              "anchor": "ctr",
+              "levels": [
+                { "level": 0, "font": "Noto Serif", "size_pt": 32.0, "bold": true, "color": "dk2", "bullet": false, "space_before_pt": 0.0, "line_spacing": 0.9, "mar_l": 0 }
+              ],
+              "insets": { "l": 91440, "t": 45720, "r": 91440, "b": 45720 },
+              "accepts": ["text"]
+            },
+            {
+              "key": "body", "type": "body", "idx": 1,
+              "x": 838200, "y": 1825625, "cx": 10515600, "cy": 4351338,
+              "autofit": "none",
+              "anchor": "t",
+              "levels": [
+                { "level": 0, "font": "Noto Sans", "size_pt": 20.0, "bold": false, "color": "dk1", "bullet": true, "space_before_pt": 10.0, "line_spacing": 1.0, "mar_l": 228600 },
+                { "level": 1, "font": "Noto Sans", "size_pt": 17.5, "bold": false, "color": "7F7F7F", "bullet": true, "space_before_pt": 5.0, "line_spacing": 1.0, "mar_l": 685800 }
+              ],
+              "insets": { "l": 91440, "t": 45720, "r": 91440, "b": 45720 },
+              "accepts": ["text", "image", "chart", "table", "diagram"]
+            },
+            {
+              "key": "idx:12", "type": "sldNum", "idx": 12,
+              "x": 8610600, "y": 6356350, "cx": 2743200, "cy": 365125,
+              "autofit": "resize",
+              "anchor": "b",
+              "levels": [],
+              "insets": { "l": 0, "t": 0, "r": 0, "b": 0 },
+              "accepts": []
+            }
+          ],
+          "usable": true
+        },
+        {
+          "name": "Blank",
+          "master": "Corp Master",
+          "index": 6,
+          "placeholders": [],
+          "usable": false
+        }
+      ]
+    }
+  ],
+  "table_styles": [{ "id": "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}", "name": "Medium Style 2 - Accent 1" }],
+  "default_table_style": "{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}",
+  "fonts_missing": ["Noto Sans CJK JP"]
+}

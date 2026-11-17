@@ -1,0 +1,1734 @@
+{
+  "$id": "https://personal-present.invalid/schemas/slide.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Agg": {
+      "enum": [
+        "sum",
+        "mean",
+        "count"
+      ],
+      "type": "string"
+    },
+    "Align": {
+      "enum": [
+        "auto",
+        "left",
+        "center",
+        "right"
+      ],
+      "type": "string"
+    },
+    "Bullet": {
+      "enum": [
+        "auto",
+        "none",
+        "number"
+      ],
+      "type": "string"
+    },
+    "CellValue": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "One table cell: `string | number | null`."
+    },
+    "Chart": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "description": "Column name for categories (x).",
+          "type": "string"
+        },
+        "computed": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Table"
+            }
+          ],
+          "description": "Written by the core after `chart.compute`; the rendered values."
+        },
+        "computed_at_version": {
+          "description": "Reference version the values were computed from.",
+          "type": "string"
+        },
+        "labels": {
+          "type": "boolean"
+        },
+        "legend": {
+          "$ref": "#/definitions/Legend"
+        },
+        "number_format": {
+          "description": "Excel format code, e.g. `\"0.0%\"`.",
+          "type": "string"
+        },
+        "series": {
+          "items": {
+            "$ref": "#/definitions/ChartSeries"
+          },
+          "type": "array"
+        },
+        "series_from": {
+          "$ref": "#/definitions/SeriesFrom"
+        },
+        "source": {
+          "$ref": "#/definitions/ChartSource"
+        },
+        "stacked": {
+          "$ref": "#/definitions/Stacking"
+        },
+        "steps": {
+          "description": "Transform pipeline (PROTOCOL 2.6).",
+          "items": {
+            "$ref": "#/definitions/TransformStep"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/ChartType"
+        },
+        "x_title": {
+          "type": "string"
+        },
+        "y_title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "series_from",
+        "source",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ChartSeries": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "$ref": "#/definitions/SeriesAxis"
+        },
+        "color": {
+          "$ref": "#/definitions/ThemeColor"
+        },
+        "column": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/definitions/SeriesType"
+        }
+      },
+      "required": [
+        "column",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ChartSource": {
+      "description": "Where a chart's or table's data comes from.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A range, named range, or extracted table.",
+          "properties": {
+            "cite": {
+              "$ref": "#/definitions/Cite"
+            },
+            "kind": {
+              "enum": [
+                "ref"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "cite",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Literal data; one cite per row or per value (rule `src.coverage`).",
+          "properties": {
+            "cites": {
+              "items": {
+                "$ref": "#/definitions/Cite"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "inline"
+              ],
+              "type": "string"
+            },
+            "table": {
+              "$ref": "#/definitions/Table"
+            }
+          },
+          "required": [
+            "cites",
+            "kind",
+            "table"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ChartType": {
+      "enum": [
+        "bar",
+        "column",
+        "line",
+        "pie",
+        "doughnut",
+        "scatter",
+        "area",
+        "combo"
+      ],
+      "type": "string"
+    },
+    "Cite": {
+      "pattern": "^ref:r-[0-9a-z][0-9a-z-]{0,23}@[0-9a-f]{12}#.+$",
+      "type": "string"
+    },
+    "Cmp": {
+      "description": "Comparison operator of the `filter` step.",
+      "enum": [
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "in",
+        "not_in",
+        "contains"
+      ],
+      "type": "string"
+    },
+    "Crop": {
+      "additionalProperties": false,
+      "description": "Fractions `0..1` cut from each edge.",
+      "properties": {
+        "b": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "l": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "r": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "t": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "b",
+        "l",
+        "r",
+        "t"
+      ],
+      "type": "object"
+    },
+    "DEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "DNode": {
+      "additionalProperties": false,
+      "description": "A diagram node.",
+      "properties": {
+        "detail": {
+          "$ref": "#/definitions/Text"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/DNodeKind"
+        },
+        "label": {
+          "$ref": "#/definitions/Text"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "DNodeKind": {
+      "enum": [
+        "step",
+        "decision",
+        "start",
+        "end"
+      ],
+      "type": "string"
+    },
+    "Diagram": {
+      "description": "A native diagram primitive. Layout is computed by the kernel (PROTOCOL 5.3); the document never carries coordinates.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "edges": {
+              "items": {
+                "$ref": "#/definitions/DEdge"
+              },
+              "type": "array"
+            },
+            "family": {
+              "enum": [
+                "process"
+              ],
+              "type": "string"
+            },
+            "nodes": {
+              "items": {
+                "$ref": "#/definitions/DNode"
+              },
+              "type": "array"
+            },
+            "variant": {
+              "$ref": "#/definitions/ProcessVariant"
+            }
+          },
+          "required": [
+            "family",
+            "nodes",
+            "variant"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axis": {
+              "$ref": "#/definitions/TimelineAxis"
+            },
+            "family": {
+              "enum": [
+                "timeline"
+              ],
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/definitions/TimelineItem"
+              },
+              "type": "array"
+            },
+            "lanes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "variant": {
+              "$ref": "#/definitions/TimelineVariant"
+            }
+          },
+          "required": [
+            "family",
+            "items",
+            "variant"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axes": {
+              "$ref": "#/definitions/MatrixAxes"
+            },
+            "cells": {
+              "items": {
+                "$ref": "#/definitions/MatrixCell"
+              },
+              "type": "array"
+            },
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "family": {
+              "enum": [
+                "matrix"
+              ],
+              "type": "string"
+            },
+            "rows": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "variant": {
+              "$ref": "#/definitions/MatrixVariant"
+            }
+          },
+          "required": [
+            "cells",
+            "family",
+            "variant"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "family": {
+              "enum": [
+                "hierarchy"
+              ],
+              "type": "string"
+            },
+            "nodes": {
+              "items": {
+                "$ref": "#/definitions/HNode"
+              },
+              "type": "array"
+            },
+            "variant": {
+              "$ref": "#/definitions/HierarchyVariant"
+            }
+          },
+          "required": [
+            "family",
+            "nodes",
+            "variant"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ElementContent": {
+      "description": "Content of a [`FreeElement`]: any non-empty placeholder content, or a shape.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "text": {
+              "$ref": "#/definitions/Text"
+            },
+            "type": {
+              "enum": [
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "text",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "alt": {
+              "type": "string"
+            },
+            "asset": {
+              "type": "string"
+            },
+            "cite": {
+              "items": {
+                "$ref": "#/definitions/Cite"
+              },
+              "type": "array"
+            },
+            "crop": {
+              "$ref": "#/definitions/Crop"
+            },
+            "fit": {
+              "$ref": "#/definitions/ImageFit"
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "image"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "alt",
+            "asset",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "chart": {
+              "$ref": "#/definitions/Chart"
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "chart"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "chart",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "table": {
+              "$ref": "#/definitions/TableEl"
+            },
+            "type": {
+              "enum": [
+                "table"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "table",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "diagram": {
+              "$ref": "#/definitions/Diagram"
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "diagram"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "diagram",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "fill": {
+              "$ref": "#/definitions/ThemeColor"
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "line": {
+              "$ref": "#/definitions/ThemeColor"
+            },
+            "shape": {
+              "$ref": "#/definitions/ShapeKind"
+            },
+            "text": {
+              "$ref": "#/definitions/Text"
+            },
+            "type": {
+              "enum": [
+                "shape"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "shape",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ElementId": {
+      "pattern": "^e-[0-9A-Za-z][0-9A-Za-z-]{0,31}$",
+      "type": "string"
+    },
+    "FreeElement": {
+      "additionalProperties": false,
+      "description": "An element outside the layout's placeholders, with an explicit position and size in EMU.",
+      "properties": {
+        "content": {
+          "$ref": "#/definitions/ElementContent"
+        },
+        "cx": {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "cy": {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "id": {
+          "$ref": "#/definitions/ElementId"
+        },
+        "x": {
+          "type": "integer"
+        },
+        "y": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "content",
+        "cx",
+        "cy",
+        "id",
+        "x",
+        "y"
+      ],
+      "type": "object"
+    },
+    "Generated": {
+      "additionalProperties": false,
+      "properties": {
+        "script": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "script"
+      ],
+      "type": "object"
+    },
+    "HNode": {
+      "additionalProperties": false,
+      "description": "A hierarchy node: `DNode & { parent?, value? }`.",
+      "properties": {
+        "detail": {
+          "$ref": "#/definitions/Text"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/DNodeKind"
+        },
+        "label": {
+          "$ref": "#/definitions/Text"
+        },
+        "parent": {
+          "description": "Id of the parent node; absent for a root.",
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "HierarchyVariant": {
+      "enum": [
+        "org",
+        "tree",
+        "driver-tree"
+      ],
+      "type": "string"
+    },
+    "ImageFit": {
+      "enum": [
+        "fill",
+        "fit",
+        "crop"
+      ],
+      "type": "string"
+    },
+    "Legend": {
+      "enum": [
+        "none",
+        "right",
+        "bottom",
+        "top"
+      ],
+      "type": "string"
+    },
+    "MatrixAxes": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "string"
+        },
+        "x_high": {
+          "type": "string"
+        },
+        "x_low": {
+          "type": "string"
+        },
+        "y": {
+          "type": "string"
+        },
+        "y_high": {
+          "type": "string"
+        },
+        "y_low": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "x",
+        "x_high",
+        "x_low",
+        "y",
+        "y_high",
+        "y_low"
+      ],
+      "type": "object"
+    },
+    "MatrixCell": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "label": {
+          "$ref": "#/definitions/Text"
+        },
+        "row": {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "score": {
+          "description": "Harvey ball score 0 to 4.",
+          "maximum": 4.0,
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "value": {
+          "type": "string"
+        },
+        "x": {
+          "description": "Position in `0..1` for the 2x2 variant.",
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        "y": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "MatrixVariant": {
+      "enum": [
+        "2x2",
+        "grid",
+        "kpi-tiles"
+      ],
+      "type": "string"
+    },
+    "Paragraph": {
+      "additionalProperties": false,
+      "properties": {
+        "align": {
+          "$ref": "#/definitions/Align"
+        },
+        "bullet": {
+          "$ref": "#/definitions/Bullet"
+        },
+        "level": {
+          "description": "Indent level 0 to 4.",
+          "maximum": 4.0,
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "runs": {
+          "items": {
+            "$ref": "#/definitions/Run"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "type": "object"
+    },
+    "PlaceholderContent": {
+      "description": "What fills a layout placeholder.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "text": {
+              "$ref": "#/definitions/Text"
+            },
+            "type": {
+              "enum": [
+                "text"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "text",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "alt": {
+              "type": "string"
+            },
+            "asset": {
+              "type": "string"
+            },
+            "cite": {
+              "items": {
+                "$ref": "#/definitions/Cite"
+              },
+              "type": "array"
+            },
+            "crop": {
+              "$ref": "#/definitions/Crop"
+            },
+            "fit": {
+              "$ref": "#/definitions/ImageFit"
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "image"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "alt",
+            "asset",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "chart": {
+              "$ref": "#/definitions/Chart"
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "chart"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "chart",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "table": {
+              "$ref": "#/definitions/TableEl"
+            },
+            "type": {
+              "enum": [
+                "table"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "table",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "diagram": {
+              "$ref": "#/definitions/Diagram"
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "diagram"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "diagram",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "empty"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ProcessVariant": {
+      "enum": [
+        "chevrons",
+        "steps",
+        "flowchart"
+      ],
+      "type": "string"
+    },
+    "Run": {
+      "additionalProperties": false,
+      "properties": {
+        "b": {
+          "type": "boolean"
+        },
+        "cite": {
+          "description": "An empty list marks the paragraph non-factual (PROTOCOL 7), which is different from an absent field.",
+          "items": {
+            "$ref": "#/definitions/Cite"
+          },
+          "type": "array"
+        },
+        "color": {
+          "$ref": "#/definitions/ThemeColor"
+        },
+        "i": {
+          "type": "boolean"
+        },
+        "link": {
+          "type": "string"
+        },
+        "t": {
+          "type": "string"
+        },
+        "u": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "t"
+      ],
+      "type": "object"
+    },
+    "SeriesAxis": {
+      "enum": [
+        "primary",
+        "secondary"
+      ],
+      "type": "string"
+    },
+    "SeriesFrom": {
+      "enum": [
+        "columns",
+        "rows"
+      ],
+      "type": "string"
+    },
+    "SeriesType": {
+      "enum": [
+        "bar",
+        "line"
+      ],
+      "type": "string"
+    },
+    "ShapeKind": {
+      "enum": [
+        "rect",
+        "rounded-rect",
+        "ellipse",
+        "line",
+        "arrow"
+      ],
+      "type": "string"
+    },
+    "SlideId": {
+      "pattern": "^s-[0-9a-z][0-9a-z-]{0,23}$",
+      "type": "string"
+    },
+    "SlideKind": {
+      "enum": [
+        "layout",
+        "generated"
+      ],
+      "type": "string"
+    },
+    "Stacking": {
+      "enum": [
+        "none",
+        "stacked",
+        "percent"
+      ],
+      "type": "string"
+    },
+    "Table": {
+      "additionalProperties": false,
+      "description": "A rectangular table of values (PROTOCOL 1.3 `Table`).",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "loc": {
+          "description": "The location the table was read from.",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "$ref": "#/definitions/CellValue"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns",
+        "loc",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "TableCell": {
+      "additionalProperties": false,
+      "properties": {
+        "span": {
+          "description": "Number of columns the cell spans.",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "text": {
+          "$ref": "#/definitions/Text"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "TableEl": {
+      "additionalProperties": false,
+      "properties": {
+        "banded_rows": {
+          "type": "boolean"
+        },
+        "columns": {
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "header_row": {
+          "type": "boolean"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/definitions/TableRow"
+          },
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/definitions/ChartSource"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/definitions/TransformStep"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "banded_rows",
+        "columns",
+        "header_row",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "TableRow": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/definitions/TableCell"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cells"
+      ],
+      "type": "object"
+    },
+    "Text": {
+      "additionalProperties": false,
+      "properties": {
+        "paragraphs": {
+          "items": {
+            "$ref": "#/definitions/Paragraph"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "paragraphs"
+      ],
+      "type": "object"
+    },
+    "ThemeColor": {
+      "description": "A theme color slot; documents never carry hex colors.",
+      "enum": [
+        "dk1",
+        "lt1",
+        "dk2",
+        "lt2",
+        "accent1",
+        "accent2",
+        "accent3",
+        "accent4",
+        "accent5",
+        "accent6",
+        "hlink",
+        "folHlink"
+      ],
+      "type": "string"
+    },
+    "TimeUnit": {
+      "enum": [
+        "day",
+        "week",
+        "month",
+        "quarter",
+        "year"
+      ],
+      "type": "string"
+    },
+    "TimelineAxis": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "unit": {
+          "$ref": "#/definitions/TimeUnit"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "unit"
+      ],
+      "type": "object"
+    },
+    "TimelineItem": {
+      "additionalProperties": false,
+      "description": "Dates are ISO 8601; `2026-03`, `2026-03-15`, and `2026-Q1` are accepted.",
+      "properties": {
+        "end": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "$ref": "#/definitions/Text"
+        },
+        "lane": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "start"
+      ],
+      "type": "object"
+    },
+    "TimelineVariant": {
+      "enum": [
+        "milestones",
+        "swimlanes",
+        "gantt"
+      ],
+      "type": "string"
+    },
+    "TransformStep": {
+      "description": "One step of the closed transform set, applied in order to a [`Table`].",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "op": {
+              "enum": [
+                "select"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "columns",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "map": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "op": {
+              "enum": [
+                "rename"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "map",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "cmp": {
+              "$ref": "#/definitions/Cmp"
+            },
+            "column": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "filter"
+              ],
+              "type": "string"
+            },
+            "value": true
+          },
+          "required": [
+            "cmp",
+            "column",
+            "op",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "descending": {
+              "type": "boolean"
+            },
+            "op": {
+              "enum": [
+                "sort"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "by",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The remainder is summed into `other_label` when set.",
+          "properties": {
+            "by": {
+              "type": "string"
+            },
+            "n": {
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "op": {
+              "enum": [
+                "top_n"
+              ],
+              "type": "string"
+            },
+            "other_label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "by",
+            "n",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "op": {
+              "enum": [
+                "group_sum"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "by",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "op": {
+              "enum": [
+                "group_mean"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "by",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "op": {
+              "enum": [
+                "group_count"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "by",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "agg": {
+              "$ref": "#/definitions/Agg"
+            },
+            "columns": {
+              "type": "string"
+            },
+            "index": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "pivot"
+              ],
+              "type": "string"
+            },
+            "values": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "columns",
+            "index",
+            "op",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id_columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "op": {
+              "enum": [
+                "unpivot"
+              ],
+              "type": "string"
+            },
+            "value_name": {
+              "type": "string"
+            },
+            "var_name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id_columns",
+            "op",
+            "value_name",
+            "var_name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "as": {
+              "type": "string"
+            },
+            "column": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "pct_change"
+              ],
+              "type": "string"
+            },
+            "periods": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "column",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "as": {
+              "type": "string"
+            },
+            "column": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "share_of_total"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "column",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "as": {
+              "type": "string"
+            },
+            "column": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "cumulative"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "column",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "E.g. factor 0.001 for thousands.",
+          "properties": {
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "factor": {
+              "type": "number"
+            },
+            "op": {
+              "enum": [
+                "scale"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "columns",
+            "factor",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "columns": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "digits": {
+              "type": "integer"
+            },
+            "op": {
+              "enum": [
+                "round"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "columns",
+            "digits",
+            "op"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "description": "`deck/slides/<slide_id>.json`.",
+  "properties": {
+    "elements": {
+      "description": "Only where the contract allows (rule `tpl.layout-only`); usually empty.",
+      "items": {
+        "$ref": "#/definitions/FreeElement"
+      },
+      "type": "array"
+    },
+    "generated": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Generated"
+        }
+      ],
+      "description": "`kind = \"generated\"`: Python source run with `present_sdk` (PROTOCOL 5)."
+    },
+    "hidden": {
+      "type": "boolean"
+    },
+    "id": {
+      "$ref": "#/definitions/SlideId"
+    },
+    "kind": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/SlideKind"
+        }
+      ],
+      "default": "layout",
+      "description": "`\"layout\"` when absent."
+    },
+    "layout": {
+      "description": "Layout name from the template description.",
+      "type": "string"
+    },
+    "locked": {
+      "type": "boolean"
+    },
+    "locked_elements": {
+      "items": {
+        "$ref": "#/definitions/ElementId"
+      },
+      "type": "array"
+    },
+    "notes": {
+      "$ref": "#/definitions/Text"
+    },
+    "placeholders": {
+      "additionalProperties": {
+        "$ref": "#/definitions/PlaceholderContent"
+      },
+      "description": "Keyed by role (`\"title\"`, `\"body\"`, `\"subtitle\"`, `\"picture\"`, ...) or `\"idx:<n>\"`.",
+      "type": "object"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "elements",
+    "id",
+    "layout",
+    "placeholders"
+  ],
+  "title": "Slide",
+  "type": "object"
+}

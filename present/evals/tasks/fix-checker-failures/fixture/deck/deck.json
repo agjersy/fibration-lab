@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "mode": "structured",
+  "title": "Deck with problems",
+  "template": "template/placeholder.pptx",
+  "sections": [
+    {
+      "title": "",
+      "slides": [
+        "s-fx01",
+        "s-fx02",
+        "s-fx03",
+        "s-fx04"
+      ]
+    }
+  ]
+}

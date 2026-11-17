@@ -1,0 +1,62 @@
+{
+ "kind": "html",
+ "title": "Freight Market Brief",
+ "pages": null,
+ "outline": [
+  {
+   "title": "Freight Market Brief",
+   "loc": "c0-20",
+   "children": [
+    {
+     "title": "Rates by region",
+     "loc": "c1994-2009",
+     "children": []
+    },
+    {
+     "title": "Outlook",
+     "loc": "c2139-2146",
+     "children": []
+    }
+   ]
+  }
+ ],
+ "chunks": [
+  {
+   "loc": "c0-1021",
+   "heading_path": [
+    "Freight Market Brief"
+   ],
+   "text": "Freight Market Brief\n\nRegion order retention customer supply order variance headcount margin quarter pipeline logistics channel order customer demand. Guidance headcount pricing logistics contract channel productivity headcount outlook pricing guidance productivity capacity. Supply channel headcount freight outlook supplier capacity capacity freight variance pipeline invoice. Backlog supplier shipment region variance contract headcount productivity warehouse retention. Utilization volume churn revenue margin variance headcount inventory productivity supplier.\n\nRevenue growth quarter capacity forecast revenue outlook growth quarter supply revenue supplier. Logistics invoice channel region margin pricing backlog demand margin inventory. Forecast contract quarter budget channel pricing volume guidance partner shipment channel. Forecast backlog utilization channel headcount growth utilization headcount. Contract retention headcount forecast productivity growth budget headcount demand margin utilization budget."
+  },
+  {
+   "loc": "c873-1992",
+   "heading_path": [
+    "Freight Market Brief"
+   ],
+   "text": "headcount growth utilization headcount. Contract retention headcount forecast productivity growth budget headcount demand margin utilization budget.\n\nSupplier contract order freight variance supply customer utilization pricing freight. Logistics channel channel logistics renewal supply shipment contract. Quarter warehouse growth warehouse capacity growth pipeline capacity channel utilization. Forecast pricing contract pricing pipeline backlog utilization invoice revenue supplier invoice. Channel productivity channel backlog backlog guidance shipment utilization variance warehouse capacity.\n\nForecast contract region backlog region pipeline channel volume inventory quarter churn. Utilization region retention pipeline shipment headcount invoice forecast invoice retention forecast guidance order. Outlook renewal supply margin logistics channel utilization volume productivity volume. Variance logistics budget guidance supply growth pricing partner warehouse order utilization. Retention outlook volume backlog supply channel channel volume partner partner volume freight capacity quarter pipeline productivity."
+  },
+  {
+   "loc": "c1994-2137",
+   "heading_path": [
+    "Freight Market Brief",
+    "Rates by region"
+   ],
+   "text": "Rates by region\n\nSpot rates & contract rates.\n\nRegion\tQ1\tQ2\tQ3\nNorth\t120\t135\t150\nSouth\t80\t82\t91\nEast\t64\t70\t77\nWest\t101\t99\t113\nTotal\t365\t386\t431"
+  },
+  {
+   "loc": "c2139-2956",
+   "heading_path": [
+    "Freight Market Brief",
+    "Outlook"
+   ],
+   "text": "Outlook\n\nRevenue churn shipment variance capacity region partner customer quarter forecast. Renewal contract budget utilization supplier guidance warehouse contract forecast invoice supplier margin. Supply variance contract headcount revenue customer supply variance. Pricing utilization pricing pipeline backlog churn margin customer shipment churn customer revenue backlog guidance.\n\nInventory logistics volume shipment invoice partner volume utilization volume churn partner volume revenue budget renewal invoice. Supply forecast backlog margin partner logistics demand renewal forecast order channel forecast. Supply retention margin capacity headcount outlook guidance guidance supply quarter productivity. Channel utilization supplier inventory margin order logistics partner revenue.\n\nFirst point\n\nSecond point"
+  }
+ ],
+ "tables": [
+  {
+   "loc": "c2041-2137/t1",
+   "rows": 6,
+   "cols": 4
+  }
+ ]
+}

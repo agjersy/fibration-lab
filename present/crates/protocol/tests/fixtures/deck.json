@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "mode": "structured",
+  "title": "Q3 review",
+  "author": "Strategy team",
+  "template": "template/corp-2026.potx",
+  "slide_size": { "cx": 12192000, "cy": 6858000 },
+  "sections": [
+    { "title": "Summary", "slides": ["s-7f3a", "s-c4a7"] },
+    { "title": "Detail", "slides": ["s-tb19", "s-dp01", "s-dt02", "s-dm03", "s-dh04", "s-fe05", "s-gn06"] },
+    { "title": "Appendix", "slides": [] }
+  ],
+  "footer": { "text": "Q3 review", "slide_numbers": true, "date": false },
+  "classification": "Internal",
+  "brief": "Board pre-read on Q3 margin recovery; ten slides at most.",
+  "properties": { "Department": "Strategy", "Project": "Q3" }
+}

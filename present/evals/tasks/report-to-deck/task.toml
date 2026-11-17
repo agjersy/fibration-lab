@@ -1,0 +1,39 @@
+[task]
+name = "report-to-deck"
+mode = "build"
+timeout_s = 1500
+max_steps = 60
+prompt = """
+Build a deck of 8 to 10 slides for the supervisory board from the annual report in the references: group performance, the regional and segment picture, people and safety, sustainability, and the 2026 outlook. Every slide needs an action title. Use at least one native chart built from figures in the report. Cite every figure. The template requires a title slide, a disclaimer slide, and a closing slide.
+"""
+
+[[checks]]
+kind = "opens_clean"
+
+[[checks]]
+kind = "checker_clean"
+
+[[checks]]
+kind = "slide_count"
+min = 8
+max = 10
+
+[[checks]]
+kind = "citation_coverage"
+min = 0.9
+
+[[checks]]
+kind = "numbers_verified"
+min = 0.9
+
+[[checks]]
+kind = "uses_native"
+element = "chart"
+min = 1
+
+[[checks]]
+kind = "layout_used"
+layout = "Disclaimer"
+
+[[checks]]
+kind = "edits_within_scope"

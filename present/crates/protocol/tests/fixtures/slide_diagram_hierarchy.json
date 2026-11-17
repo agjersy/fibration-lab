@@ -1,0 +1,22 @@
+{
+  "id": "s-dh04",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": { "type": "text", "id": "e-t7a1", "text": { "paragraphs": [{ "runs": [{ "t": "Margin is driven by price, not volume" }] }] } },
+    "body": {
+      "type": "diagram",
+      "id": "e-dg06",
+      "diagram": {
+        "family": "hierarchy",
+        "variant": "driver-tree",
+        "nodes": [
+          { "id": "root", "label": { "paragraphs": [{ "runs": [{ "t": "Gross margin" }] }] }, "value": "18%" },
+          { "id": "price", "label": { "paragraphs": [{ "runs": [{ "t": "Price" }] }] }, "parent": "root", "value": "+2.1 pts", "detail": { "paragraphs": [{ "runs": [{ "t": "List-price changes in EMEA" }] }] } },
+          { "id": "volume", "label": { "paragraphs": [{ "runs": [{ "t": "Volume" }] }] }, "parent": "root", "value": "+1.0 pts", "kind": "step" }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

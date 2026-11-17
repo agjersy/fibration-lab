@@ -1,0 +1,50 @@
+{
+  "id": "s-dm03",
+  "kind": "layout",
+  "layout": "Two Content",
+  "placeholders": {
+    "title": { "type": "text", "id": "e-t6f0", "text": { "paragraphs": [{ "runs": [{ "t": "Two initiatives are quick wins" }] }] } },
+    "body": {
+      "type": "diagram",
+      "id": "e-dg03",
+      "diagram": {
+        "family": "matrix",
+        "variant": "2x2",
+        "axes": { "x": "Effort", "y": "Impact", "x_low": "Low", "x_high": "High", "y_low": "Low", "y_high": "High" },
+        "cells": [
+          { "x": 0.2, "y": 0.8, "label": { "paragraphs": [{ "runs": [{ "t": "Price list cleanup" }] }] } },
+          { "x": 0.75, "y": 0.9, "label": { "paragraphs": [{ "runs": [{ "t": "ERP migration" }] }] }, "value": "EUR 4m" }
+        ]
+      }
+    },
+    "body-2": {
+      "type": "diagram",
+      "id": "e-dg04",
+      "diagram": {
+        "family": "matrix",
+        "variant": "grid",
+        "rows": ["Vendor A", "Vendor B"],
+        "columns": ["Cost", "Fit"],
+        "cells": [
+          { "row": 0, "col": 0, "label": { "paragraphs": [{ "runs": [{ "t": "Low" }] }] }, "score": 4 },
+          { "row": 0, "col": 1, "label": { "paragraphs": [{ "runs": [{ "t": "Partial" }] }] }, "score": 2 },
+          { "row": 1, "col": 0, "label": { "paragraphs": [{ "runs": [{ "t": "High" }] }] }, "score": 0 },
+          { "row": 1, "col": 1, "label": { "paragraphs": [{ "runs": [{ "t": "Full" }] }] }, "score": 4 }
+        ]
+      }
+    },
+    "idx:20": {
+      "type": "diagram",
+      "id": "e-dg05",
+      "diagram": {
+        "family": "matrix",
+        "variant": "kpi-tiles",
+        "cells": [
+          { "label": { "paragraphs": [{ "runs": [{ "t": "Gross margin" }] }] }, "value": "18%" },
+          { "label": { "paragraphs": [{ "runs": [{ "t": "Churn" }] }] }, "value": "2.1%" }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

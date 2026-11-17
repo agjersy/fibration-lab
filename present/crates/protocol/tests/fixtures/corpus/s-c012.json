@@ -1,0 +1,84 @@
+{
+  "id": "s-c012",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t012",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Chart: combo"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "chart",
+      "id": "e-ch012",
+      "chart": {
+        "type": "combo",
+        "source": {
+          "kind": "inline",
+          "table": {
+            "columns": [
+              "Region",
+              "Revenue",
+              "Cost",
+              "Margin"
+            ],
+            "rows": [
+              [
+                "EMEA",
+                120.5,
+                80,
+                0.336
+              ],
+              [
+                "AMER",
+                200,
+                150,
+                0.25
+              ],
+              [
+                "APAC",
+                90,
+                70,
+                0.222
+              ],
+              [
+                "LATAM",
+                45,
+                30,
+                0.333
+              ]
+            ],
+            "loc": "Q3!A1:D5"
+          },
+          "cites": [
+            "ref:r-q3rep@3f9a1c2b7e01#p11:c120-188"
+          ]
+        },
+        "series_from": "columns",
+        "category": "Region",
+        "series": [
+          {
+            "name": "Revenue",
+            "column": "Revenue"
+          },
+          {
+            "name": "Margin",
+            "column": "Margin",
+            "type": "line"
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

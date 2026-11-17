@@ -1,0 +1,34 @@
+[task]
+name = "spreadsheet-to-charts"
+mode = "build"
+timeout_s = 900
+max_steps = 40
+prompt = """
+From the sales workbook in the references, build five slides: a title slide, revenue by region, the top five products by revenue with the rest grouped as "Other", quarterly revenue with the quarter-on-quarter percent change, and each region's share of total revenue. Use native charts whose data is computed from the workbook with transform steps; do not type the numbers in.
+"""
+
+[[checks]]
+kind = "opens_clean"
+
+[[checks]]
+kind = "checker_clean"
+
+[[checks]]
+kind = "slide_count"
+exact = 5
+
+[[checks]]
+kind = "uses_native"
+element = "chart"
+min = 4
+
+[[checks]]
+kind = "citation_coverage"
+min = 1.0
+
+[[checks]]
+kind = "numbers_verified"
+min = 1.0
+
+[[checks]]
+kind = "edits_within_scope"

@@ -1,0 +1,35 @@
+[template]
+name = "Corp 2026"
+owner = "Brand team (test fixture)"
+
+[layouts."Title Slide"]
+use_for = "Opening slide: deck title and audience or date"
+
+[layouts."Title and Content"]
+use_for = "One message with up to five supporting points, or one chart, table, or diagram"
+max_bullets = 5
+
+[layouts."Two Content"]
+use_for = "Two things side by side: text next to a chart, image, or table"
+
+[layouts."Layout 7"]
+description = "Big number with caption"
+use_for = "A single headline metric: the number in the body, its meaning in the caption"
+
+[layouts."Layout 12"]
+description = "Two columns with smaller text"
+use_for = "Dense side-by-side comparison"
+
+[layouts."Disclaimer"]
+use_for = "Legal disclaimer text; required once per deck"
+
+[layouts."Closing"]
+use_for = "Final slide: next steps or thank you"
+
+[layouts."Blank"]
+avoid = true
+
+[rules]
+mandatory = ["Title Slide", "Disclaimer"]
+closing = "Closing"
+allow_free_elements = false

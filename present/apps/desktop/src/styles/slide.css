@@ -1,0 +1,160 @@
+/* The slide itself. It is a document: its colours come from the template (inline styles), never from
+   the app theme, so nothing here uses the theme tokens except the editing affordances. */
+.slide-preview {
+  position: relative;
+  overflow: hidden;
+  flex: none;
+  line-height: 1.2;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  color-scheme: light;
+}
+.slide-preview .sp-ph {
+  position: absolute;
+  box-sizing: border-box;
+}
+.slide-preview .sp-textbox {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.slide-preview .sp-text {
+  counter-reset: sp-num;
+  min-width: 0;
+  outline: none;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+.slide-preview .sp-text p {
+  margin: 0;
+  min-height: 1em;
+}
+.slide-preview .sp-text p[data-kind="bullet"]::before,
+.slide-preview .sp-text p[data-kind="number"]::before {
+  display: inline-block;
+  width: 1.1em;
+  margin-left: -1.1em;
+  text-align: left;
+  font-weight: 400;
+  font-style: normal;
+}
+.slide-preview .sp-text p[data-kind="bullet"]::before {
+  content: "•";
+}
+.slide-preview .sp-text p[data-kind="bullet"][data-level="1"]::before,
+.slide-preview .sp-text p[data-kind="bullet"][data-level="3"]::before {
+  content: "–";
+}
+.slide-preview .sp-text p[data-kind="number"] {
+  counter-increment: sp-num;
+}
+.slide-preview .sp-text p[data-kind="number"]::before {
+  content: counter(sp-num) ".";
+  width: 1.4em;
+  margin-left: -1.4em;
+}
+.slide-preview .sp-cite {
+  font-size: 0.45em;
+  font-weight: 700;
+  font-style: normal;
+  text-decoration: none;
+  line-height: 1;
+  vertical-align: super;
+  margin-left: 0.15em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.8em;
+  background: #2f6fdb;
+  color: #ffffff;
+  white-space: nowrap;
+}
+.slide-preview.interactive .sp-cite {
+  cursor: pointer;
+}
+.slide-preview.interactive .sp-cite:hover {
+  background: #1d4fa8;
+}
+.slide-preview .sp-prompt {
+  color: #9aa3ad;
+  white-space: normal;
+}
+.slide-preview.interactive .sp-textbox.editable {
+  cursor: text;
+  user-select: text;
+}
+.slide-preview.interactive .sp-textbox.editable:hover {
+  outline: 1px dashed #9db8e8;
+  outline-offset: -1px;
+}
+.slide-preview.interactive .sp-textbox.editing {
+  outline: 2px solid #2f6fdb;
+  outline-offset: -1px;
+  overflow: visible;
+  z-index: 2;
+}
+.slide-preview .sp-object {
+  overflow: hidden;
+}
+.slide-preview .sp-chart {
+  display: block;
+}
+.slide-preview .sp-chart-empty,
+.slide-preview .sp-image-missing,
+.slide-preview .sp-missing {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  box-sizing: border-box;
+  border: 1px dashed #b6bec8;
+  color: #7a8794;
+  background: #f4f6f8;
+  position: relative;
+}
+.slide-preview .sp-missing {
+  position: absolute;
+  inset: 0;
+  border: none;
+}
+.slide-preview .sp-table {
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.slide-preview .sp-table td {
+  vertical-align: middle;
+  overflow: hidden;
+}
+.slide-preview .sp-table p {
+  margin: 0;
+}
+.slide-preview .sp-image {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.slide-preview .sp-image img {
+  display: block;
+}
+.slide-preview .sp-image-cites {
+  position: absolute;
+  right: 0.4em;
+  bottom: 0.4em;
+}
+.slide-preview .sp-image-cites .sp-cite {
+  font-size: 0.9em;
+  vertical-align: baseline;
+}
+.slide-preview .sp-generated {
+  position: absolute;
+  top: 0.5em;
+  right: 0.5em;
+  padding: 0.1em 0.6em;
+  border-radius: 1em;
+  background: rgba(27, 31, 36, 0.72);
+  color: #ffffff;
+  font-family: var(--font-ui);
+  letter-spacing: 0.02em;
+}

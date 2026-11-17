@@ -1,0 +1,24 @@
+{
+  "id": "s-dt02",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": { "type": "text", "id": "e-t5e0", "text": { "paragraphs": [{ "runs": [{ "t": "Rollout completes in Q3" }] }] } },
+    "body": {
+      "type": "diagram",
+      "id": "e-dg02",
+      "diagram": {
+        "family": "timeline",
+        "variant": "swimlanes",
+        "items": [
+          { "id": "i1", "label": { "paragraphs": [{ "runs": [{ "t": "Pilot" }] }] }, "start": "2026-03", "end": "2026-05", "lane": "EMEA" },
+          { "id": "i2", "label": { "paragraphs": [{ "runs": [{ "t": "Go-live" }] }] }, "start": "2026-03-15", "lane": "EMEA" },
+          { "id": "i3", "label": { "paragraphs": [{ "runs": [{ "t": "Rollout" }] }] }, "start": "2026-Q2", "end": "2026-Q3", "lane": "Americas" }
+        ],
+        "lanes": ["EMEA", "Americas"],
+        "axis": { "from": "2026-01", "to": "2026-12", "unit": "quarter" }
+      }
+    }
+  },
+  "elements": []
+}

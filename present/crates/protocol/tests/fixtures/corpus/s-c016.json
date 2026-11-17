@@ -1,0 +1,51 @@
+{
+  "id": "s-c016",
+  "kind": "layout",
+  "layout": "Picture with Caption",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t016",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Picture placeholder"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "picture": {
+      "type": "image",
+      "id": "e-img3",
+      "asset": "assets/wide.png",
+      "alt": "Cropped image",
+      "fit": "crop",
+      "crop": {
+        "l": 0.1,
+        "t": 0.0,
+        "r": 0.2,
+        "b": 0.0
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-b16",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Caption text"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}
