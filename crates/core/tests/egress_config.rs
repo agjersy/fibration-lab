@@ -38,7 +38,7 @@ fn a_configured_index_is_the_only_one_installs_may_use() {
     assert!(guard.env.is_empty());
     assert_eq!(
         egress::remote_index_flag("uv sync (remote)").unwrap(),
-        "--default-index 'https://mirror.corp.example/simple'"
+        "--default-index https://mirror.corp.example/simple"
     );
     // Public PyPI was never configured here, so an install from it is refused.
     let pypi: Vec<String> = [

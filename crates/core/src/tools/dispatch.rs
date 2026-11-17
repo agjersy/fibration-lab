@@ -345,6 +345,14 @@ impl ToolContext {
                 "`{raw}` is outside the repo and the session artifacts directory"
             )));
         }
+        // The repo's `.env` holds API keys for the app. The agent's file tools never read
+        // it, so a key cannot end up in a prompt.
+        if normalize_rel_path(raw).is_ok_and(|n| n.eq_ignore_ascii_case(wb_net::secrets::ENV_FILE))
+        {
+            return Err(ToolError::new(
+                "`.env` holds API keys and is not readable through the file tools",
+            ));
+        }
         resolve_in_roots(&self.repo, raw, true, &self.read_roots()).map_err(ToolError::new)
     }
 
@@ -1079,6 +1087,16 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("    3| def main"));
+        // The repo's `.env` (API keys) is not readable through the file tools.
+        std::fs::write(c.repo.join(".env"), "SOME_API_KEY=sk-in-repo\n").unwrap();
+        for path in [".env", "./.env", ".ENV"] {
+            let e = c
+                .dispatch("e", "fs.read", &json!({ "path": path }))
+                .await
+                .unwrap_err();
+            assert!(e.message.contains("API keys"), "{}", e.message);
+        }
+        std::fs::remove_file(c.repo.join(".env")).unwrap();
         let l = c.dispatch("2", "fs.list", &json!({})).await.unwrap();
         let entries = l["entries"].as_array().unwrap();
         assert!(entries.iter().any(|e| e == "scripts/a.py"));
