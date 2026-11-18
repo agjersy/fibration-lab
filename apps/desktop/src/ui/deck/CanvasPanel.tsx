@@ -9,7 +9,7 @@ import { setSlideLayout, setSlideLocked, updateSlide } from "../../state/deckAct
 import { selectedView, staleElements } from "../../state/decks";
 import { useElementSize } from "../common/useElementSize";
 import { useDeckContext } from "./context";
-import { focusRunCite, openCite } from "./navigation";
+import { focusEquation, focusRunCite, openCite } from "./navigation";
 import { NoDeck } from "./NoDeck";
 import { slideSize } from "./slide/geometry";
 import { SlidePreview } from "./slide/SlidePreview";
@@ -78,6 +78,7 @@ export function CanvasPanel() {
                 {...(codeMode ? {} : { onEditText })}
                 onCite={(cite) => openCite(session, deck, cite)}
                 onRunCite={(cite) => focusRunCite(session, cite)}
+                onEquation={(cite) => focusEquation(cite)}
                 stale={staleElements(d, slide.id)}
               />
             )}

@@ -77,6 +77,12 @@ describe("MockBackend decks", () => {
     expect(image).toMatchObject({ type: "image", run_cite: { run_id: fig.run_id, artifact: fig.path, script: "scripts/decay_sim.py", args: ["--tau", "1.5"] } });
     await expect(b.invoke("slide_place_figure", { session, deck, slide_id: slide.slide.id, run_id: fig.run_id, artifact: fig.path })).rejects.toMatchObject({ code: "invalid" });
 
+    // An equation of a function, with its equation record (one shared core function in the service).
+    const eqSlide = await b.invoke("slide_create", { session, deck, layout: "Title and Content" });
+    const eqPlaced = await b.invoke("slide_place_equation", { session, deck, slide_id: eqSlide.slide.id, path: "analysis/models.py", function: "single_exp" });
+    expect(eqPlaced.slide.placeholders.body).toMatchObject({ type: "equation", eq_cite: { tier: "declared", check: { status: "agree", trials: 32 }, qualname: "single_exp", path: "analysis/models.py" } });
+    await expect(b.invoke("slide_place_equation", { session, deck, slide_id: eqSlide.slide.id, path: "analysis/models.py", function: "nope" })).rejects.toMatchObject({ code: "not_found" });
+
     // Slides mode: the one chat proposes a slide change; accepting it writes the slide.
     const conversation = info.active_conversation;
     await b.invoke("chat_set_mode", { session, conversation, mode: "slides" });

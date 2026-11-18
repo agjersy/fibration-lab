@@ -18,8 +18,16 @@ export interface UnsavedPrompt {
   resolve: (choice: UnsavedChoice) => void;
 }
 
+/** The function the Equations panel shows (an equation on a slide was clicked). */
+export interface EquationFocus {
+  path: string;
+  qualname: string;
+}
+
 interface UiState {
   theme: ThemePreference;
+  equationFocus: EquationFocus | null;
+  setEquationFocus(focus: EquationFocus | null): void;
   palette: PaletteMode;
   newSessionOpen: boolean;
   settingsOpen: boolean;
@@ -53,6 +61,8 @@ function readTheme(): ThemePreference {
 
 export const useUi = create<UiState>((set, get) => ({
   theme: readTheme(),
+  equationFocus: null,
+  setEquationFocus: (equationFocus) => set({ equationFocus }),
   palette: null,
   newSessionOpen: false,
   settingsOpen: false,

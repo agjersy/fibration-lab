@@ -180,3 +180,43 @@
   outline: 2px dashed var(--warning);
   outline-offset: -2px;
 }
+.slide-preview .sp-equation {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.slide-preview .sp-equation.clickable {
+  cursor: pointer;
+}
+.slide-preview .sp-equation .katex-display {
+  margin: 0;
+}
+.slide-preview .sp-eq-badge {
+  margin-right: 0.3em;
+  padding: 0.05em 0.5em;
+  border: 1px solid rgba(27, 31, 36, 0.35);
+  border-radius: 1em;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1b1f24;
+  font: 600 0.9em var(--font-ui);
+  cursor: pointer;
+}
+.slide-preview .sp-eq-badge:disabled {
+  cursor: default;
+}
+.slide-preview .sp-eq-badge.success {
+  border-color: var(--success);
+}
+.slide-preview .sp-eq-badge.error {
+  border-color: var(--error);
+  background: var(--error-soft, rgba(255, 220, 220, 0.95));
+}
+.slide-preview .sp-eq-badge.warning,
+.slide-preview .sp-eq-badge.stale {
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}

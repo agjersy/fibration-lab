@@ -5,13 +5,13 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { allLayouts } from "../../../deck/model";
-import type { Slide, Text } from "../../../deck/types";
+import type { EqCite, Slide, Text } from "../../../deck/types";
 import { TEMPLATE, demoDeck, demoSlides } from "../../../ipc/mock/deck/fixtures";
 import { SITE_IMAGE_URL } from "../../../ipc/mock/deck/image";
 import { withEditedText } from "../CanvasPanel";
 import { dropTarget } from "../SlidesPanel";
 import { emuRect, layoutRects, ptToPx, scaleFor, slideHeight, textRect } from "./geometry";
-import { SlidePreview, fitFactor } from "./SlidePreview";
+import { SlidePreview, equationBadge, fitFactor } from "./SlidePreview";
 import { contrastOn, defaultAlign, fontStack, mix, resolveColor, seriesColor } from "./theme";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -311,5 +311,44 @@ describe("run citations on slide images", () => {
     expect(badge.title).toContain("stale");
     // Without a handler the badge is shown but inert (thumbnails).
     expect(badge.disabled).toBe(true);
+  });
+});
+
+describe("equations on slides", () => {
+  const cite = (over: Partial<EqCite> = {}): EqCite => ({
+    latex: "A e^{-t/\\tau}",
+    tier: "declared",
+    check: { status: "agree", trials: 32, tol: 1e-6 },
+    qualname: "decay",
+    path: "lib/model.py",
+    source_hash: "ab",
+    ...over,
+  });
+  const placed = (c: EqCite): Slide => {
+    const site = demoSlides().find((s) => s.id === "s-site")!;
+    return { ...site, placeholders: { ...site.placeholders, body: { type: "equation", id: "e-eq1", eq_cite: c } } };
+  };
+
+  it("shows the equation with its tier and check, and opens its function on click", () => {
+    const clicked: string[] = [];
+    const el = render(<SlidePreview slide={placed(cite())} template={TEMPLATE} width={640} onEquation={(c, id) => clicked.push(`${c.path}:${c.qualname}:${id}`)} />);
+    const eq = el.querySelector<HTMLElement>('[data-testid="slide-equation"]')!;
+    expect(eq.textContent).toContain("tau");
+    const badge = el.querySelector<HTMLButtonElement>('[data-testid="equation-badge"]')!;
+    expect(badge.textContent).toBe("declared ✓");
+    expect(badge.dataset.check).toBe("agree");
+    act(() => badge.click());
+    expect(clicked).toEqual(["lib/model.py:decay:e-eq1"]);
+  });
+
+  it("names a mismatch with its counterexample, LaTeX-only, and stale", () => {
+    const bad = equationBadge(cite({ check: { status: "mismatch", trials: 32, counterexample: { inputs: { t: 1 }, expected: 2, actual: 3 } } }));
+    expect(bad).toMatchObject({ label: "mismatch ✗", tone: "error" });
+    expect(bad.title).toContain("t=1: equation 2, code 3");
+    expect(equationBadge(cite({ tier: "latex", check: { status: "unavailable", trials: 0 } })).label).toBe("LaTeX only");
+    expect(equationBadge(cite({ tier: "derived" })).label).toBe("derived");
+    const el = render(<SlidePreview slide={placed(cite())} template={TEMPLATE} width={640} stale={new Set(["e-eq1"])} />);
+    expect(el.querySelector('[data-testid="slide-equation"][data-stale="true"]')).not.toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('[data-testid="equation-badge"]')!.disabled).toBe(true);
   });
 });

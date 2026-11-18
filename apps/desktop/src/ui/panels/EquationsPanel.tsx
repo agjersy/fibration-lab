@@ -3,7 +3,7 @@ import { backend } from "../../ipc";
 import type { EqCheck, Equation } from "../../ipc";
 import { useFiles } from "../../state/files";
 import { useActiveSession, useKernel } from "../../state/sessions";
-import { notifyError } from "../../state/ui";
+import { notifyError, useUi } from "../../state/ui";
 import { openFile } from "../workbench/controller";
 
 const Katex = lazy(() => import("./Katex"));
@@ -18,6 +18,9 @@ export function EquationsPanel() {
   const [loaded, setLoaded] = useState<{ path: string; revision: string | undefined; equations: Equation[] } | null>(null);
   const [checks, setChecks] = useState<Record<string, EqCheck | "running">>({});
   const path = activeFile?.endsWith(".py") ? activeFile : null;
+  // An equation clicked on a slide: that function is marked and scrolled to.
+  const focus = useUi((s) => s.equationFocus);
+  const focused = focus && focus.path === path ? focus.qualname : null;
   const equations = loaded && loaded.path === path ? loaded.equations : [];
 
   useEffect(() => {
@@ -67,7 +70,15 @@ export function EquationsPanel() {
         {equations.map((eq) => {
           const c = checks[eq.function];
           return (
-            <div key={eq.qualname} className="equation">
+            <div
+              key={eq.qualname}
+              className={`equation${focused === eq.qualname || focused === eq.function ? " focused" : ""}`}
+              data-testid={`equation-${eq.qualname}`}
+              data-focused={focused === eq.qualname || focused === eq.function || undefined}
+              ref={(el) => {
+                if (el && (focused === eq.qualname || focused === eq.function)) el.scrollIntoView?.({ block: "nearest" });
+              }}
+            >
               <div className="row">
                 <button type="button" className="ghost small mono" onClick={() => void openFile(path, eq.line)} title={`Go to line ${eq.line}`}>
                   {eq.qualname}:{eq.line}

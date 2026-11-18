@@ -22,6 +22,7 @@ type DeckCommand =
   | "slide_move"
   | "slide_lock"
   | "slide_place_figure"
+  | "slide_place_equation"
   | "slide_preview_png"
   | "chart_compute"
   | "deck_code_read"
@@ -62,6 +63,8 @@ export interface DeckMockEnv {
   artifacts: (session: SessionId) => ArtifactEntry[];
   /** A loadable URL of a run's figure, for placing it on a slide. */
   figureUrl: (session: SessionId, path: string) => string | null;
+  /** The equation record of a function (the analysis kernel's eq.extract and eq.check). */
+  equation: (session: SessionId, path: string, fn: string) => Deck.EqCite;
 }
 
 /** What the mock agent needs to propose slide changes. */
@@ -86,7 +89,7 @@ function ipcError(code: IpcError["code"], message: string): IpcError {
   return { code, message };
 }
 
-function hashOf(value: unknown): string {
+export function hashOf(value: unknown): string {
   const text = JSON.stringify(value);
   let h = 0;
   for (let i = 0; i < text.length; i++) h = (Math.imul(31, h) + text.charCodeAt(i)) | 0;
@@ -369,6 +372,22 @@ export function makeDeckMock(env: DeckMockEnv): { handlers: DeckHandlers; agent:
         },
       };
       if (!d.assets.some((x) => x.path === asset)) d.assets.push({ path: asset, sha256: hashOf(asset), width: 800, height: 600 });
+      d.slides.set(slide_id, { slide, hash: hashOf(slide) });
+      changed(session, d, [slide_id]);
+      return view(d, slide_id);
+    },
+
+    slide_place_equation: ({ session, deck, slide_id, path, function: fn, placeholder }) => {
+      const d = deckOf(session, deck);
+      const entry = d.slides.get(slide_id);
+      if (!entry) throw ipcError("not_found", `no slide ${slide_id}`);
+      const cite = env.equation(session, path, fn);
+      const layout = LAYOUTS.find((l) => l.name === entry.slide.layout);
+      const candidates = (layout?.placeholders ?? []).filter((p) => (p.accepts.includes("text") || p.accepts.includes("image")) && p.type !== "title" && p.type !== "ctrTitle").map((p) => p.key);
+      const key = placeholder ?? candidates.find((k) => !entry.slide.placeholders[k] || entry.slide.placeholders[k]?.type === "empty");
+      if (!key) throw ipcError("invalid", `layout "${entry.slide.layout}" has no free placeholder for text or image`);
+      const id = `e-eq${env.nextId()}`;
+      const slide: Deck.Slide = { ...structuredClone(entry.slide), placeholders: { ...structuredClone(entry.slide.placeholders), [key]: { type: "equation", id, eq_cite: cite } } };
       d.slides.set(slide_id, { slide, hash: hashOf(slide) });
       changed(session, d, [slide_id]);
       return view(d, slide_id);

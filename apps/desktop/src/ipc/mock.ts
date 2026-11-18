@@ -14,7 +14,7 @@ import type { Backend } from "./backend";
 import type { Commands } from "./commands";
 import { applyPolicyPatch } from "../state/policyPresets";
 import { slideTitle, withTitle } from "../deck/model";
-import { makeDeckMock } from "./mock/decks";
+import { hashOf, makeDeckMock } from "./mock/decks";
 import type { DeckAgentApi } from "./mock/decks";
 import { unifiedDiff } from "./mock/diff";
 import { decayPng, residualsPng, simParamsFromArgs, type MockPng, type SimParams } from "./mock/figure";
@@ -308,6 +308,17 @@ export class MockBackend implements Backend {
       if (content === undefined) return null;
       const data = fileBase64(path, content);
       return `data:${data.mime};base64,${data.base64}`;
+    },
+    equation: (session, path, fn) => {
+      const s = this.requireKernel(session);
+      const content = s.files.get(path);
+      if (content === undefined) throw ipcError("not_found", `\`${path}\` not found in the project`);
+      const eq = extractEquations(content).find((e) => e.qualname === fn || e.function === fn);
+      if (!eq) throw ipcError("not_found", `\`${path}\` has no function \`${fn}\` with an equation`);
+      if (eq.status !== "ok" || !eq.latex || eq.tier === "none") throw ipcError("invalid", `\`${eq.qualname}\` has no equation to show: ${eq.reason ?? "no Math: section"}`);
+      const check: Deck.EqCheckRecord =
+        eq.tier === "declared" ? { status: "agree", trials: 32, tol: 1e-6 } : { status: "unavailable", trials: 0, reason: eq.tier === "derived" ? "derived from the code itself" : "display-only LaTeX" };
+      return { latex: eq.latex, tier: eq.tier, check, qualname: eq.qualname, path, source_hash: hashOf(content) };
     },
   });
   private get deckAgent(): DeckAgentApi {
