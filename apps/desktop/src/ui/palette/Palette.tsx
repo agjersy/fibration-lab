@@ -51,6 +51,19 @@ function PaletteBody({ mode }: { mode: Exclude<PaletteMode, null> }) {
 
   useEffect(() => onCommandsChanged(() => bump((n) => n + 1)), []);
 
+  // Escape closes the palette even before its input has taken focus (opened from a terminal,
+  // the keystroke can arrive before the focus moves).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.target === inputRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      useUi.getState().setPalette(null);
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
+
   useEffect(() => {
     requestAnimationFrame(() => inputRef.current?.focus());
     if (mode === "files" && session) {
