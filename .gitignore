@@ -12,3 +12,4 @@
 .analyst/env.sh
 node_modules/
 *.tsbuildinfo
+/sample-deck/
