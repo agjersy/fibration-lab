@@ -174,9 +174,10 @@ async fn open(app: &App, args: &DeckArgs) -> Result<(Arc<DeckServices>, Arc<Deck
         .resolve(args.deck.as_deref())
         .await
         .map_err(|e| anyhow!("{}", e.message))?;
-    let repo = app.repo.clone();
+    // Bound numbers are checked against the named results the project's runs recorded, read
+    // from the run records on disk, so the command line and the desktop agree.
     svc.ws.set_provenance(Arc::new(
-        analyst_core::service::provenance::RepoProvenance::new(&repo),
+        analyst_core::service::provenance::RepoProvenance::for_project(&app.home, &app.repo),
     ));
     Ok((services, svc))
 }

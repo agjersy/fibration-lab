@@ -84,6 +84,50 @@ pub fn named_result(
         .find(|r| r.name == name)
 }
 
+/// One named result of one run of the project, read from the run records on disk with no
+/// session or kernel: the kernel's run directory (`<home>/runs/<run id>/artifacts.jsonl`) and,
+/// for every session of this project, the copy kept with the session (a remote run) and the
+/// artifacts it pulled. This is the view `analyst deck check` uses, so the command line and
+/// the desktop report the same bound numbers.
+pub fn project_named_result(
+    home: &Path,
+    repo: &Path,
+    run_id: &str,
+    name: &str,
+) -> Option<analyst_protocol::kernel::NamedResult> {
+    if !super::figures::safe_run_id(run_id) {
+        return None;
+    }
+    let repo_abs = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+    let sessions: Vec<Session> = crate::session::list(home)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| Path::new(&s.record.repo) == repo_abs)
+        .collect();
+    let mut lists = vec![home.join("runs").join(run_id).join("artifacts.jsonl")];
+    lists.extend(
+        sessions
+            .iter()
+            .map(|s| s.dir.join("runs").join(run_id).join("artifacts.jsonl")),
+    );
+    for list in lists {
+        let Ok(artifacts) = crate::session::read_jsonl::<Artifact>(&list) else {
+            continue;
+        };
+        for a in artifacts.iter().filter(|a| {
+            a.kind == ArtifactKind::Results && crate::util::normalize_rel_path(&a.path).is_ok()
+        }) {
+            let found = std::iter::once(home.join("__none__"))
+                .chain(sessions.iter().map(|s| s.artifacts_dir()))
+                .find_map(|dir| read_results(repo, &dir, run_id, &a.path));
+            if let Some(r) = found.and_then(|rs| rs.into_iter().find(|r| r.name == name)) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
 /// The artifacts of the session's runs, newest run first. `run_id` and `kind` narrow the
 /// list; `limit` bounds it (default 200).
 pub fn list(

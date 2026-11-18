@@ -43,6 +43,16 @@ impl RepoProvenance {
         }
     }
 
+    /// With the named results of all runs of this project recorded under `home`, read from the
+    /// run records on disk (no session or kernel): what `analyst deck check` uses.
+    pub fn for_project(home: &Path, repo: &Path) -> RepoProvenance {
+        let (home, root) = (home.to_path_buf(), repo.to_path_buf());
+        RepoProvenance::new(repo).with_results(move |run_id, name| {
+            super::artifacts::project_named_result(&home, &root, run_id, name)
+                .and_then(|r| serde_json::to_value(r).ok())
+        })
+    }
+
     /// With a lookup of the named results of the session's runs.
     pub fn with_results(
         mut self,

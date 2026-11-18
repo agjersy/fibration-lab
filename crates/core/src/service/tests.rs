@@ -2701,6 +2701,33 @@ json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name
     assert_eq!(found[0]["severity"], "error");
     assert!(found[0]["message"].as_str().unwrap().contains("1.8234"));
 
+    // The command line has no session: it reads the project's run records on disk and reports
+    // the same finding, not "no recorded result".
+    let recorded =
+        crate::service::artifacts::project_named_result(&fx.rt.home, &fx.rt.repo, &run_id, "tau")
+            .unwrap();
+    assert_eq!(recorded.value, 1.8234);
+    assert!(crate::service::artifacts::project_named_result(
+        &fx.rt.home,
+        &fx.rt.repo,
+        &run_id,
+        "nope"
+    )
+    .is_none());
+    let session_view = deck.ws.provenance();
+    deck.ws.set_provenance(Arc::new(
+        crate::service::provenance::RepoProvenance::for_project(&fx.rt.home, &fx.rt.repo),
+    ));
+    let cli = deck.run_checks(None).await.unwrap();
+    assert_eq!(bound(&cli), found, "{cli:?}");
+    deck.ws
+        .set_provenance(Arc::new(crate::service::provenance::RepoProvenance::new(
+            &fx.rt.repo,
+        )));
+    let blind = bound(&deck.run_checks(None).await.unwrap());
+    assert_eq!(blind[0]["severity"], "warn", "{blind:?}");
+    deck.ws.set_provenance(session_view.unwrap());
+
     // The script changes: the bound number is stale too.
     std::fs::write(
         fx.rt.repo.join("scripts/margin.py"),
