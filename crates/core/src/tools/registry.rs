@@ -32,6 +32,15 @@ pub struct ToolSpec {
 /// `slide.place_figure`: place a figure of an analysis run on a slide, cited by its run.
 pub const PLACE_FIGURE: &str = "slide.place_figure";
 
+/// `slide.place_equation`: place the equation of a function on a slide, with its equation record.
+pub const PLACE_EQUATION: &str = "slide.place_equation";
+
+/// `slide.insert_result`: insert a number bound to a named result of a run into slide text.
+pub const INSERT_RESULT: &str = "slide.insert_result";
+
+/// The tools that place analysis results on slides (structured decks only).
+pub const PLACE_TOOLS: [&str; 3] = [PLACE_FIGURE, PLACE_EQUATION, INSERT_RESULT];
+
 /// Which kinds of decks the project has; the deck tools offered follow from it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeckKinds {
@@ -97,6 +106,26 @@ fn all() -> &'static [ToolSpec] {
                 &["slide_id", "run_id", "artifact"],
             ),
         });
+        tools.push(ToolSpec {
+            deck: true,
+            name: PLACE_EQUATION,
+            class: ToolClass::Edit,
+            description: "Propose placing the equation of a function on a slide as a native, editable equation: name the source file and the function as eq_extract shows them. The analysis kernel extracts the equation and checks declared ones numerically; the element carries the equation record (LaTeX, tier, check result, function, file, the file's content hash), so the checker flags mismatches and LaTeX-only equations as errors and warns when the source changes.",
+            parameters: obj(
+                json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "path": {"type": "string", "description": "The repo-relative source file."}, "function": {"type": "string", "description": "The function's name or qualified name."}, "placeholder": {"type": "string", "description": "The placeholder key to fill; by default the first empty non-title placeholder that takes text or an image."}}),
+                &["slide_id", "path", "function"],
+            ),
+        });
+        tools.push(ToolSpec {
+            deck: true,
+            name: INSERT_RESULT,
+            class: ToolClass::Edit,
+            description: "Propose adding a paragraph with a number bound to a named result of an analysis run (recorded by the script with analyst_results.record; artifacts_list shows them on the run's `results` artifact). The number's text carries a citation of the run and the result, so the checker verifies the displayed number against the recorded value and warns when the code has changed since.",
+            parameters: obj(
+                json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "placeholder": {"type": "string", "description": "The text placeholder key (default `body`)."}, "run_id": {"type": "string"}, "result_name": {"type": "string"}, "decimals": {"type": "integer", "minimum": 0, "maximum": 12, "description": "Decimal places; by default four significant digits."}, "before": {"type": "string", "description": "Text before the number in the paragraph."}, "after": {"type": "string", "description": "Text after the number."}}),
+                &["slide_id", "run_id", "result_name"],
+            ),
+        });
         tools
     })
 }
@@ -128,6 +157,8 @@ fn analysis_tools() -> Vec<ToolSpec> {
         ToolSpec { deck: false, name: "lint.run", class: Read, description: "Run ruff on the given paths (default: all).", parameters: obj(json!({"paths":{"type":"array","items":{"type":"string"}}}), &[]) },
         ToolSpec { deck: false, name: "fig.list", class: Read, description: "List figures produced by runs (all, or one run).", parameters: obj(json!({"run_id":{"type":"string"}}), &[]) },
         ToolSpec { deck: false, name: "artifacts.list", class: Read, description: "The artifact index: what the session's runs produced (figures, tables, files), by run id and path, with the script and arguments of the run and whether the code has changed since (stale). Use it to pick a figure for slide_place_figure.", parameters: obj(json!({"run_id":{"type":"string"},"kind":{"type":"string","enum":["figure","table","array","json","text","file"]},"limit":{"type":"integer","minimum":1}}), &[]) },
+        ToolSpec { deck: false, name: "verify.list", class: Read, description: "The verification queue: equations, figures, named results, slide claims, and accepted code changes, with their state now (unverified, machine_checked, human_verified, flagged); a change to an item's content resets it to unverified.", parameters: obj(json!({"unverified_only":{"type":"boolean"}}), &[]) },
+        ToolSpec { deck: false, name: "verify.record", class: Read, description: "Record in the verification ledger that you checked an item (machine_checked), or that it has a problem (flagged, with a note). Only the user can record human verification. The item is one of {kind:\"equation\",path,qualname}, {kind:\"figure\",run_id,artifact}, {kind:\"result\",run_id,name}, {kind:\"slide_claim\",deck,slide_id,element_id}, {kind:\"code_hunk\",proposal_id}.", parameters: obj(json!({"item":{"type":"object"},"state":{"type":"string","enum":["machine_checked","flagged"]},"note":{"type":"string"}}), &["item","state"]) },
         ToolSpec { deck: false, name: "target.info", class: Read, description: "Name, kind, sandbox level, and data directories of the execution target.", parameters: obj(json!({}), &[]) },
         ToolSpec { deck: false, name: "fs.propose_edit", class: Edit, description: "Edit a file: either `edits` (each `old` must match exactly once and is replaced by `new`) or full `content`.", parameters: obj(json!({"path":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"old":{"type":"string"},"new":{"type":"string"}},"required":["old","new"]}},"content":{"type":"string"}}), &["path"]) },
         ToolSpec { deck: false, name: "fs.propose_create", class: Edit, description: "Create a new file with the given content.", parameters: obj(json!({"path":{"type":"string"},"content":{"type":"string"}}), &["path","content"]) },
@@ -192,7 +223,7 @@ pub fn defs_for(mode: Mode, decks: DeckKinds) -> Vec<ToolDef> {
             if analyst_deck::tools::CODE_MODE_TOOLS.contains(&t.name) {
                 decks.code
             } else if analyst_deck::tools::STRUCTURED_TOOLS.contains(&t.name)
-                || t.name == PLACE_FIGURE
+                || PLACE_TOOLS.contains(&t.name)
             {
                 decks.structured
             } else {

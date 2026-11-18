@@ -56,7 +56,9 @@ ARTIFACT_KINDS = {
     ".md": "text",
     ".log": "text",
 }
-RENDERED_KINDS = {"figure", "json", "text"}
+# Named results (``analyst_results.record``) are a bounded extract: they travel like rendered output.
+RENDERED_KINDS = {"figure", "json", "text", "results"}
+RESULTS_FILE = "results.json"
 META_KEYS = (
     "run_id",
     "script",
@@ -77,6 +79,18 @@ Notify = Callable[[str, dict[str, Any]], None]
 
 def artifact_kind(path: Path) -> str:
     return ARTIFACT_KINDS.get(path.suffix.lower(), "file")
+
+
+def is_results_file(path: Path) -> bool:
+    """Whether ``results.json`` is the file ``analyst_results.record`` writes (a user's own
+    ``results.json`` stays a plain JSON artifact)."""
+    try:
+        if path.stat().st_size > 1_000_000:
+            return False
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("schema") == 1 and isinstance(data.get("results"), list)
 
 
 def new_run_id() -> str:
@@ -308,7 +322,7 @@ class RunManager:
             run_dir=run_dir,
             out_dir=out_abs,
             data_dirs=list(self.data_dirs),
-            support_dirs=[self.mpl_dir / "analyst_mpl"],
+            support_dirs=[self.mpl_dir / "analyst_mpl", self.mpl_dir / "analyst_results"],
             tooling_dir=tooling_dir(),
             cache_dirs=[self.mpl_config_dir],
             derived_dir=derived if derived.is_dir() else None,
@@ -733,6 +747,8 @@ class _ArtifactScanner:
             except OSError:
                 continue
             kind = artifact_kind(file)
+            if file.parent == self.out_abs and file.name == RESULTS_FILE and is_results_file(file):
+                kind = "results"
             if previous is None and not final:
                 prev_size = self.sizes.get(file)
                 self.sizes[file] = st.st_size

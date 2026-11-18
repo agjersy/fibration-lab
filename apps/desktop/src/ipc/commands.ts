@@ -25,9 +25,13 @@ import type {
   PolicyView,
   ProposalDecision,
   ProposalId,
+  ProposalView,
   ProviderKeyStatus,
   RunDetail,
   RunId,
+  VerificationView,
+  VerifyItem,
+  VerifyState,
   RunView,
   SearchHit,
   SessionId,
@@ -120,6 +124,7 @@ export interface Commands {
   slide_lock: { args: D & { slide_id: string; element_id?: string; locked: boolean }; result: null };
   /** Places a figure of a run on a slide, cited by its run (the core function of the agent's `slide.place_figure`). */
   slide_place_figure: { args: D & { slide_id: string; run_id: RunId; artifact: string; placeholder?: string }; result: Deck.SlideView };
+  slide_place_equation: { args: D & { slide_id: string; path: string; function: string; placeholder?: string }; result: Deck.SlideView };
   slide_preview_png: { args: D & { slide_id: string; png_base64: string }; result: null };
   chart_compute: { args: D & { source: unknown; steps?: unknown }; result: Deck.ChartComputeResult };
   deck_code_read: { args: D & { path: string }; result: Deck.FileContent };
@@ -146,6 +151,11 @@ export interface Commands {
   history_revert_turn: { args: S & { turn: string }; result: CheckpointView };
   // ---- artifact index: what runs produced, for run citations on slides ----
   artifacts_list: { args: S & { run_id?: RunId; kind?: ArtifactKind; limit?: number }; result: ArtifactEntry[] };
+  verification_list: { args: S; result: VerificationView[] };
+  verification_set: { args: S & { item: VerifyItem; state: VerifyState; note?: string }; result: VerificationView };
+  deck_verification_gaps: { args: S & { deck: string }; result: VerificationView[] };
+  slide_refresh: { args: D & { slide_id: string; element_id?: string }; result: ProposalView | null };
+  deck_refresh_stale: { args: D; result: ProposalView[] };
 }
 
 export type CommandName = keyof Commands;

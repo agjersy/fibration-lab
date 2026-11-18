@@ -12,10 +12,13 @@ pub mod figures;
 pub mod fs;
 pub mod history;
 pub mod packages;
+pub mod provenance;
+pub mod refresh;
 pub mod runs;
 pub mod runtime;
 pub mod tasks;
 pub mod terminal;
+pub mod verification;
 
 pub use agent_runner::{ConversationRuntime, UiApprover};
 pub use decks::{DeckOptions, DeckServices};

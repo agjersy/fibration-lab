@@ -9,6 +9,7 @@ import { useActiveDeckSlug } from "../../state/decks";
 import { useRuns } from "../../state/runs";
 import type { FigureSelection } from "../../state/runs";
 import { useActiveSession, useSessionInfo } from "../../state/sessions";
+import { STATE_LABEL, STATE_TONE, setVerification, stateOf, useVerificationList } from "../../state/verification";
 import { formatTime, shortArgs } from "../common/format";
 import { focusChatInput } from "../workbench/controller";
 
@@ -73,6 +74,7 @@ export function FiguresPanel() {
   const pinned = useRuns((s) => (session ? (s.pinned[session] ?? NO_PINS) : NO_PINS));
   const compare = useRuns((s) => (session ? (s.compare[session] ?? null) : null));
   const deck = useActiveDeckSlug(session);
+  const verificationList = useVerificationList(session);
 
   // One entry per figure and run (formats folded together), newest run first.
   const runs = useMemo<RunFigures[]>(() => groups.map((g) => ({ run: g.run, entries: groupFigures(g.figures) })), [groups]);
@@ -93,6 +95,9 @@ export function FiguresPanel() {
   const figure = entryOf(history.find((r) => r.run.meta.run_id === selectedRun));
   const compareFigure = compare ? entryOf(history.find((r) => r.run.meta.run_id === compare && r.run.meta.run_id !== selectedRun)) : undefined;
   const isPinned = figure ? pinned.some((p) => p.name === figure.name && p.run_id === figure.primary.run_id) : false;
+
+  const figureItem = figure ? ({ kind: "figure", run_id: figure.primary.run_id, artifact: figure.primary.path } as const) : null;
+  const verifyState = figureItem ? stateOf(verificationList, figureItem) : "unverified";
 
   const select = (n: string) => {
     const latest = runs.find((r) => r.entries.some((e) => e.name === n));
@@ -152,6 +157,18 @@ export function FiguresPanel() {
         <button type="button" className="small" onClick={sendToAgent} disabled={!figure}>
           Send to agent
         </button>
+        {figureItem ? (
+          <>
+            <span className={`badge ${STATE_TONE[verifyState]}`} data-testid="figure-verify-state" title="Verification of this figure for its current file">
+              {STATE_LABEL[verifyState]}
+            </span>
+            {verifyState !== "human_verified" ? (
+              <button type="button" className="small" onClick={() => void setVerification(session, figureItem, "human_verified")} data-testid="figure-verify">
+                Mark verified
+              </button>
+            ) : null}
+          </>
+        ) : null}
         <button
           type="button"
           className="small"

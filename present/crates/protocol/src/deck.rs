@@ -231,6 +231,17 @@ pub enum PlaceholderContent {
         id: ElementId,
         diagram: Diagram,
     },
+    Equation {
+        id: ElementId,
+        /// The equation and where it came from: the function, its file and content hash,
+        /// the provenance tier, and the numeric check.
+        eq_cite: EqCite,
+        /// The user has seen that the equation is unchecked (LaTeX-only) or disagrees with
+        /// its code, and keeps it: the checker reports it as a warning instead of an error.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        acknowledged: Option<bool>,
+    },
     Empty,
 }
 
@@ -242,7 +253,8 @@ impl PlaceholderContent {
             | PlaceholderContent::Image { id, .. }
             | PlaceholderContent::Chart { id, .. }
             | PlaceholderContent::Table { id, .. }
-            | PlaceholderContent::Diagram { id, .. } => Some(id),
+            | PlaceholderContent::Diagram { id, .. }
+            | PlaceholderContent::Equation { id, .. } => Some(id),
             PlaceholderContent::Empty => None,
         }
     }
@@ -267,6 +279,78 @@ pub struct RunCite {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tree_hash: Option<String>,
+}
+
+/// Where an equation on a slide came from (the equation record of the provenance contract,
+/// PROTOCOL 11): the LaTeX the analysis kernel extracted for a function, its tier, the
+/// numeric check of the code against it, and the source file's content hash when it was
+/// placed. When the file's hash no longer matches the working tree, the checker reports the
+/// element as stale.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EqCite {
+    pub latex: String,
+    pub tier: EqTier,
+    pub check: EqCheckRecord,
+    /// The function's qualified name in its module (`Model.predict`, `double_exp`).
+    pub qualname: String,
+    /// The source file, repo-relative.
+    pub path: String,
+    /// SHA-256 (hex) of the source file's content the equation was extracted from.
+    pub source_hash: String,
+}
+
+/// The provenance tier of an equation (ARCHITECTURE 5.11): derived from the code, declared
+/// in a `Math:` docstring section and numerically checked, or LaTeX for display only.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema, TS,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum EqTier {
+    Derived,
+    Declared,
+    Latex,
+}
+
+/// The outcome of the numeric check of a function against its equation.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema, TS,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum EqCheckState {
+    Agree,
+    Mismatch,
+    Unavailable,
+}
+
+/// The numeric check as it was when the equation was placed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EqCheckRecord {
+    pub status: EqCheckState,
+    #[serde(default)]
+    pub trials: u64,
+    /// Relative tolerance of the comparison.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tol: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub counterexample: Option<EqCounterexample>,
+    /// Why the check is unavailable, when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<String>,
+}
+
+/// Inputs on which the code and the equation disagree.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct EqCounterexample {
+    #[ts(type = "Record<string, number>")]
+    pub inputs: BTreeMap<String, f64>,
+    pub expected: f64,
+    pub actual: f64,
 }
 
 /// An element outside the layout's placeholders, with an explicit position and size in EMU.
@@ -322,6 +406,17 @@ pub enum ElementContent {
         id: ElementId,
         diagram: Diagram,
     },
+    Equation {
+        id: ElementId,
+        /// The equation and where it came from: the function, its file and content hash,
+        /// the provenance tier, and the numeric check.
+        eq_cite: EqCite,
+        /// The user has seen that the equation is unchecked (LaTeX-only) or disagrees with
+        /// its code, and keeps it: the checker reports it as a warning instead of an error.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        acknowledged: Option<bool>,
+    },
     Shape {
         id: ElementId,
         shape: ShapeKind,
@@ -345,6 +440,7 @@ impl ElementContent {
             | ElementContent::Chart { id, .. }
             | ElementContent::Table { id, .. }
             | ElementContent::Diagram { id, .. }
+            | ElementContent::Equation { id, .. }
             | ElementContent::Shape { id, .. } => id,
         }
     }
@@ -375,6 +471,15 @@ impl ElementContent {
             ElementContent::Chart { id, chart } => PlaceholderContent::Chart { id, chart },
             ElementContent::Table { id, table } => PlaceholderContent::Table { id, table },
             ElementContent::Diagram { id, diagram } => PlaceholderContent::Diagram { id, diagram },
+            ElementContent::Equation {
+                id,
+                eq_cite,
+                acknowledged,
+            } => PlaceholderContent::Equation {
+                id,
+                eq_cite,
+                acknowledged,
+            },
             ElementContent::Shape { .. } => return None,
         })
     }
@@ -531,6 +636,28 @@ pub struct Run {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cite: Option<Vec<Cite>>,
+    /// The number in this run is a named result of an analysis run: the checker verifies the
+    /// displayed number against the recorded value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_cite: Option<ResultCite>,
+}
+
+/// A citation of a named result of an analysis run (`analyst_results.record`): the run, the
+/// result's name, and what produced it. When `tree_hash` no longer matches the project's
+/// working tree, the checker reports the text as stale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ResultCite {
+    pub run_id: String,
+    pub result_name: String,
+    /// The script that was run, repo-relative.
+    pub script: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tree_hash: Option<String>,
 }
 
 impl Run {

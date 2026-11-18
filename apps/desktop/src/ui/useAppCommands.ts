@@ -96,6 +96,7 @@ export function useAppCommands(): void {
       },
       { id: "show_figures", title: "Show figures", category: "View", run: () => showPanel("figures") },
       { id: "show_equations", title: "Show equations", category: "View", run: () => showPanel("equations") },
+      { id: "show_verify", title: "Show verification queue", category: "View", run: () => openDeckPanel("verify") },
       { id: "show_packages", title: "Show packages", category: "View", run: () => showPanel("packages") },
       { id: "show_diagnostics", title: "Show diagnostics", category: "View", run: () => showPanel("diagnostics") },
       { id: "show_run_output", title: "Show run output", category: "View", run: () => showPanel("runoutput") },

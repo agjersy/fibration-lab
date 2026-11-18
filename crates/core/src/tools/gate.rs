@@ -51,7 +51,10 @@ pub fn mode_rules(mode: Mode) -> ModeRules {
             for t in analyst_deck::tools::registry() {
                 rules = rules.allow_tool(t.name);
             }
-            rules.allow_tool(crate::tools::registry::PLACE_FIGURE)
+            rules
+                .allow_tool(crate::tools::registry::PLACE_FIGURE)
+                .allow_tool(crate::tools::registry::PLACE_EQUATION)
+                .allow_tool(crate::tools::registry::INSERT_RESULT)
         }
         // Wording, layout choice, and order of existing slides: no new slides, no
         // deletions, no new claims (citations) or elements.

@@ -531,6 +531,18 @@ async fn watcher_reports_changes_and_terminal_runs() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].run.meta.run_id, "terminal-20260101-000000-abcdef");
     assert_eq!(groups[0].figures.len(), 1);
+    // A local figure travels by path (asset protocol), not as base64.
+    assert_eq!(
+        groups[0].figures[0]
+            .file_abs
+            .as_deref()
+            .map(std::path::PathBuf::from),
+        Some(
+            fx.rt
+                .repo
+                .join("out/terminal/20260101-000000-abcdef/figures/fig-1.png")
+        )
+    );
     let data = fx
         .rt
         .figure_data("out/terminal/20260101-000000-abcdef/figures/fig-1.png")
@@ -2391,5 +2403,625 @@ print("wrote", *sys.argv[1:])
             .unwrap_err();
         assert_eq!(err.code(), Some(-32601), "{method}: {err}");
     }
+    fx.wb.shutdown().await;
+}
+
+/// An equation goes from the analysis kernel to a slide with its equation record: the agent's
+/// `slide.place_equation` and the UI's `slide_place_equation` share one core function; the
+/// checker reports a numeric mismatch and display-only LaTeX as errors (info once
+/// acknowledged), and an equation whose source file changed as stale.
+#[tokio::test]
+async fn an_equation_travels_to_a_slide_with_its_record_and_goes_stale() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    std::fs::create_dir_all(fx.rt.repo.join("lib")).unwrap();
+    let source = "def double_exp(t, A, tau1, B, tau2):\n    return A\n";
+    std::fs::write(fx.rt.repo.join("lib/model.py"), source).unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let deck = fx.rt.deck("q3").await.unwrap();
+    let first = deck.slide_create(None, "Title and Content").await.unwrap();
+    let first_id = first.slide.id.to_string();
+
+    // The agent proposes it; the proposal carries the equation record.
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-eq",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.decks = fx.rt.decks.clone();
+    ctx.set_kernel(fx.rt.kernel().await.ok());
+    let placed = ctx
+        .dispatch(
+            "t1",
+            "slide.place_equation",
+            &json!({"slide_id": first_id, "path": "lib/model.py", "function": "double_exp"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(placed["updated"], first_id.as_str(), "{placed}");
+    let doc: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fx.rt
+                .repo
+                .join(crate::service::decks::slide_rel("q3", &first_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let el = &doc["placeholders"]["body"];
+    assert_eq!(el["type"], "equation", "{doc}");
+    assert_eq!(el["id"], "e-eq1");
+    let cite = &el["eq_cite"];
+    assert_eq!(cite["tier"], "declared");
+    assert_eq!(cite["check"]["status"], "agree");
+    assert_eq!(cite["check"]["trials"], 32);
+    assert_eq!(cite["check"]["tol"], 1e-6);
+    assert_eq!(cite["qualname"], "double_exp");
+    assert_eq!(cite["path"], "lib/model.py");
+    assert_eq!(
+        cite["source_hash"],
+        crate::util::sha256_hex(source.as_bytes()).as_str()
+    );
+    assert!(cite["latex"].as_str().unwrap().contains("tau"));
+
+    // The user places one that disagrees with its code, and a display-only one.
+    let second = deck
+        .slide_create(Some(&first_id), "Title and Content")
+        .await
+        .unwrap();
+    let second_id = second.slide.id.to_string();
+    let view = fx
+        .rt
+        .slide_place_equation("q3", &second_id, "lib/model.py", "bad_fit", None)
+        .await
+        .unwrap();
+    let v = serde_json::to_value(&view.slide).unwrap();
+    let bad = &v["placeholders"]["body"];
+    assert_eq!(bad["eq_cite"]["check"]["status"], "mismatch");
+    assert_eq!(
+        bad["eq_cite"]["check"]["counterexample"]["inputs"]["t"],
+        1.0
+    );
+    let third = deck
+        .slide_create(Some(&second_id), "Title and Content")
+        .await
+        .unwrap();
+    let third_id = third.slide.id.to_string();
+    fx.rt
+        .slide_place_equation("q3", &third_id, "lib/model.py", "show_derivation", None)
+        .await
+        .unwrap();
+    let missing = fx
+        .rt
+        .slide_place_equation("q3", &third_id, "lib/none.py", "f", Some("body"))
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code, IpcErrorCode::NotFound, "{missing}");
+
+    let of = |diags: &[Value], rule: &str| -> Vec<(String, String)> {
+        diags
+            .iter()
+            .filter(|d| d["rule"] == rule)
+            .map(|d| {
+                (
+                    d["slide_id"].as_str().unwrap_or("").to_string(),
+                    d["severity"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    };
+    let diags = deck.run_checks(None).await.unwrap();
+    assert_eq!(
+        of(&diags, "eq.mismatch"),
+        vec![(second_id.clone(), "error".into())]
+    );
+    assert_eq!(
+        of(&diags, "eq.latex-only"),
+        vec![(third_id.clone(), "error".into())]
+    );
+    assert!(of(&diags, "stale").is_empty(), "{diags:?}");
+
+    // Acknowledged: listed, no longer an error.
+    let (mut slide, hash) = deck
+        .ws
+        .deck()
+        .read_slide(&analyst_deck_protocol::ids::SlideId::new(second_id.clone()).unwrap())
+        .unwrap();
+    if let Some(analyst_deck_protocol::deck::PlaceholderContent::Equation {
+        acknowledged, ..
+    }) = slide.placeholders.get_mut("body")
+    {
+        *acknowledged = Some(true);
+    }
+    deck.slide_update(slide, Some(&hash)).unwrap();
+    let diags = deck.run_checks(None).await.unwrap();
+    assert_eq!(
+        of(&diags, "eq.mismatch"),
+        vec![(second_id.clone(), "info".into())]
+    );
+
+    // Before an export: the deck rests on three slide claims and the equations they cite.
+    use analyst_protocol::ui::{VerificationState, VerifyItem, VerifyState};
+    let gaps = fx.rt.deck_verification_gaps("q3").unwrap();
+    let claims = gaps
+        .iter()
+        .filter(|g| matches!(g.item, VerifyItem::SlideClaim { .. }))
+        .count();
+    assert_eq!(claims, 3, "{gaps:?}");
+    assert!(gaps.iter().any(|g| g.item
+        == VerifyItem::Equation {
+            path: "lib/model.py".into(),
+            qualname: "double_exp".into()
+        }));
+    for g in &gaps {
+        fx.rt
+            .verification_set(&g.item, VerifyState::HumanVerified, None)
+            .unwrap();
+    }
+    assert!(fx.rt.deck_verification_gaps("q3").unwrap().is_empty());
+
+    // The source changes: every equation from it is stale.
+    std::fs::write(
+        fx.rt.repo.join("lib/model.py"),
+        source.replace("A\n", "B\n"),
+    )
+    .unwrap();
+    // ... and what was verified about it no longer counts.
+    let gaps = fx.rt.deck_verification_gaps("q3").unwrap();
+    assert!(gaps.len() >= 4, "{gaps:?}");
+    assert!(gaps
+        .iter()
+        .all(|g| g.state == VerificationState::Unverified && g.stale));
+    let diags = deck.run_checks(None).await.unwrap();
+    let stale = of(&diags, "stale");
+    assert_eq!(stale.len(), 3, "{diags:?}");
+    assert!(diags
+        .iter()
+        .any(|d| d["rule"] == "stale" && d["message"].as_str().unwrap().contains("double_exp")));
+    fx.wb.shutdown().await;
+}
+
+/// Named results: a run's `results.json` is a `results` artifact whose values the artifact
+/// index exposes; a number bound to one on a slide is checked against the recorded value, and
+/// goes stale when the code changes.
+#[tokio::test]
+async fn a_bound_number_is_checked_against_the_runs_named_result() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    // What `analyst_results.record("margin", 0.18312)` writes.
+    let script = r#"import json, os
+out = os.environ["ANALYST_OUT_DIR"]
+os.makedirs(out, exist_ok=True)
+json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name": "tau", "value": 1.8234, "unit": "s"}]}, open(os.path.join(out, "results.json"), "w"))
+"#;
+    std::fs::write(fx.rt.repo.join("scripts/margin.py"), script).unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let mut rx = fx.rt.subscribe();
+    let run = fx
+        .rt
+        .run_start("scripts/margin.py", vec!["--q".into(), "3".into()])
+        .await
+        .unwrap();
+    let run_id = run.meta.run_id.clone();
+    next_matching(
+        &mut rx,
+        |e| matches!(e, SessionEvent::RunDone { run } if run.meta.run_id == run_id),
+    )
+    .await;
+    let listed = fx.rt.artifacts_list(
+        Some(&run_id),
+        Some(analyst_protocol::kernel::ArtifactKind::Results),
+        None,
+    );
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let results = listed[0].results.clone().unwrap();
+    assert_eq!(results[1].name, "tau");
+    assert_eq!(results[1].unit.as_deref(), Some("s"));
+
+    let deck = fx.rt.deck("q3").await.unwrap();
+    let slide = deck.slide_create(None, "Title and Content").await.unwrap();
+    let slide_id = slide.slide.id.to_string();
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-num",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.decks = fx.rt.decks.clone();
+    let missing = ctx
+        .dispatch(
+            "t0",
+            "slide.insert_result",
+            &json!({"slide_id": slide_id, "run_id": run_id, "result_name": "nope"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(missing.message.contains("tau"), "{}", missing.message);
+    ctx.dispatch(
+        "t1",
+        "slide.insert_result",
+        &json!({"slide_id": slide_id, "run_id": run_id, "result_name": "tau", "before": "The decay time is "}),
+    )
+    .await
+    .unwrap();
+    let path = fx
+        .rt
+        .repo
+        .join(crate::service::decks::slide_rel("q3", &slide_id));
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let runs = &doc["placeholders"]["body"]["text"]["paragraphs"][0]["runs"];
+    assert_eq!(runs[0]["t"], "The decay time is ");
+    assert_eq!(runs[1]["t"], "1.823 s");
+    let cite = &runs[1]["run_cite"];
+    assert_eq!(cite["run_id"], run_id.as_str());
+    assert_eq!(cite["result_name"], "tau");
+    assert_eq!(cite["script"], "scripts/margin.py");
+    assert_eq!(cite["args"], json!(["--q", "3"]));
+    assert!(cite["tree_hash"].is_string());
+
+    let bound = |diags: &[Value]| -> Vec<Value> {
+        diags
+            .iter()
+            .filter(|d| d["rule"] == "num.bound" || d["rule"] == "stale")
+            .cloned()
+            .collect()
+    };
+    let diags = deck.run_checks(None).await.unwrap();
+    assert!(bound(&diags).is_empty(), "{diags:?}");
+
+    // The user types another number: an error naming the recorded value.
+    let mut edited = doc.clone();
+    edited["placeholders"]["body"]["text"]["paragraphs"][0]["runs"][1]["t"] = json!("2.1 s");
+    let (_, hash) = deck
+        .ws
+        .deck()
+        .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+        .unwrap();
+    deck.slide_update(serde_json::from_value(edited).unwrap(), Some(&hash))
+        .unwrap();
+    let diags = deck.run_checks(None).await.unwrap();
+    let found = bound(&diags);
+    assert_eq!(found.len(), 1, "{diags:?}");
+    assert_eq!(found[0]["rule"], "num.bound");
+    assert_eq!(found[0]["severity"], "error");
+    assert!(found[0]["message"].as_str().unwrap().contains("1.8234"));
+
+    // The script changes: the bound number is stale too.
+    std::fs::write(
+        fx.rt.repo.join("scripts/margin.py"),
+        script.replace("1.8234", "1.9"),
+    )
+    .unwrap();
+    let diags = deck.run_checks(None).await.unwrap();
+    let stale: Vec<&Value> = diags.iter().filter(|d| d["rule"] == "stale").collect();
+    assert_eq!(stale.len(), 1, "{diags:?}");
+    assert_eq!(
+        stale[0]["pointer"],
+        "/placeholders/body/text/paragraphs/0/runs/1"
+    );
+    fx.wb.shutdown().await;
+}
+
+/// The verification ledger: the user verifies an item for its current content; a change to the
+/// content resets it to unverified (stale); the agent can record machine_checked but never
+/// human verification; every change is an event and a line in `.analyst/verification.jsonl`.
+#[tokio::test]
+async fn the_verification_ledger_resets_when_content_changes() {
+    use analyst_protocol::ui::{VerificationState, VerifyItem, VerifyState};
+    let fx = fixture().await;
+    std::fs::create_dir_all(fx.rt.repo.join("lib")).unwrap();
+    std::fs::write(fx.rt.repo.join("lib/model.py"), "def f(x):\n    return x\n").unwrap();
+    let item = VerifyItem::Equation {
+        path: "lib/model.py".into(),
+        qualname: "f".into(),
+    };
+    let mut rx = fx.rt.subscribe();
+    let v = fx
+        .rt
+        .verification_set(&item, VerifyState::HumanVerified, Some("checked by hand"))
+        .unwrap();
+    assert_eq!(v.state, VerificationState::HumanVerified);
+    assert_eq!(v.key, "equation:lib/model.py#f");
+    assert_eq!(
+        v.entry.as_ref().unwrap().note.as_deref(),
+        Some("checked by hand")
+    );
+    next_matching(&mut rx, |e| {
+        matches!(e, SessionEvent::VerificationChanged { key } if key == "equation:lib/model.py#f")
+    })
+    .await;
+    let ledger = std::fs::read_to_string(fx.rt.repo.join(".analyst/verification.jsonl")).unwrap();
+    assert_eq!(ledger.lines().count(), 1);
+    assert!(ledger.contains("\"human_verified\"") && ledger.contains("\"by\":\"user\""));
+    let listed = fx.rt.verification_list();
+    let found = listed.iter().find(|x| x.item == item).unwrap();
+    assert_eq!(found.state, VerificationState::HumanVerified);
+    assert!(!found.stale);
+
+    // The code changes: the verification no longer applies.
+    std::fs::write(
+        fx.rt.repo.join("lib/model.py"),
+        "def f(x):\n    return 2 * x\n",
+    )
+    .unwrap();
+    let found = fx
+        .rt
+        .verification_list()
+        .into_iter()
+        .find(|x| x.item == item)
+        .unwrap();
+    assert_eq!(found.state, VerificationState::Unverified);
+    assert!(found.stale && found.entry.is_none());
+
+    // The agent: machine_checked yes, human_verified never.
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-verify",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    let denied = ctx
+        .dispatch(
+            "t1",
+            "verify.record",
+            &json!({"item": {"kind": "equation", "path": "lib/model.py", "qualname": "f"}, "state": "human_verified"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        denied.message.contains("only the user"),
+        "{}",
+        denied.message
+    );
+    let scope = crate::service::verification::Scope {
+        repo: &fx.rt.repo,
+        runs: &fx.rt.runs,
+        session: &fx.rt.session_snapshot(),
+    };
+    let err = crate::service::verification::set(
+        &scope,
+        &item,
+        VerifyState::HumanVerified,
+        analyst_protocol::ui::Verifier::Agent,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, IpcErrorCode::PolicyDenied);
+    let checked = ctx
+        .dispatch(
+            "t2",
+            "verify.record",
+            &json!({"item": {"kind": "equation", "path": "lib/model.py", "qualname": "f"}, "state": "machine_checked", "note": "eq_check agrees"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(checked["state"], "machine_checked");
+    assert_eq!(checked["entry"]["by"], "agent");
+    let listed = ctx.dispatch("t3", "verify.list", &json!({})).await.unwrap();
+    assert_eq!(listed["items"][0]["key"], "equation:lib/model.py#f");
+    // A file that is gone cannot be verified.
+    let gone = fx
+        .rt
+        .verification_set(
+            &VerifyItem::Equation {
+                path: "lib/none.py".into(),
+                qualname: "g".into(),
+            },
+            VerifyState::HumanVerified,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(gone.code, IpcErrorCode::NotFound);
+    fx.wb.close_session(&fx.session).await.unwrap();
+}
+
+/// Refresh from analysis: after the code changes, refreshing a slide re-runs the cited script
+/// with the cited arguments and proposes the slide with the new figure and number (a normal
+/// proposal listing the changed values and the verifications it resets); accepting writes it
+/// after a checkpoint and the stale findings are gone.
+#[tokio::test]
+async fn refreshing_a_stale_slide_reruns_the_script_and_proposes_the_update() {
+    use analyst_protocol::ui::{VerifyItem, VerifyState};
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    let script = r#"import base64, json, os
+out = os.environ["ANALYST_OUT_DIR"]
+os.makedirs(out, exist_ok=True)
+png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+open(os.path.join(out, "fit.png"), "wb").write(base64.b64decode(png))
+json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"}]}, open(os.path.join(out, "results.json"), "w"))
+"#;
+    std::fs::write(fx.rt.repo.join("scripts/fit.py"), script).unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let run = fx
+        .rt
+        .run_start("scripts/fit.py", vec!["--n".into(), "5".into()])
+        .await
+        .unwrap();
+    let run_id = run.meta.run_id.clone();
+    fx.rt
+        .runs
+        .wait(&run_id, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let fig = fx.rt.artifacts_list(
+        Some(&run_id),
+        Some(analyst_protocol::kernel::ArtifactKind::Figure),
+        None,
+    )[0]
+    .clone();
+
+    let deck = fx.rt.deck("q3").await.unwrap();
+    let slide = deck.slide_create(None, "Two Content").await;
+    let slide = match slide {
+        Ok(s) => s,
+        Err(_) => deck.slide_create(None, "Title and Content").await.unwrap(),
+    };
+    let slide_id = slide.slide.id.to_string();
+    let placed = fx
+        .rt
+        .slide_place_figure("q3", &slide_id, &run_id, &fig.path, None)
+        .await
+        .unwrap();
+    let placed = serde_json::to_value(&placed.slide).unwrap();
+    let (fig_key, fig_el) = placed["placeholders"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, v)| v["type"] == "image")
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .unwrap();
+    // A bound number in the title.
+    let session = fx.rt.session_snapshot();
+    let bound = crate::service::provenance::bind_result(
+        &fx.rt.runs,
+        &session,
+        &fx.rt.repo,
+        &deck,
+        &slide_id,
+        "title",
+        &run_id,
+        "tau",
+        None,
+        Some("Decay time "),
+        None,
+    )
+    .unwrap();
+    deck.slide_update(
+        serde_json::from_value(bound.slide).unwrap(),
+        Some(&bound.hash),
+    )
+    .unwrap();
+    let claim = VerifyItem::SlideClaim {
+        deck: "q3".into(),
+        slide_id: slide_id.clone(),
+        element_id: fig_el["id"].as_str().unwrap().into(),
+    };
+    fx.rt
+        .verification_set(&claim, VerifyState::HumanVerified, None)
+        .unwrap();
+    let old_figure = VerifyItem::Figure {
+        run_id: run_id.clone(),
+        artifact: fig.path.clone(),
+    };
+    fx.rt
+        .verification_set(&old_figure, VerifyState::HumanVerified, None)
+        .unwrap();
+    // Nothing is stale yet.
+    assert!(
+        crate::service::refresh::refresh_slide(&fx.rt, "q3", &slide_id, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // The code changes: refresh.
+    std::fs::write(
+        fx.rt.repo.join("scripts/fit.py"),
+        script.replace("1.8234", "1.9"),
+    )
+    .unwrap();
+    let stale_before = deck
+        .run_checks(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|d| d["rule"] == "stale")
+        .count();
+    assert_eq!(stale_before, 2);
+    let mut rx = fx.rt.subscribe();
+    let proposal = crate::service::refresh::refresh_slide(&fx.rt, "q3", &slide_id, None)
+        .await
+        .unwrap()
+        .expect("a proposal");
+    let message = proposal.message.clone().unwrap();
+    assert!(message.contains("tau: 1.823 s → 1.900 s"), "{message}");
+    assert!(message.contains("figure fit.png: run"), "{message}");
+    assert!(
+        message.contains("Invalidates:") && message.contains("(verified)"),
+        "{message}"
+    );
+    assert_eq!(proposal.slide_ids, Some(vec![slide_id.clone()]));
+    let after = proposal.after.clone().unwrap();
+    let new_run = after["placeholders"][fig_key.as_str()]["run_cite"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(new_run, run_id);
+    // One re-run serves both elements, with the cited arguments.
+    let rerun = fx.rt.runs.record(&new_run).unwrap();
+    assert_eq!(rerun.meta.args, vec!["--n", "5"]);
+    assert!(fx
+        .rt
+        .pending_proposals()
+        .iter()
+        .any(|p| p.id == proposal.id));
+
+    fx.rt
+        .proposal_respond(
+            &proposal.id,
+            analyst_protocol::ui::ProposalDecision::Accept { content: None },
+        )
+        .unwrap();
+    next_matching(&mut rx, |e| {
+        matches!(e, SessionEvent::ProposalResolved { proposal_id, decision, .. }
+            if proposal_id == &proposal.id && *decision == analyst_protocol::transcript::Decision::Accept)
+    })
+    .await;
+    let doc: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fx.rt
+                .repo
+                .join(crate::service::decks::slide_rel("q3", &slide_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        doc["placeholders"]["title"]["text"]["paragraphs"][0]["runs"][1]["t"],
+        "1.900 s"
+    );
+    let diags = deck.run_checks(None).await.unwrap();
+    assert!(
+        diags
+            .iter()
+            .all(|d| d["rule"] != "stale" && d["rule"] != "num.bound"),
+        "{diags:?}"
+    );
+    // The refreshed claim is not verified any more; undo is the checkpoint timeline.
+    let v = fx
+        .rt
+        .verification_list()
+        .into_iter()
+        .find(|v| v.item == claim)
+        .unwrap();
+    assert_eq!(v.state, analyst_protocol::ui::VerificationState::Unverified);
+    let history = fx.rt.history_list(Some(5)).unwrap();
+    assert!(history.iter().any(|c| c
+        .label
+        .as_deref()
+        .is_some_and(|l| l.starts_with("before refreshing q3/"))));
     fx.wb.shutdown().await;
 }

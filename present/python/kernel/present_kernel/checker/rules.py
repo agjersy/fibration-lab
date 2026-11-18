@@ -25,7 +25,7 @@ from present_sdk.fit import measure_shape, placeholder_info
 from present_sdk.measure import Measurer
 from present_sdk.template import FURNITURE_TYPES, _clr_map, describe_presentation, layout_info
 
-from .numbers import check_run, extract_numbers
+from .numbers import Number, check_run, extract_numbers, match
 
 A = "http://schemas.openxmlformats.org/drawingml/2006/main"
 P = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -37,6 +37,7 @@ DEFAULT_SEVERITY = {
     "src.coverage": "warn", "src.numbers": "warn", "src.chart-stale": "warn", "src.dangling": "error",
     "a11y.alt-text": "error", "a11y.contrast": "warn", "a11y.reading-order": "info", "struct.titles": "error",
     "img.resolution": "warn", "code.hardcoded-style": "warn", "out.opens-clean": "error",
+    "eq.mismatch": "error", "eq.latex-only": "error", "eq.omml-fallback": "warn", "num.bound": "error",
 }  # fmt: skip
 _FACTUAL = re.compile(r"\d|[%€$£¥]")
 
@@ -89,8 +90,10 @@ class _Out:
         self.items: list[dict[str, Any]] = []
 
     def add(self, rule: str, message: str, slide: _SlideCtx | None = None, element_id: str | None = None,
-            fix_hint: str | None = None, pointer: str | None = None) -> None:
+            fix_hint: str | None = None, pointer: str | None = None, severity: str | None = None) -> None:
         sev = self.contract.severity.get(rule, "warn")
+        if severity is not None and sev != "off":
+            sev = severity
         if sev == "off" or (self.only is not None and rule not in self.only):
             return
         d: dict[str, Any] = {"rule": rule, "severity": sev, "message": message}
@@ -204,10 +207,12 @@ def check_deck(project: Path, pptx: Path, deck: dict[str, Any] | None = None,
                slides: list[str] | None = None, rules: list[str] | None = None,
                resolve_cite: Callable[[str], str | None] | None = None,
                chart_values: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
-               opens_clean: Callable[[Path, int], list[str]] | None = None) -> list[dict[str, Any]]:
+               opens_clean: Callable[[Path, int], list[str]] | None = None,
+               results: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Run the checker. ``resolve_cite`` returns the cited passage text (None when it cannot be
     resolved); ``chart_values`` recomputes a chart's table; ``opens_clean`` returns extra problems
-    found by schema validation or the fidelity engine."""
+    found by schema validation or the fidelity engine; ``results`` maps ``"<run id>/<name>"`` to
+    the named result a text run is bound to (``None`` when it is not available)."""
     contract = Contract.load(project, sidecar)
     out = _Out(contract, set(rules) if rules else None)
     try:
@@ -291,7 +296,7 @@ def check_deck(project: Path, pptx: Path, deck: dict[str, Any] | None = None,
         if order and order[0][2] not in ("title", "ctrTitle") and any(o[2] in ("title", "ctrTitle") for o in order):
             out.add("a11y.reading-order", "the title is not first in the reading order", ctx)
         if doc is not None:
-            _check_doc(out, ctx, doc, contract, resolve_cite, chart_values)
+            _check_doc(out, ctx, doc, contract, resolve_cite, chart_values, results)
         elif resolve_cite is not None:
             _numbers_from_tags(out, ctx, slide, resolve_cite)
 
@@ -481,12 +486,16 @@ def _iter_text_items(doc: dict[str, Any]):
             yield el.get("id"), f"/elements/{i}/content/text", content["text"], False
 
 
-def _check_doc(out: _Out, ctx: _SlideCtx, doc: dict[str, Any], contract: Contract, resolve_cite, chart_values) -> None:
+def _check_doc(out: _Out, ctx: _SlideCtx, doc: dict[str, Any], contract: Contract, resolve_cite, chart_values,
+               results: dict[str, Any] | None = None) -> None:
     for eid, pointer, text, is_title in _iter_text_items(doc):
         for pi, para in enumerate((text or {}).get("paragraphs", [])):
             runs = para.get("runs", [])
             plain = "".join(r.get("t", "") for r in runs)
-            cited = any(r.get("cite") for r in runs)
+            for ri, run in enumerate(runs):
+                if run.get("run_cite"):
+                    _check_bound_number(out, ctx, eid, run, results, f"{pointer}/paragraphs/{pi}/runs/{ri}")
+            cited = any(r.get("cite") or r.get("run_cite") for r in runs)
             declared_none = any(r.get("cite") == [] for r in runs)
             if not is_title and not cited and not declared_none and _FACTUAL.search(plain) and extract_numbers(plain):
                 out.add("src.coverage", f"paragraph with figures has no citation: {plain[:60]!r}", ctx, eid,
@@ -533,6 +542,65 @@ def _check_doc(out: _Out, ctx: _SlideCtx, doc: dict[str, Any], contract: Contrac
             for c in item.get("cite") or []:
                 if resolve_cite(c) is None:
                     out.add("src.dangling", f"citation {c} does not resolve to a reference", ctx, item.get("id"))
+        elif kind == "equation":
+            _check_equation(out, ctx, item, f"/{_key}" if _key.startswith("elements/") else f"/placeholders/{_key}")
+
+
+def _check_bound_number(out: _Out, ctx: _SlideCtx, eid: str | None, run: dict[str, Any],
+                        results: dict[str, Any] | None, pointer: str) -> None:
+    """A number bound to a named result must show the recorded value, after the deck's number
+    normalisation (percent, scale words, rounding to the displayed precision)."""
+    rc = run["run_cite"]
+    name, run_id = rc.get("result_name", "?"), rc.get("run_id", "?")
+    shown = extract_numbers(run.get("t", ""))
+    if not shown:
+        out.add("num.bound", f"text bound to result `{name}` of run {run_id} shows no number", ctx, eid,
+                "show the number, or remove the binding", pointer)  # fmt: skip
+        return
+    if results is None:
+        return  # no provenance available (a check outside a session)
+    recorded = results.get(f"{run_id}/{name}")
+    if not isinstance(recorded, dict) or not isinstance(recorded.get("value"), (int, float)):
+        out.add("num.bound", f"run {run_id} has no recorded result `{name}` on this machine", ctx, eid,
+                "run the script again (it must call analyst_results.record), or bind another result", pointer,
+                severity="warn")  # fmt: skip
+        return
+    value = float(recorded["value"])
+    source = [Number(repr(value), value, 0, False)]
+    if match(shown[0], source) == "red":
+        unit = f" {recorded['unit']}" if recorded.get("unit") else ""
+        out.add("num.bound", f"{shown[0].text!r} does not match result `{name}` of run {run_id} ({value:g}{unit})", ctx, eid,
+                "correct the number, or refresh it from the run", pointer)  # fmt: skip
+
+
+def _check_equation(out: _Out, ctx: _SlideCtx, item: dict[str, Any], pointer: str) -> None:
+    """An equation's own record: a numeric mismatch with its code, or LaTeX that nothing checked,
+    is an error until the user acknowledges it (then it is listed as info)."""
+    from present_sdk.omml import OmmlError, latex_to_omath
+
+    cite = item.get("eq_cite") or {}
+    eid = item.get("id")
+    acknowledged = item.get("acknowledged") is True
+    where = f"{cite.get('qualname', '?')} in {cite.get('path', '?')}"
+    check = cite.get("check") or {}
+    if check.get("status") == "mismatch":
+        ce = check.get("counterexample") or {}
+        detail = ""
+        if ce:
+            inputs = ", ".join(f"{k}={v:g}" for k, v in (ce.get("inputs") or {}).items())
+            detail = f" (at {inputs}: equation {ce.get('expected')!r}, code {ce.get('actual')!r})"
+        out.add("eq.mismatch", f"the equation of {where} disagrees with its code{detail}", ctx, eid,
+                "fix the code or the Math: section, then place the equation again; or acknowledge it", pointer,
+                severity="info" if acknowledged else None)  # fmt: skip
+    if cite.get("tier") == "latex":
+        out.add("eq.latex-only", f"the equation of {where} is display-only LaTeX that nothing checks", ctx, eid,
+                "declare it in a Math: section so it is checked against the code, or acknowledge it", pointer,
+                severity="info" if acknowledged else None)  # fmt: skip
+    try:
+        latex_to_omath(cite.get("latex") or "")
+    except OmmlError as exc:
+        out.add("eq.omml-fallback", f"the equation of {where} exports as an image, not a native equation ({exc})",
+                ctx, eid, pointer=pointer)  # fmt: skip
 
 
 def _tables_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:

@@ -46,9 +46,31 @@ impl OpenOptions {
     }
 }
 
-/// The identity of the project tree the deck's analysis runs execute: the session supplies
-/// it, the checker compares the run citations on slides with it.
-pub type TreeIdentity = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// What the checker needs from the project around the deck to verify the provenance of slide
+/// elements: the identity of the tree the analysis runs execute (run citations), the content
+/// hash of a source file (equation citations), and the recorded value of a run's named result
+/// (bound numbers). The session supplies it; without one, provenance is not checked.
+pub trait Provenance: Send + Sync {
+    /// The identity of the project's working tree now, as runs record it.
+    fn tree_identity(&self) -> Option<String>;
+    /// SHA-256 (hex) of a repo-relative file's content now; `None` when it does not exist.
+    fn file_hash(&self, _path: &str) -> Option<String> {
+        None
+    }
+    /// The named result a run recorded (`{name, value, unit?, uncertainty?}`).
+    fn named_result(&self, _run_id: &str, _name: &str) -> Option<Value> {
+        None
+    }
+}
+
+/// A [`Provenance`] that knows only the tree identity.
+pub struct TreeOnly(pub std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>);
+
+impl Provenance for TreeOnly {
+    fn tree_identity(&self) -> Option<String> {
+        (self.0)()
+    }
+}
 
 /// The checker rule for a slide element that cites an analysis run whose code has changed.
 pub const RULE_STALE: &str = "stale";
@@ -57,7 +79,7 @@ pub struct Workspace {
     pub project: Project,
     pub home: PathBuf,
     pub kernel: KernelClient,
-    tree_identity: Mutex<Option<TreeIdentity>>,
+    provenance: Mutex<Option<std::sync::Arc<dyn Provenance>>>,
     index: Mutex<Index>,
     /// Held while the shared scratch render is built and read, so a check started by the
     /// user and one started by the agent never read each other's half-written file.
@@ -99,7 +121,7 @@ impl Workspace {
             project,
             home: options.home.clone(),
             kernel,
-            tree_identity: Mutex::new(None),
+            provenance: Mutex::new(None),
             index: Mutex::new(index),
             scratch_lock: tokio::sync::Mutex::new(()),
         };
@@ -140,22 +162,25 @@ impl Workspace {
         }
     }
 
-    /// Tell the workspace how to learn the current identity of the project tree, so the
-    /// checker can report stale run citations.
-    pub fn set_tree_identity(&self, f: TreeIdentity) {
-        *self.tree_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    /// Tell the workspace how to look at the project around the deck, so the checker can
+    /// report stale run citations and equations.
+    pub fn set_provenance(&self, p: std::sync::Arc<dyn Provenance>) {
+        *self.provenance.lock().unwrap_or_else(|e| e.into_inner()) = Some(p);
     }
 
-    /// Findings for slide elements that cite an analysis run (`run_cite`) whose tree
-    /// identity is not the project's current one: the code has changed since the figure
-    /// was made. A warning; refreshing the figure is the user's (or a later feature's) call.
-    fn stale_run_cites(&self, slides: Option<&[String]>) -> Vec<Value> {
-        let identity = self
-            .tree_identity
+    pub fn provenance(&self) -> Option<std::sync::Arc<dyn Provenance>> {
+        self.provenance
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let Some(identity) = identity else {
+            .clone()
+    }
+
+    /// Findings for slide elements whose source has changed since they were placed: an
+    /// element citing an analysis run (`run_cite`) whose tree identity is not the project's
+    /// current one, and an equation (`eq_cite`) whose source file's content hash is not the
+    /// file's hash now. Warnings (`stale`); refreshing is the user's call.
+    fn stale_findings(&self, slides: Option<&[String]>) -> Vec<Value> {
+        let Some(prov) = self.provenance() else {
             return Vec::new();
         };
         let Ok((_, docs)) = self.deck().read_all() else {
@@ -170,42 +195,108 @@ impl Workspace {
             let Ok(v) = serde_json::to_value(slide) else {
                 continue;
             };
-            let placeholders = v["placeholders"].as_object().into_iter().flat_map(|m| {
-                m.iter()
-                    .map(|(k, item)| (format!("/placeholders/{k}"), item))
-            });
-            let elements = v["elements"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-                .map(|(i, el)| (format!("/elements/{i}/content"), &el["content"]));
-            for (pointer, item) in placeholders.chain(elements) {
-                let cite = &item["run_cite"];
-                let Some(run_tree) = cite["tree_hash"].as_str() else {
-                    continue;
-                };
-                // The tree identity is computed once, and only when a slide cites a run.
-                let now = current.get_or_insert_with(|| identity());
-                if now.as_deref().is_some_and(|n| n != run_tree) {
-                    out.push(json!({
+            for (pointer, item) in slide_items(&v) {
+                let finding = |message: String, fix_hint: &str| {
+                    json!({
                         "rule": RULE_STALE,
                         "severity": "warn",
                         "slide_id": slide.id,
                         "slide_index": index,
                         "element_id": item["id"],
                         "pointer": pointer,
-                        "message": format!(
-                            "the figure cites run {} of {}, and the project's code has changed since that run",
-                            cite["run_id"].as_str().unwrap_or("?"),
-                            cite["script"].as_str().unwrap_or("?")
-                        ),
-                        "fix_hint": "run the script again and place the new figure, or keep the figure if the change does not affect it",
-                    }));
+                        "message": message,
+                        "fix_hint": fix_hint,
+                    })
+                };
+                let cite = &item["run_cite"];
+                if let Some(run_tree) = cite["tree_hash"].as_str() {
+                    // The tree identity is computed once, and only when a slide cites a run.
+                    let now = current.get_or_insert_with(|| prov.tree_identity());
+                    if now.as_deref().is_some_and(|n| n != run_tree) {
+                        out.push(finding(
+                            format!(
+                                "the figure cites run {} of {}, and the project's code has changed since that run",
+                                cite["run_id"].as_str().unwrap_or("?"),
+                                cite["script"].as_str().unwrap_or("?")
+                            ),
+                            "refresh it to run the script again and place the new figure, or keep the figure if the change does not affect it",
+                        ));
+                    }
+                }
+                for (sub, run) in text_runs(item) {
+                    let rc = &run["run_cite"];
+                    let Some(run_tree) = rc["tree_hash"].as_str() else {
+                        continue;
+                    };
+                    let now = current.get_or_insert_with(|| prov.tree_identity());
+                    if now.as_deref().is_some_and(|n| n != run_tree) {
+                        let mut f = finding(
+                            format!(
+                                "the number {:?} is result `{}` of run {} of {}, and the project's code has changed since that run",
+                                run["t"].as_str().unwrap_or(""),
+                                rc["result_name"].as_str().unwrap_or("?"),
+                                rc["run_id"].as_str().unwrap_or("?"),
+                                rc["script"].as_str().unwrap_or("?")
+                            ),
+                            "refresh it to run the script again and update the number",
+                        );
+                        f["pointer"] = json!(format!("{pointer}{sub}"));
+                        out.push(f);
+                    }
+                }
+                let eq = &item["eq_cite"];
+                if let (Some(path), Some(hash)) = (eq["path"].as_str(), eq["source_hash"].as_str())
+                {
+                    let now = prov.file_hash(path);
+                    if now.as_deref() != Some(hash) {
+                        out.push(finding(
+                            format!(
+                                "the equation of {} {} since it was placed",
+                                eq["qualname"].as_str().unwrap_or("?"),
+                                if now.is_some() {
+                                    format!("comes from {path}, which has changed")
+                                } else {
+                                    format!("came from {path}, which no longer exists")
+                                }
+                            ),
+                            "refresh it to extract and check the equation again",
+                        ));
+                    }
                 }
             }
         }
         out
+    }
+
+    /// `{"<run id>/<result name>": {name, value, unit?, uncertainty?} | null}` for every named
+    /// result a text run of the deck is bound to; `null` when the result is not available.
+    /// `None` without a provenance (nothing to compare against).
+    pub fn bound_results(&self) -> Option<Value> {
+        let mut map = serde_json::Map::new();
+        let prov = self.provenance()?;
+        let Ok((_, docs)) = self.deck().read_all() else {
+            return Some(Value::Object(map));
+        };
+        for slide in &docs {
+            let Ok(v) = serde_json::to_value(slide) else {
+                continue;
+            };
+            for (_, item) in slide_items(&v) {
+                for (_, run) in text_runs(item) {
+                    let rc = &run["run_cite"];
+                    let (Some(id), Some(name)) =
+                        (rc["run_id"].as_str(), rc["result_name"].as_str())
+                    else {
+                        continue;
+                    };
+                    let key = format!("{id}/{name}");
+                    if !map.contains_key(&key) {
+                        map.insert(key, prov.named_result(id, name).unwrap_or(Value::Null));
+                    }
+                }
+            }
+        }
+        Some(Value::Object(map))
     }
 
     pub async fn close(&self) {
@@ -466,6 +557,11 @@ impl Workspace {
         if let Some(r) = rules {
             params["rules"] = json!(r);
         }
+        // The recorded values of the named results that slide text is bound to, for the
+        // kernel's number check (`num.bound`).
+        if let Some(results) = self.bound_results() {
+            params["results"] = results;
+        }
         let mut diags = self
             .kernel
             .call_value("check.run", params)
@@ -474,7 +570,7 @@ impl Workspace {
             .cloned()
             .unwrap_or_default();
         if rules.is_none_or(|r| r.iter().any(|x| x == RULE_STALE)) {
-            diags.extend(self.stale_run_cites(slides));
+            diags.extend(self.stale_findings(slides));
         }
         Ok(diags)
     }
@@ -574,4 +670,37 @@ pub fn slug(title: &str) -> String {
     } else {
         trimmed.chars().take(60).collect()
     }
+}
+
+/// Every element of a slide document as JSON with its pointer: placeholders, then free
+/// elements' content.
+pub fn slide_items(v: &Value) -> Vec<(String, &Value)> {
+    let placeholders = v["placeholders"].as_object().into_iter().flat_map(|m| {
+        m.iter()
+            .map(|(k, item)| (format!("/placeholders/{k}"), item))
+    });
+    let elements = v["elements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, el)| (format!("/elements/{i}/content"), &el["content"]));
+    placeholders.chain(elements).collect()
+}
+
+/// The text runs of an element (a text placeholder, or a free text or shape element), with
+/// their pointer below the element.
+pub fn text_runs(item: &Value) -> Vec<(String, &Value)> {
+    let mut out = Vec::new();
+    for (pi, p) in item["text"]["paragraphs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for (ri, r) in p["runs"].as_array().into_iter().flatten().enumerate() {
+            out.push((format!("/text/paragraphs/{pi}/runs/{ri}"), r));
+        }
+    }
+    out
 }

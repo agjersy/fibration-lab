@@ -175,9 +175,9 @@ async fn open(app: &App, args: &DeckArgs) -> Result<(Arc<DeckServices>, Arc<Deck
         .await
         .map_err(|e| anyhow!("{}", e.message))?;
     let repo = app.repo.clone();
-    svc.ws.set_tree_identity(Arc::new(move || {
-        analyst_core::service::artifacts::current_tree(&repo)
-    }));
+    svc.ws.set_provenance(Arc::new(
+        analyst_core::service::provenance::RepoProvenance::new(&repo),
+    ));
     Ok((services, svc))
 }
 

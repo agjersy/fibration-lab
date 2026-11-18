@@ -155,3 +155,15 @@ describe("editing operations", () => {
     expect(changed.paragraphs[1]).toEqual({ runs: [{ t: "c!" }] });
   });
 });
+
+describe("numbers bound to named results", () => {
+  it("are marked and keep their result citation through an in-place edit", () => {
+    const run_cite = { run_id: "r1", result_name: "tau", script: "scripts/fit.py", args: [], tree_hash: "t1" };
+    const text: Text = { paragraphs: [{ runs: [{ t: "Decay time " }, { t: "1.823 s", run_cite }] }] };
+    const root = mount(textToHtml(text, ctx));
+    expect(root.querySelector(".sp-bound")?.getAttribute("title")).toContain("tau");
+    const back = domToText(root);
+    expect(back.paragraphs[0]!.runs[1]).toEqual({ t: "1.823 s", run_cite });
+    expect(canonicalText(back)).toBe(canonicalText(text));
+  });
+});

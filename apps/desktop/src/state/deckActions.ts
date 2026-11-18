@@ -3,11 +3,12 @@
 // re-reads the deck so the user sees the current slide.
 import { findLayout, moveSlide, orderedSlideIds, previousSlideId, switchLayout, textOf, withTitle } from "../deck/model";
 import { backend, errorMessage, isIpcError } from "../ipc";
-import type { Deck, SessionId } from "../ipc";
+import type { Deck, SessionId, VerificationView } from "../ipc";
 import { deckKey, getDeckState, useDecks } from "./decks";
 import type { OutlineRow } from "./decks";
 import { useTasks } from "./tasks";
 import { notifyError, useUi } from "./ui";
+import { showPanel } from "../ui/workbench/controller";
 
 /** The storyline of a deck, repo-relative (written by the agent's accepted outline proposals). */
 export function outlinePath(deck: string): string {
@@ -310,7 +311,31 @@ export const EXPORT_FORMATS: { format: string; label: string }[] = [
   { format: "md", label: "Outline (Markdown)" },
 ];
 
+/** Formats that leave the app as a finished document: they warn about unverified dependencies. */
+const FINISHED_FORMATS = ["pptx", "pdf"];
+
 export async function exportDeck(session: SessionId, deck: string, format: string): Promise<void> {
+  if (FINISHED_FORMATS.includes(format)) {
+    let gaps: VerificationView[] = [];
+    try {
+      gaps = await backend().invoke("deck_verification_gaps", { session, deck });
+    } catch (e) {
+      notifyError(e);
+      return;
+    }
+    if (gaps.length > 0) {
+      const label: Record<VerificationView["state"], string> = { unverified: "unverified", machine_checked: "machine-checked only", human_verified: "verified", flagged: "flagged" };
+      const ok = await useUi
+        .getState()
+        .askConfirm(
+          `Export ${format} with unverified items?`,
+          `The deck depends on ${gaps.length} item${gaps.length === 1 ? "" : "s"} you have not verified:`,
+          gaps.map((g) => `${g.label} (${label[g.state]}${g.stale ? ", changed since verified" : ""})`),
+          `Export anyway`,
+        );
+      if (!ok) return;
+    }
+  }
   await startDeckTask(session, `Exporting ${format}`, () => backend().invoke("export_run", { session, deck, format }));
 }
 
@@ -328,6 +353,47 @@ export async function revealExport(session: SessionId, deck: string, exportId: s
  * Places a run's figure on the selected slide of the active deck (`slide_place_figure`): a direct
  * user action, cited by its run. Returns false when there is no deck or slide to place it on.
  */
+/**
+ * Refreshes stale elements from the analysis (`slide_refresh`, `deck_refresh_stale`): the core
+ * re-runs cited scripts whose code changed and proposes the updated slides as normal proposals,
+ * which show in the chat for review.
+ */
+export async function refreshFromAnalysis(session: SessionId, deck: string, slideId?: string, elementId?: string): Promise<number> {
+  try {
+    const proposals = slideId
+      ? [await backend().invoke("slide_refresh", { session, deck, slide_id: slideId, ...(elementId ? { element_id: elementId } : {}) })].filter((p) => p !== null)
+      : await backend().invoke("deck_refresh_stale", { session, deck });
+    if (proposals.length === 0) useUi.getState().toast("info", "Nothing to refresh: no element is stale.");
+    else {
+      useUi.getState().toast("success", `${proposals.length} refresh proposal${proposals.length === 1 ? "" : "s"} to review in the chat.`);
+      showPanel("chat");
+    }
+    return proposals.length;
+  } catch (e) {
+    notifyError(e);
+    return 0;
+  }
+}
+
+/** Places the equation of a function on the selected slide (`slide_place_equation`), with its record. */
+export async function placeEquationOnSlide(session: SessionId, path: string, fn: string): Promise<boolean> {
+  const deck = useDecks.getState().active[session];
+  const d = deck ? getDeckState(session, deck) : null;
+  if (!deck || !d?.selected) {
+    useUi.getState().toast("info", "Open a deck and select a slide to place the equation on.");
+    return false;
+  }
+  try {
+    const view = await backend().invoke("slide_place_equation", { session, deck, slide_id: d.selected, path, function: fn });
+    useDecks.getState().upsertSlide(session, deck, view);
+    useUi.getState().toast("success", `Placed on slide ${view.index + 1}.`);
+    return true;
+  } catch (e) {
+    notifyError(e);
+    return false;
+  }
+}
+
 export async function placeFigureOnSlide(session: SessionId, runId: string, artifact: string): Promise<boolean> {
   const deck = useDecks.getState().active[session];
   const d = deck ? getDeckState(session, deck) : null;

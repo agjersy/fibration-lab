@@ -4,6 +4,7 @@ import type { Cite } from "./Cite";
 import type { Crop } from "./Crop";
 import type { Diagram } from "./Diagram";
 import type { ElementId } from "./ElementId";
+import type { EqCite } from "./EqCite";
 import type { ImageFit } from "./ImageFit";
 import type { RunCite } from "./RunCite";
 import type { ShapeKind } from "./ShapeKind";
@@ -19,4 +20,14 @@ export type ElementContent = { "type": "text", id: ElementId, text: Text, } | { 
  * The analysis run this figure came from, when it was placed from a run of the
  * project: a citation of the run itself, not of a reference.
  */
-run_cite?: RunCite, } | { "type": "chart", id: ElementId, chart: Chart, } | { "type": "table", id: ElementId, table: TableEl, } | { "type": "diagram", id: ElementId, diagram: Diagram, } | { "type": "shape", id: ElementId, shape: ShapeKind, fill?: ThemeColor, line?: ThemeColor, text?: Text, };
+run_cite?: RunCite, } | { "type": "chart", id: ElementId, chart: Chart, } | { "type": "table", id: ElementId, table: TableEl, } | { "type": "diagram", id: ElementId, diagram: Diagram, } | { "type": "equation", id: ElementId, 
+/**
+ * The equation and where it came from: the function, its file and content hash,
+ * the provenance tier, and the numeric check.
+ */
+eq_cite: EqCite, 
+/**
+ * The user has seen that the equation is unchecked (LaTeX-only) or disagrees with
+ * its code, and keeps it: the checker reports it as a warning instead of an error.
+ */
+acknowledged?: boolean, } | { "type": "shape", id: ElementId, shape: ShapeKind, fill?: ThemeColor, line?: ThemeColor, text?: Text, };

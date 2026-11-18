@@ -302,6 +302,18 @@ impl SessionRuntime {
         );
         let decks = DeckServices::new(&repo, &session.home, &dir);
         decks.set_events(events.clone());
+        // Decks check bound numbers against the named results this session's runs recorded.
+        {
+            let (runs, repo, artifacts) = (runs.clone(), repo.clone(), session.artifacts_dir());
+            decks.set_provenance(Arc::new(
+                super::provenance::RepoProvenance::new(&repo.clone()).with_results(
+                    move |run_id, name| {
+                        super::artifacts::named_result(&runs, &repo, &artifacts, run_id, name)
+                            .and_then(|r| serde_json::to_value(r).ok())
+                    },
+                ),
+            ));
+        }
         decks.set_options(DeckOptions {
             env_remove: opts.env_remove.clone(),
             ..opts.deck.clone()
@@ -1717,6 +1729,91 @@ impl SessionRuntime {
             .map_err(|e| ServiceError::internal(format!("the placed slide: {e}")))?;
         svc.slide_update(slide, Some(&placed.hash))
             .map_err(ServiceError::from)
+    }
+
+    /// Place the equation of a function on a slide, as a user edit (the UI's
+    /// `slide_place_equation`): the same placement as the agent's `slide.place_equation`
+    /// (extracted and checked by the analysis kernel), written at once against the slide's hash.
+    pub async fn slide_place_equation(
+        &self,
+        deck: &str,
+        slide_id: &str,
+        path: &str,
+        function: &str,
+        placeholder: Option<&str>,
+    ) -> ServiceResult<analyst_deck_protocol::ui::SlideView> {
+        let svc = self.deck(deck).await?;
+        let k = self.kernel().await?;
+        self.sync_debounced().await?;
+        let placed = super::provenance::place_equation(
+            &k,
+            &self.repo,
+            &svc,
+            slide_id,
+            path,
+            function,
+            placeholder,
+        )
+        .await?;
+        let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(placed.slide)
+            .map_err(|e| ServiceError::internal(format!("the placed slide: {e}")))?;
+        svc.slide_update(slide, Some(&placed.hash))
+            .map_err(ServiceError::from)
+    }
+
+    // ---- verification ledger ----
+
+    /// The verification queue of the project (`.analyst/verification.jsonl` against the items'
+    /// content now). Reads files only.
+    pub fn verification_list(&self) -> Vec<analyst_protocol::ui::VerificationView> {
+        let session = self.session_snapshot();
+        super::verification::list(&super::verification::Scope {
+            repo: &self.repo,
+            runs: &self.runs,
+            session: &session,
+        })
+    }
+
+    /// The user records a verification state for an item's current content.
+    pub fn verification_set(
+        &self,
+        item: &analyst_protocol::ui::VerifyItem,
+        state: analyst_protocol::ui::VerifyState,
+        note: Option<&str>,
+    ) -> ServiceResult<analyst_protocol::ui::VerificationView> {
+        let session = self.session_snapshot();
+        let view = super::verification::set(
+            &super::verification::Scope {
+                repo: &self.repo,
+                runs: &self.runs,
+                session: &session,
+            },
+            item,
+            state,
+            analyst_protocol::ui::Verifier::User,
+            note,
+        )?;
+        self.emit(SessionEvent::VerificationChanged {
+            key: view.key.clone(),
+        });
+        Ok(view)
+    }
+
+    /// What a deck depends on that is not human-verified (asked before an export).
+    pub fn deck_verification_gaps(
+        &self,
+        deck: &str,
+    ) -> ServiceResult<Vec<analyst_protocol::ui::VerificationView>> {
+        super::decks::valid_slug(deck).map_err(ServiceError::invalid)?;
+        let session = self.session_snapshot();
+        Ok(super::verification::deck_gaps(
+            &super::verification::Scope {
+                repo: &self.repo,
+                runs: &self.runs,
+                session: &session,
+            },
+            deck,
+        ))
     }
 
     // ---- artifact index ----

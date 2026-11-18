@@ -335,6 +335,11 @@ impl RunService {
 
     // ---- records ----
 
+    /// The session's event channel (tools that change session state tell the UI through it).
+    pub fn events(&self) -> &EventHub {
+        &self.events
+    }
+
     pub fn record(&self, run_id: &str) -> Option<RunRecord> {
         self.runs.lock().ok().and_then(|r| r.get(run_id).cloned())
     }

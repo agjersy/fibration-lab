@@ -256,6 +256,9 @@ pub enum ArtifactKind {
     Json,
     Text,
     File,
+    /// `results.json` at the top of a run's output directory: the run's named results
+    /// (`analyst_results.record`, PROTOCOL 1.7).
+    Results,
 }
 
 impl ArtifactKind {
@@ -276,9 +279,29 @@ impl ArtifactKind {
     pub fn is_rendered(self) -> bool {
         matches!(
             self,
-            ArtifactKind::Figure | ArtifactKind::Json | ArtifactKind::Text
+            ArtifactKind::Figure | ArtifactKind::Json | ArtifactKind::Text | ArtifactKind::Results
         )
     }
+}
+
+/// One named numeric result of a run (`analyst_results.record`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct NamedResult {
+    pub name: String,
+    pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub uncertainty: Option<f64>,
+}
+
+/// `results.json` as `analyst_results` writes it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ResultsFile {
+    #[serde(default)]
+    pub results: Vec<NamedResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]

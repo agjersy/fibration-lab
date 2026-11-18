@@ -1,14 +1,15 @@
 // The live preview (IPC.md section 5): a slide drawn from the deck document and the template
 // description. Layout placeholders sit at their EMU geometry scaled to the pixel width; text takes
 // the level styles of its placeholder; charts and diagrams are SVG. Pure: no stores, no backend.
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, KeyboardEvent, MouseEvent, ReactNode } from "react";
 import { findLayout, isFurniture, isTitleType, slideCites } from "../../../deck/model";
-import type { Deck, ElementContent, FreeElement, LevelStyle, PlaceholderContent, PlaceholderInfo, RunCite, Slide, TableEl, TemplateDescription, Text, Theme } from "../../../deck/types";
+import type { Deck, ElementContent, EqCite, FreeElement, LevelStyle, PlaceholderContent, PlaceholderInfo, RunCite, Slide, TableEl, TemplateDescription, Text, Theme } from "../../../deck/types";
 import { ChartView } from "./ChartView";
 import { DiagramView } from "./DiagramView";
 import { emuRect, ptToPx, scaleFor, slideHeight, slideSize } from "./geometry";
 import type { Rect } from "./geometry";
+import type { VerificationState } from "../../../ipc";
 import { canonicalText, domToText, mergeEdited, paragraphElement, restyleParagraph, shiftLevel, splitParagraph, textToHtml } from "./textModel";
 import type { TextStyleContext } from "./textModel";
 import { contrastOn, defaultAlign, fontStack, mix, resolveColor } from "./theme";
@@ -34,7 +35,23 @@ export interface SlidePreviewProps {
   onRunCite?: (cite: RunCite, elementId: string) => void;
   /** Elements the checker reports as stale (their run's code has changed since). */
   stale?: ReadonlySet<string>;
+  /** An equation was clicked (open it in the Equations panel at its function). */
+  onEquation?: (cite: EqCite, elementId: string) => void;
+  /** Verification state of the slide's claims (elements that cite the analysis), by element id. */
+  verification?: ReadonlyMap<string, VerificationState>;
+  /** A stale element's Refresh was clicked (re-run what changed and propose the update). */
+  onRefresh?: (elementId: string) => void;
 }
+
+const Katex = lazy(() => import("../../panels/Katex"));
+
+const VERIFY_MARK: Record<VerificationState, string> = { unverified: "?", machine_checked: "⚙", human_verified: "✓", flagged: "⚑" };
+const VERIFY_TITLE: Record<VerificationState, string> = {
+  unverified: "Not verified by you yet",
+  machine_checked: "Checked by a tool or the agent, not by you",
+  human_verified: "Verified by you",
+  flagged: "Flagged",
+};
 
 const EMPTY_TEXT: Text = { paragraphs: [{ runs: [{ t: "" }] }] };
 const FREE_LEVELS = (theme: Theme): LevelStyle[] => [0, 1, 2, 3, 4].map((level) => ({ level, font: theme.fonts.minor, size_pt: Math.max(10, 18 - level * 2), bold: false, color: "dk1", bullet: level > 0, space_before_pt: 4, line_spacing: 1, mar_l: level * 342900 }));
@@ -61,14 +78,14 @@ function applyFit(box: HTMLElement | null, inner: HTMLElement | null, shrink: bo
 
 const NO_STALE: ReadonlySet<string> = new Set();
 
-export function SlidePreview({ slide, template, width, deck, index, resolveAsset, interactive = false, onEditText, onCite, onRunCite, stale = NO_STALE }: SlidePreviewProps) {
+export function SlidePreview({ slide, template, width, deck, index, resolveAsset, interactive = false, onEditText, onCite, onRunCite, stale = NO_STALE, onEquation, verification, onRefresh }: SlidePreviewProps) {
   const size = slideSize(template, deck);
   const scale = scaleFor(size, width);
   const height = slideHeight(size, width);
   const theme = template.theme;
   const layout = findLayout(template, slide.layout);
   const citeNumbers = useMemo(() => new Map(slideCites(slide).map((c, i) => [c, i + 1])), [slide]);
-  const shared: Shared = { theme, scale, citeNumbers, resolveAsset, interactive, onCite, onRunCite, stale };
+  const shared: Shared = { theme, scale, citeNumbers, resolveAsset, interactive, onCite, onRunCite, stale, onEquation };
 
   const frame: CSSProperties = { width, height, background: resolveColor(theme, "lt1"), color: resolveColor(theme, "dk1"), fontFamily: fontStack(theme.fonts.minor, theme) };
   const footer = deck?.footer;
@@ -110,6 +127,48 @@ export function SlidePreview({ slide, template, width, deck, index, resolveAsset
       {slide.elements.map((el) => (
         <FreeElementView key={el.id} element={el} shared={shared} />
       ))}
+      {verification && verification.size > 0
+        ? [...verification.entries()].map(([id, state]) => {
+            const box = elementBox(slide, layout, id, scale);
+            if (!box) return null;
+            return (
+              <span
+                key={`v-${id}`}
+                className={`sp-verify ${state}`}
+                data-testid="slide-verify-badge"
+                data-element={id}
+                data-state={state}
+                title={VERIFY_TITLE[state]}
+                style={{ left: box.left + box.width, top: box.top, fontSize: Math.max(8, ptToPx(9, scale)) }}
+              >
+                {VERIFY_MARK[state]}
+              </span>
+            );
+          })
+        : null}
+      {onRefresh
+        ? [...stale].map((id) => {
+            const box = elementBox(slide, layout, id, scale);
+            if (!box) return null;
+            return (
+              <button
+                key={`r-${id}`}
+                type="button"
+                className="sp-refresh"
+                data-testid="element-refresh"
+                data-element={id}
+                title="The source changed: re-run what changed and propose the updated element"
+                style={{ left: box.left, top: box.top, fontSize: Math.max(8, ptToPx(9, scale)) }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRefresh(id);
+                }}
+              >
+                ↻ Refresh
+              </button>
+            );
+          })
+        : null}
       {slide.kind === "generated" ? (
         <div className="sp-generated" style={{ fontSize: Math.max(8, ptToPx(10, scale)) }} title="Drawn by a script (generated slide)">
           generated
@@ -117,6 +176,18 @@ export function SlidePreview({ slide, template, width, deck, index, resolveAsset
       ) : null}
     </div>
   );
+}
+
+/** The pixel box of an element (placeholder content or free element) by id. */
+function elementBox(slide: Slide, layout: ReturnType<typeof findLayout>, id: string, scale: number): Rect | null {
+  const key = Object.keys(slide.placeholders).find((k) => {
+    const c = slide.placeholders[k];
+    return c && c.type !== "empty" && c.id === id;
+  });
+  const ph = key && layout ? layout.placeholders.find((p) => p.key === key) : undefined;
+  if (ph) return emuRect(ph, scale);
+  const free = slide.elements.find((e) => e.id === id);
+  return free ? emuRect(free, scale) : null;
 }
 
 interface Shared {
@@ -128,6 +199,7 @@ interface Shared {
   onCite?: (cite: string) => void;
   onRunCite?: (cite: RunCite, elementId: string) => void;
   stale: ReadonlySet<string>;
+  onEquation?: (cite: EqCite, elementId: string) => void;
 }
 
 function anchorJustify(anchor: string): CSSProperties["justifyContent"] {
@@ -337,11 +409,66 @@ function ContentView({ content, rect, shared, levels }: { content: PlaceholderCo
       return <TableView table={content.table} rect={rect} shared={shared} />;
     case "image":
       return <ImageView content={content} rect={rect} shared={shared} />;
+    case "equation":
+      return <EquationView id={content.id} cite={content.eq_cite} acknowledged={content.acknowledged === true} shared={shared} />;
     case "text":
       return <TextBox ph={{ key: content.id, type: "body", autofit: "shrink", anchor: "t", levels, insets: { l: 91440, t: 45720, r: 91440, b: 45720 } }} rect={{ ...rect, left: 0, top: 0 }} text={content.text} shared={{ ...shared, interactive: false }} elementId={content.id} />;
     default:
       return null;
   }
+}
+
+/** The badge of an equation: its tier and, for a declared one, its numeric check. */
+export function equationBadge(cite: EqCite): { label: string; tone: "success" | "error" | "warning" | "muted"; title: string } {
+  const where = `${cite.qualname} in ${cite.path}`;
+  if (cite.tier === "latex") return { label: "LaTeX only", tone: "warning", title: `Display-only LaTeX of ${where}: nothing checks it against the code` };
+  if (cite.tier === "derived") return { label: "derived", tone: "success", title: `Derived from the code of ${where}` };
+  const c = cite.check;
+  if (c.status === "agree") return { label: "declared ✓", tone: "success", title: `Declared in ${where}; agrees with the code on ${c.trials} trials (tol ${c.tol ?? "?"})` };
+  if (c.status === "mismatch") {
+    const ce = c.counterexample;
+    const at = ce ? ` at ${Object.entries(ce.inputs).map(([k, v]) => `${k}=${v}`).join(", ")}: equation ${ce.expected}, code ${ce.actual}` : "";
+    return { label: "mismatch ✗", tone: "error", title: `Declared in ${where}; disagrees with the code${at}` };
+  }
+  return { label: "declared ?", tone: "muted", title: `Declared in ${where}; not checked${c.reason ? `: ${c.reason}` : ""}` };
+}
+
+function EquationView({ id, cite, acknowledged, shared }: { id: string; cite: EqCite; acknowledged: boolean; shared: Shared }) {
+  const stale = shared.stale.has(id);
+  const badge = equationBadge(cite);
+  const open = () => shared.onEquation?.(cite, id);
+  return (
+    <div
+      className={`sp-equation${stale ? " sp-stale" : ""}${shared.onEquation ? " clickable" : ""}`}
+      data-testid="slide-equation"
+      data-stale={stale || undefined}
+      style={{ fontSize: ptToPx(24, shared.scale) }}
+      title={`${badge.title}${stale ? " (stale: the source has changed since it was placed)" : ""}`}
+      onClick={shared.onEquation ? open : undefined}
+    >
+      <Suspense fallback={<code>{cite.latex}</code>}>
+        <Katex latex={cite.latex} />
+      </Suspense>
+      <div className="sp-image-cites" style={{ fontSize: Math.max(8, ptToPx(10, shared.scale)) }}>
+        <button
+          type="button"
+          className={`sp-eq-badge ${badge.tone}${stale ? " stale" : ""}`}
+          data-testid="equation-badge"
+          data-tier={cite.tier}
+          data-check={cite.check.status}
+          disabled={!shared.onEquation}
+          onClick={(e) => {
+            e.stopPropagation();
+            open();
+          }}
+        >
+          {badge.label}
+          {acknowledged && badge.tone !== "success" ? " (ack)" : ""}
+          {stale ? " ⚠" : ""}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function TableView({ table, rect, shared }: { table: TableEl; rect: Rect; shared: Shared }) {

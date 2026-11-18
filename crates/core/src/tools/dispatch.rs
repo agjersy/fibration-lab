@@ -270,6 +270,55 @@ impl ToolContext {
         Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
     }
 
+    /// `slide.place_equation`: the equation placed on the slide by
+    /// [`crate::service::provenance::place_equation`] (the same function the UI's
+    /// `slide_place_equation` uses), as the arguments of the equivalent `slide.propose_update`.
+    async fn place_equation_args(&self, args: &Value) -> Result<Value, ToolError> {
+        let slug = self.deck_slug(args)?;
+        let path = str_arg(args, "path")?;
+        let function = str_arg(args, "function")?;
+        let slide_id = str_arg(args, "slide_id")?;
+        let svc = self.decks.open(&slug).await?;
+        let placed = crate::service::provenance::place_equation(
+            self.kernel()?,
+            &self.repo,
+            &svc,
+            slide_id,
+            path,
+            function,
+            args.get("placeholder").and_then(Value::as_str),
+        )
+        .await?;
+        Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
+    }
+
+    /// `slide.insert_result`: the paragraph with the bound number made by
+    /// [`crate::service::provenance::bind_result`], as the arguments of the equivalent
+    /// `slide.propose_update`.
+    async fn insert_result_args(&self, args: &Value) -> Result<Value, ToolError> {
+        let slug = self.deck_slug(args)?;
+        let slide_id = str_arg(args, "slide_id")?;
+        let svc = self.decks.open(&slug).await?;
+        let placed = crate::service::provenance::bind_result(
+            &self.runs,
+            &self.session,
+            &self.repo,
+            &svc,
+            slide_id,
+            args.get("placeholder")
+                .and_then(Value::as_str)
+                .unwrap_or("body"),
+            str_arg(args, "run_id")?,
+            str_arg(args, "result_name")?,
+            args.get("decimals")
+                .and_then(Value::as_u64)
+                .map(|d| d as usize),
+            args.get("before").and_then(Value::as_str),
+            args.get("after").and_then(Value::as_str),
+        )?;
+        Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
+    }
+
     /// Run the first half of a deck tool: read tools finish here, edit tools come back as a
     /// [`Change`] for the loop to gate. Starts the deck's kernel when needed.
     pub async fn deck_prepare(
@@ -279,6 +328,18 @@ impl ToolContext {
     ) -> Result<(Arc<DeckService>, Prepared), ToolError> {
         if name == crate::tools::registry::PLACE_FIGURE {
             let update = self.place_figure_args(args).await?;
+            return self
+                .deck_prepare_tool("slide.propose_update", &update)
+                .await;
+        }
+        if name == crate::tools::registry::INSERT_RESULT {
+            let update = self.insert_result_args(args).await?;
+            return self
+                .deck_prepare_tool("slide.propose_update", &update)
+                .await;
+        }
+        if name == crate::tools::registry::PLACE_EQUATION {
+            let update = self.place_equation_args(args).await?;
             return self
                 .deck_prepare_tool("slide.propose_update", &update)
                 .await;
@@ -481,6 +542,51 @@ impl ToolContext {
             "out.read" => {
                 let p: OutReadParams = serde_json::from_value(args.clone()).map_err(bad_args)?;
                 Ok(serde_json::to_value(self.kernel()?.out_read(p).await?)?)
+            }
+            "verify.list" => {
+                let scope = crate::service::verification::Scope {
+                    repo: &self.repo,
+                    runs: &self.runs,
+                    session: &self.session,
+                };
+                let only = args
+                    .get("unverified_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let items: Vec<_> = crate::service::verification::list(&scope)
+                    .into_iter()
+                    .filter(|v| {
+                        !only || v.state == analyst_protocol::ui::VerificationState::Unverified
+                    })
+                    .take(200)
+                    .collect();
+                Ok(json!({"items": items}))
+            }
+            "verify.record" => {
+                let item: analyst_protocol::ui::VerifyItem =
+                    serde_json::from_value(args.get("item").cloned().unwrap_or(Value::Null))
+                        .map_err(bad_args)?;
+                let state: analyst_protocol::ui::VerifyState =
+                    serde_json::from_value(args.get("state").cloned().unwrap_or(Value::Null))
+                        .map_err(bad_args)?;
+                let scope = crate::service::verification::Scope {
+                    repo: &self.repo,
+                    runs: &self.runs,
+                    session: &self.session,
+                };
+                let view = crate::service::verification::set(
+                    &scope,
+                    &item,
+                    state,
+                    analyst_protocol::ui::Verifier::Agent,
+                    args.get("note").and_then(Value::as_str),
+                )?;
+                self.runs
+                    .events()
+                    .emit(analyst_protocol::ui::SessionEvent::VerificationChanged {
+                        key: view.key.clone(),
+                    });
+                Ok(serde_json::to_value(view)?)
             }
             "eq.extract" => {
                 let p: EqExtractParams = serde_json::from_value(args.clone()).map_err(bad_args)?;

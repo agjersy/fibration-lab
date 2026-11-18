@@ -64,7 +64,7 @@ pub async fn session_create(
         )
         .await
         .map_err(IpcError::from)?;
-    allow_deck_assets(&app, &state, &info.summary.id);
+    allow_session_assets(&app, &state, &info.summary.id);
     Ok(info)
 }
 
@@ -79,7 +79,7 @@ pub async fn session_open(
         .open_session(&session)
         .await
         .map_err(IpcError::from)?;
-    allow_deck_assets(&app, &state, &session);
+    allow_session_assets(&app, &state, &session);
     Ok(info)
 }
 
@@ -400,11 +400,15 @@ pub async fn out_read(
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn figures_list(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session: String,
     limit: Option<u32>,
 ) -> R<Vec<FigureGroup>> {
-    Ok(rt_of(&state, &session)?.figures_list(limit).await)
+    let groups = rt_of(&state, &session)?.figures_list(limit).await;
+    // The figures carry `file_abs`; their folders must be in the asset scope.
+    allow_session_assets(&app, &state, &session);
+    Ok(groups)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -782,9 +786,33 @@ pub fn deck_asset_dirs(repo: &std::path::Path, slugs: &[String]) -> Vec<std::pat
         .collect()
 }
 
-/// Adds the deck folders of an open session to the asset protocol scope (once per folder).
-/// Called when a session is opened or created and when its decks change.
-pub(crate) fn allow_deck_assets(
+/// The folders of a session's figures the webview may load through the asset protocol: the
+/// project's run output directory (`out/` by default, where local runs write their figures) and
+/// the session's `artifacts/` (figures pulled back from a remote target). An output directory
+/// that is absolute, empty, `.`, or leaves the repository is not opened.
+pub fn figure_asset_dirs(
+    repo: &std::path::Path,
+    out_dir: &str,
+    artifacts_dir: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    let rel = out_dir.trim_matches('/');
+    let plain = !rel.is_empty()
+        && !std::path::Path::new(out_dir).is_absolute()
+        && rel
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && c != ".." && !c.contains('\\'));
+    if plain {
+        dirs.push(repo.join(rel));
+    }
+    dirs.push(artifacts_dir.to_path_buf());
+    dirs
+}
+
+/// Adds the deck folders and figure folders of an open session to the asset protocol scope
+/// (once per folder). Called when a session is opened or created, when its decks change, and
+/// when its figures are listed (the output directory follows the target).
+pub(crate) fn allow_session_assets(
     app: &tauri::AppHandle,
     state: &State<'_, AppState>,
     session: &str,
@@ -794,7 +822,12 @@ pub(crate) fn allow_deck_assets(
         return;
     };
     let slugs: Vec<String> = rt.decks_list().into_iter().map(|d| d.slug).collect();
-    let dirs = deck_asset_dirs(&rt.repo, &slugs);
+    let mut dirs = deck_asset_dirs(&rt.repo, &slugs);
+    dirs.extend(figure_asset_dirs(
+        &rt.repo,
+        &rt.out_dir(),
+        &rt.session_snapshot().artifacts_dir(),
+    ));
     let Ok(mut allowed) = state.asset_dirs.lock() else {
         return;
     };
@@ -836,7 +869,7 @@ pub async fn decks_list(
     session: String,
 ) -> R<Vec<DeckSummary>> {
     let list = rt_of(&state, &session)?.decks_list();
-    allow_deck_assets(&app, &state, &session);
+    allow_session_assets(&app, &state, &session);
     Ok(list)
 }
 
@@ -858,7 +891,7 @@ pub async fn deck_create(
             code.unwrap_or(false),
         )
         .map_err(IpcError::from)?;
-    allow_deck_assets(&app, &state, &session);
+    allow_session_assets(&app, &state, &session);
     Ok(summary)
 }
 
@@ -932,6 +965,25 @@ pub async fn slide_place_figure(
 ) -> R<SlideView> {
     rt_of(&state, &session)?
         .slide_place_figure(&deck, &slide_id, &run_id, &artifact, placeholder.as_deref())
+        .await
+        .map_err(Into::into)
+}
+
+/// Places the equation of a function on a slide as a user edit, with its equation record (LaTeX,
+/// tier, numeric check, function, file, content hash): the core function of the agent's
+/// `slide.place_equation` (`SessionRuntime::slide_place_equation`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_place_equation(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    path: String,
+    function: String,
+    placeholder: Option<String>,
+) -> R<SlideView> {
+    rt_of(&state, &session)?
+        .slide_place_equation(&deck, &slide_id, &path, &function, placeholder.as_deref())
         .await
         .map_err(Into::into)
 }
@@ -1346,10 +1398,104 @@ pub async fn artifacts_list(
     Ok(rt_of(&state, &session)?.artifacts_list(run_id.as_deref(), kind, limit))
 }
 
+// ---- verification ledger (docs/IPC.md section 10) ----
+
+/// The verification queue: every item (equations, figures, named results, slide claims,
+/// accepted code changes) with its state for its content now.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn verification_list(
+    state: State<'_, AppState>,
+    session: String,
+) -> R<Vec<VerificationView>> {
+    Ok(rt_of(&state, &session)?.verification_list())
+}
+
+/// The user records a verification state (`human_verified`, `flagged` with a note, or
+/// `machine_checked`) for an item's current content.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn verification_set(
+    app_state: State<'_, AppState>,
+    session: String,
+    item: VerifyItem,
+    state: VerifyState,
+    note: Option<String>,
+) -> R<VerificationView> {
+    rt_of(&app_state, &session)?
+        .verification_set(&item, state, note.as_deref())
+        .map_err(Into::into)
+}
+
+/// The items a deck depends on that are not human-verified, asked before an export.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_verification_gaps(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<VerificationView>> {
+    rt_of(&state, &session)?
+        .deck_verification_gaps(&deck)
+        .map_err(Into::into)
+}
+
+// ---- refresh from analysis (docs/IPC.md section 10) ----
+
+/// Refreshes the stale elements of a slide (or one element): re-runs the cited script when its
+/// code changed, extracts and checks an equation again, and proposes the updated slide (a
+/// normal slide proposal). Null when nothing on it is stale.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_refresh(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    element_id: Option<String>,
+) -> R<Option<ProposalView>> {
+    let rt = rt_of(&state, &session)?;
+    analyst_core::service::refresh::refresh_slide(&rt, &deck, &slide_id, element_id.as_deref())
+        .await
+        .map_err(Into::into)
+}
+
+/// Refreshes every slide of a deck with a stale element; one proposal per slide.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_refresh_stale(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<ProposalView>> {
+    let rt = rt_of(&state, &session)?;
+    analyst_core::service::refresh::refresh_stale(&rt, &deck)
+        .await
+        .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::deck_asset_dirs;
+    use super::{deck_asset_dirs, figure_asset_dirs};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_asset_scope_covers_the_output_directory_and_pulled_figures() {
+        let repo = Path::new("/home/u/analysis");
+        let artifacts = Path::new("/home/u/.analyst/sessions/s1/artifacts");
+        assert_eq!(
+            figure_asset_dirs(repo, "out", artifacts),
+            vec![repo.join("out"), artifacts.to_path_buf()]
+        );
+        assert_eq!(
+            figure_asset_dirs(repo, "results/out/", artifacts)[0],
+            repo.join("results/out")
+        );
+        // An output directory that would open the repository itself, or leave it, is skipped;
+        // the session's pulled figures stay allowed.
+        for bad in ["", ".", "/", "..", "../x", "a/../..", "/etc", "a/./b"] {
+            assert_eq!(
+                figure_asset_dirs(repo, bad, artifacts),
+                vec![artifacts.to_path_buf()],
+                "out_dir {bad:?} must be refused"
+            );
+        }
+    }
 
     #[test]
     fn the_asset_scope_covers_each_decks_cache_assets_and_references_only() {

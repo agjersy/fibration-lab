@@ -571,6 +571,112 @@ pub struct ArtifactEntry {
     pub size: u64,
     pub created_at: String,
     pub target: String,
+    /// The named results of a `results` artifact, when its file is on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub results: Option<Vec<crate::kernel::NamedResult>>,
+}
+
+// ---- verification ledger (IPC.md section 10) ----
+
+/// Something a person can verify: an equation of a function, a figure or a named result of a
+/// run, a claim on a slide (an element that cites the analysis), or an accepted code change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum VerifyItem {
+    Equation {
+        path: String,
+        qualname: String,
+    },
+    Figure {
+        run_id: RunId,
+        artifact: String,
+    },
+    Result {
+        run_id: RunId,
+        name: String,
+    },
+    SlideClaim {
+        deck: String,
+        slide_id: String,
+        element_id: String,
+    },
+    CodeHunk {
+        proposal_id: String,
+    },
+}
+
+/// A state a ledger entry records.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum VerifyState {
+    /// A tool or the agent checked it (never a person's verification).
+    MachineChecked,
+    /// The user looked at it and stands behind it. Only the user records this.
+    HumanVerified,
+    /// The user (or the agent) found a problem.
+    Flagged,
+}
+
+/// The state of an item now: the state of the newest ledger entry for its current content,
+/// else `unverified`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationState {
+    Unverified,
+    MachineChecked,
+    HumanVerified,
+    Flagged,
+}
+
+/// Who recorded a ledger entry.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum Verifier {
+    User,
+    Agent,
+}
+
+/// One line of `.analyst/verification.jsonl` (append-only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct LedgerEntry {
+    pub item: VerifyItem,
+    /// The item's key (`VerifyItem` in one string), for grep and merges.
+    pub key: String,
+    /// The content hash of the item the entry applies to.
+    pub hash: String,
+    pub state: VerifyState,
+    pub by: Verifier,
+    pub at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
+}
+
+/// Where an item is used on a slide.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SlideUse {
+    pub deck: String,
+    pub slide_id: String,
+    pub element_id: String,
+}
+
+/// One item of the verification queue.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct VerificationView {
+    pub key: String,
+    pub item: VerifyItem,
+    /// A short description (`double_exp in lib/model.py`, `fit.png of run 2026...`).
+    pub label: String,
+    pub state: VerificationState,
+    /// The item had a ledger entry for content it no longer has (it changed since).
+    pub stale: bool,
+    /// The item's content hash now; null when it cannot be read (a file is gone).
+    pub hash: Option<String>,
+    /// The newest entry for the current content, if any.
+    pub entry: Option<LedgerEntry>,
+    /// Slides that use the item, for slide claims and what they cite.
+    pub on_slides: Vec<SlideUse>,
 }
 
 /// One undo point of the session's repository (a git checkpoint): code and decks together.
@@ -684,6 +790,10 @@ pub enum SessionEvent {
     /// A deck was created (or removed) in the session's repository.
     DecksChanged {
         decks: Vec<DeckSummary>,
+    },
+    /// The verification ledger changed (`verification_set`, the agent's `verify.record`).
+    VerificationChanged {
+        key: String,
     },
     /// Replaces diagnostics for the listed paths.
     Diagnostics {
@@ -828,6 +938,7 @@ mod tests {
         DeckSummary::export_all(&cfg).unwrap();
         CheckpointView::export_all(&cfg).unwrap();
         ArtifactEntry::export_all(&cfg).unwrap();
+        VerificationView::export_all(&cfg).unwrap();
         IpcError::export_all(&cfg).unwrap();
         Event::export_all(&cfg).unwrap();
         OutListResult::export_all(&cfg).unwrap();

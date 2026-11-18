@@ -14,8 +14,9 @@ import type { Backend } from "./backend";
 import type { Commands } from "./commands";
 import { applyPolicyPatch } from "../state/policyPresets";
 import { slideTitle, withTitle } from "../deck/model";
-import { makeDeckMock } from "./mock/decks";
+import { hashOf, makeDeckMock } from "./mock/decks";
 import type { DeckAgentApi } from "./mock/decks";
+import { makeVerificationMock } from "./mock/verification";
 import { unifiedDiff } from "./mock/diff";
 import { decayPng, residualsPng, simParamsFromArgs, type MockPng, type SimParams } from "./mock/figure";
 import { DOUBLE_EXP_SNIPPET, RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED, fixtureFiles } from "./mock/fixtures";
@@ -309,6 +310,34 @@ export class MockBackend implements Backend {
       const data = fileBase64(path, content);
       return `data:${data.mime};base64,${data.base64}`;
     },
+    equation: (session, path, fn) => {
+      const s = this.requireKernel(session);
+      const content = s.files.get(path);
+      if (content === undefined) throw ipcError("not_found", `\`${path}\` not found in the project`);
+      const eq = extractEquations(content).find((e) => e.qualname === fn || e.function === fn);
+      if (!eq) throw ipcError("not_found", `\`${path}\` has no function \`${fn}\` with an equation`);
+      if (eq.status !== "ok" || !eq.latex || eq.tier === "none") throw ipcError("invalid", `\`${eq.qualname}\` has no equation to show: ${eq.reason ?? "no Math: section"}`);
+      const check: Deck.EqCheckRecord =
+        eq.tier === "declared" ? { status: "agree", trials: 32, tol: 1e-6 } : { status: "unavailable", trials: 0, reason: eq.tier === "derived" ? "derived from the code itself" : "display-only LaTeX" };
+      return { latex: eq.latex, tier: eq.tier, check, qualname: eq.qualname, path, source_hash: hashOf(content) };
+    },
+    fileHash: (session, path) => {
+      const content = this.sessions.get(session)?.files.get(path);
+      return content === undefined ? null : hashOf(content);
+    },
+    propose: (session, proposal) => {
+      const s = this.requireOpen(session);
+      return this.waitForProposal(s, { ...proposal, conversation: s.info.active_conversation });
+    },
+  });
+  private readonly verificationMock = makeVerificationMock({
+    requireOpen: (session) => {
+      this.requireOpen(session);
+    },
+    files: (session) => this.requireOpen(session).files,
+    artifacts: (session) => this.artifacts(session),
+    slides: (session) => this.deckMock.agent.allSlides(session),
+    emit: (session, event) => this.emit(session, event),
   });
   private get deckAgent(): DeckAgentApi {
     return this.deckMock.agent;
@@ -1639,5 +1668,6 @@ export class MockBackend implements Backend {
 
     // Decks, history, and the artifact index (IPC.md section 9).
     ...this.deckMock.handlers,
+    ...this.verificationMock,
   };
 }

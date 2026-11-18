@@ -46,7 +46,7 @@ def _resolver(kernel):
 
 
 def run_check(kernel, pptx_rel: str, deck_rel: str | None, slides: list[str] | None, rules: list[str] | None,
-              with_engine: bool = True) -> list[dict[str, Any]]:
+              with_engine: bool = True, results: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     pptx = kernel.path(pptx_rel)
     if not pptx.is_file():
         raise RpcError(NOT_FOUND, f"{pptx_rel} not found")
@@ -78,7 +78,8 @@ def run_check(kernel, pptx_rel: str, deck_rel: str | None, slides: list[str] | N
                     problems.append(f"the fidelity engine could not convert the file: {exc.detail}")
         return problems
 
-    return check_deck(kernel.project, pptx, deck, docs, sidecar, slides, rules, resolve, chart_values, opens_clean)
+    return check_deck(kernel.project, pptx, deck, docs, sidecar, slides, rules, resolve, chart_values, opens_clean,
+                      results)
 
 
 @group
@@ -87,8 +88,9 @@ def _register(kernel) -> None:
         pptx = params.get("pptx")
         if not isinstance(pptx, str):
             raise invalid_params("pptx is required")
+        results = params.get("results")
         return run_check(kernel, pptx, params.get("deck"), params.get("slides"), params.get("rules"),
-                         bool(params.get("engine", True)))  # fmt: skip
+                         bool(params.get("engine", True)), results if isinstance(results, dict) else None)  # fmt: skip
 
     def text_measure(params: dict[str, Any]) -> dict[str, Any]:
         try:

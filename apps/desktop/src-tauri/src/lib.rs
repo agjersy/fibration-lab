@@ -150,6 +150,7 @@ pub const COMMANDS: &[&str] = &[
     "slide_move",
     "slide_lock",
     "slide_place_figure",
+    "slide_place_equation",
     "slide_preview_png",
     "chart_compute",
     "deck_code_read",
@@ -174,6 +175,11 @@ pub const COMMANDS: &[&str] = &[
     "history_restore",
     "history_revert_turn",
     "artifacts_list",
+    "verification_list",
+    "verification_set",
+    "deck_verification_gaps",
+    "slide_refresh",
+    "deck_refresh_stale",
 ];
 
 /// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see
@@ -344,6 +350,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             slide_move,
             slide_lock,
             slide_place_figure,
+            slide_place_equation,
             slide_preview_png,
             chart_compute,
             deck_code_read,
@@ -368,6 +375,11 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             history_restore,
             history_revert_turn,
             artifacts_list,
+            verification_list,
+            verification_set,
+            deck_verification_gaps,
+            slide_refresh,
+            deck_refresh_stale,
         ])
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("building the Tauri app: {e}"))?
@@ -456,6 +468,7 @@ mod tests {
         "slide_move",
         "slide_lock",
         "slide_place_figure",
+        "slide_place_equation",
         "slide_preview_png",
         "chart_compute",
         "deck_code_read",
@@ -480,6 +493,11 @@ mod tests {
         "history_restore",
         "history_revert_turn",
         "artifacts_list",
+        "verification_list",
+        "verification_set",
+        "deck_verification_gaps",
+        "slide_refresh",
+        "deck_refresh_stale",
     ];
 
     #[test]

@@ -73,6 +73,8 @@ describe("IPC types match the ts-rs export", () => {
     expectTypeOf<Gen.IpcError>().toExtend<Hand.IpcError>();
     expectTypeOf<Hand.SessionEvent>().toExtend<Gen.SessionEvent>();
     expectTypeOf<Gen.SessionEvent>().toExtend<Hand.SessionEvent>();
+    expectTypeOf<Hand.VerificationView>().toExtend<Gen.VerificationView>();
+    expectTypeOf<Gen.VerificationView>().toExtend<Hand.VerificationView>();
     expectTypeOf<Hand.TurnSummary>().toExtend<Gen.TurnSummaryView>();
     expectTypeOf<Gen.TurnSummaryView>().toExtend<Hand.TurnSummary>();
     expectTypeOf<Hand.OutListResult>().toExtend<Gen.OutListResult>();

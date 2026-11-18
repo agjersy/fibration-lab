@@ -128,7 +128,11 @@ export const SlideProposalCard = memo(function SlideProposalCard({ proposalId }:
         ) : null}
         {proposal.kind === "outline" ? <OutlineRows rows={proposal.after} /> : null}
         {proposal.kind === "code-edit" && proposal.diff ? <pre>{proposal.diff}</pre> : null}
-        {proposal.message ? <div className="muted">{proposal.message}</div> : null}
+        {proposal.message ? (
+          <div className="muted proposal-message" data-testid="proposal-message">
+            {proposal.message}
+          </div>
+        ) : null}
         {proposal.reason !== "review" ? (
           <div className="muted">{proposal.reason === "protected" ? "Protected path" : proposal.reason === "out_of_scope" ? "Out of the conversation's scope" : "Approval is required before this goes ahead"}</div>
         ) : null}

@@ -6,7 +6,15 @@ import { openSource } from "../../state/deckActions";
 import { useDecks } from "../../state/decks";
 import { figureStem } from "../../state/figures";
 import { useRuns } from "../../state/runs";
-import { openDeckPanel, showPanel } from "../workbench/controller";
+import { useUi } from "../../state/ui";
+import { openDeckPanel, openFile, showPanel } from "../workbench/controller";
+
+/** An equation on a slide: its source file in the editor and the Equations panel at its function. */
+export function focusEquation(cite: Pick<Deck.EqCite, "path" | "qualname">): void {
+  useUi.getState().setEquationFocus({ path: cite.path, qualname: cite.qualname });
+  void openFile(cite.path);
+  showPanel("equations");
+}
 
 export function focusRunCite(session: SessionId, cite: Deck.RunCite): void {
   const runs = useRuns.getState();

@@ -18,8 +18,28 @@ export interface UnsavedPrompt {
   resolve: (choice: UnsavedChoice) => void;
 }
 
+/** The function the Equations panel shows (an equation on a slide was clicked). */
+export interface EquationFocus {
+  path: string;
+  qualname: string;
+}
+
+/** A yes/no question with a list of items (the export warning). */
+export interface ConfirmPrompt {
+  title: string;
+  message: string;
+  items: string[];
+  confirmLabel: string;
+  resolve: (ok: boolean) => void;
+}
+
 interface UiState {
+  confirmPrompt: ConfirmPrompt | null;
+  /** Asks a yes/no question; resolves false if another one is already open. */
+  askConfirm(title: string, message: string, items: string[], confirmLabel: string): Promise<boolean>;
   theme: ThemePreference;
+  equationFocus: EquationFocus | null;
+  setEquationFocus(focus: EquationFocus | null): void;
   palette: PaletteMode;
   newSessionOpen: boolean;
   settingsOpen: boolean;
@@ -52,7 +72,29 @@ function readTheme(): ThemePreference {
 }
 
 export const useUi = create<UiState>((set, get) => ({
+  confirmPrompt: null,
+  askConfirm: (title, message, items, confirmLabel) =>
+    new Promise<boolean>((resolve) => {
+      if (get().confirmPrompt) {
+        resolve(false);
+        return;
+      }
+      set({
+        confirmPrompt: {
+          title,
+          message,
+          items,
+          confirmLabel,
+          resolve: (ok) => {
+            set({ confirmPrompt: null });
+            resolve(ok);
+          },
+        },
+      });
+    }),
   theme: readTheme(),
+  equationFocus: null,
+  setEquationFocus: (equationFocus) => set({ equationFocus }),
   palette: null,
   newSessionOpen: false,
   settingsOpen: false,

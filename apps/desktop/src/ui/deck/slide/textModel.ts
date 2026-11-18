@@ -72,6 +72,8 @@ function runHtml(r: Run, ctx: TextStyleContext, markers: string[]): string {
   if (r.color) attrs.push(`data-color="${esc(r.color)}"`);
   if (r.link) attrs.push(`data-link="${esc(r.link)}"`);
   if (r.cite !== undefined) attrs.push(`data-cite="${esc(JSON.stringify(r.cite))}"`);
+  // A number bound to a named result of a run: marked, and kept through in-place edits.
+  if (r.run_cite) attrs.push(`data-run-cite="${esc(JSON.stringify(r.run_cite))}"`, 'class="sp-bound"', `title="${esc(`Result ${r.run_cite.result_name} of run ${r.run_cite.run_id} (${r.run_cite.script})`)}"`);
   const style = runStyle(r, ctx.theme);
   if (style) attrs.push(`style="${style}"`);
   let html = `<span ${attrs.join(" ")}>${esc(r.t)}</span>`;
@@ -111,6 +113,7 @@ interface Fmt {
   color?: string;
   link?: string;
   cite?: string[];
+  run_cite?: Run["run_cite"];
 }
 
 function fmtOf(node: Node, stop: Element): Fmt {
@@ -148,6 +151,14 @@ function fmtOf(node: Node, stop: Element): Fmt {
       const link = el.getAttribute("data-link") ?? (tag === "A" ? el.getAttribute("href") : null);
       if (link) f.link = link;
     }
+    if (f.run_cite === undefined && el.hasAttribute("data-run-cite")) {
+      try {
+        const v: unknown = JSON.parse(el.getAttribute("data-run-cite") ?? "");
+        if (v && typeof v === "object" && "run_id" in v && "result_name" in v) f.run_cite = v as Run["run_cite"];
+      } catch {
+        // not a result citation
+      }
+    }
     if (f.cite === undefined && el.hasAttribute("data-cite")) {
       try {
         const v: unknown = JSON.parse(el.getAttribute("data-cite") ?? "");
@@ -168,11 +179,12 @@ function makeRun(t: string, f: Fmt): Run {
   if (f.color) r.color = f.color as Run["color"];
   if (f.link) r.link = f.link;
   if (f.cite !== undefined) r.cite = f.cite;
+  if (f.run_cite !== undefined) r.run_cite = f.run_cite;
   return r;
 }
 
 function sameFormat(a: Run, b: Run): boolean {
-  return !!a.b === !!b.b && !!a.i === !!b.i && !!a.u === !!b.u && a.color === b.color && a.link === b.link && JSON.stringify(a.cite) === JSON.stringify(b.cite);
+  return !!a.b === !!b.b && !!a.i === !!b.i && !!a.u === !!b.u && a.color === b.color && a.link === b.link && JSON.stringify(a.cite) === JSON.stringify(b.cite) && JSON.stringify(a.run_cite) === JSON.stringify(b.run_cite);
 }
 
 /** Joins neighbouring runs with the same formatting and drops empty ones (keeping one for an empty paragraph). */
@@ -251,7 +263,7 @@ export function canonicalText(text: Text): string {
       l: p.level ?? 0,
       b: p.bullet ?? null,
       a: p.align ?? null,
-      r: normalizeRuns(p.runs).map((r) => [r.t, !!r.b, !!r.i, !!r.u, r.color ?? null, r.link ?? null, r.cite ?? null]),
+      r: normalizeRuns(p.runs).map((r) => [r.t, !!r.b, !!r.i, !!r.u, r.color ?? null, r.link ?? null, r.cite ?? null, r.run_cite ?? null]),
     })),
   );
 }

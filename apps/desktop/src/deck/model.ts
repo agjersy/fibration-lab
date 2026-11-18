@@ -73,7 +73,8 @@ export function newElementId(slide: Slide, taken: string[] = []): string {
 }
 
 function kindOf(c: PlaceholderContent): "text" | "image" | "chart" | "table" | "diagram" | null {
-  return c.type === "empty" ? null : c.type;
+  // An equation is a text box holding a native equation.
+  return c.type === "empty" ? null : c.type === "equation" ? "text" : c.type;
 }
 
 /**

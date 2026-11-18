@@ -27,6 +27,7 @@ export function App() {
   useAppCommands();
   useUnsavedGuards();
   const unsaved = useUi((s) => s.unsavedPrompt);
+  const confirm = useUi((s) => s.confirmPrompt);
 
   useEffect(() => {
     bootstrap()
@@ -73,6 +74,33 @@ export function App() {
           }
         >
           <p>{unsaved.message}</p>
+        </Modal>
+      ) : null}
+      {confirm ? (
+        <Modal
+          title={confirm.title}
+          onClose={() => confirm.resolve(false)}
+          actions={
+            <>
+              <button type="button" onClick={() => confirm.resolve(false)} data-testid="confirm-cancel">
+                Cancel
+              </button>
+              <button type="button" className="primary" onClick={() => confirm.resolve(true)} data-testid="confirm-ok">
+                {confirm.confirmLabel}
+              </button>
+            </>
+          }
+        >
+          <div data-testid="confirm-dialog">
+            <p>{confirm.message}</p>
+            <ul className="confirm-items">
+              {confirm.items.map((it) => (
+                <li key={it} data-testid="confirm-item">
+                  {it}
+                </li>
+              ))}
+            </ul>
+          </div>
         </Modal>
       ) : null}
       <Palette />

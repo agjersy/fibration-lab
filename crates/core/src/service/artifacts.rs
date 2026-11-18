@@ -43,7 +43,45 @@ fn entry(
         size: a.size,
         created_at: a.created_at.clone(),
         target: run.target.clone(),
+        results: None,
     }
+}
+
+/// The named results in a run's `results.json`: the file in the repository (a local run, or
+/// a remote run's file pulled back), else the session's copy of what was pulled.
+pub fn read_results(
+    repo: &Path,
+    artifacts_dir: &Path,
+    run_id: &str,
+    path: &str,
+) -> Option<Vec<analyst_protocol::kernel::NamedResult>> {
+    let local = crate::util::resolve_in_repo(repo, path, true)
+        .ok()
+        .filter(|p| p.is_file());
+    let pulled = super::figures::safe_run_id(run_id)
+        .then(|| artifacts_dir.join(run_id).join(path))
+        .filter(|p| p.is_file());
+    let file = local.or(pulled)?;
+    let text = std::fs::read_to_string(file).ok()?;
+    let parsed: analyst_protocol::kernel::ResultsFile = serde_json::from_str(&text).ok()?;
+    Some(parsed.results)
+}
+
+/// One named result of one run, from the artifact index (`None` when the run recorded no
+/// such result or its file is not on this machine).
+pub fn named_result(
+    runs: &RunService,
+    repo: &Path,
+    artifacts_dir: &Path,
+    run_id: &str,
+    name: &str,
+) -> Option<analyst_protocol::kernel::NamedResult> {
+    runs.artifacts(run_id)
+        .into_iter()
+        .filter(|a| a.kind == ArtifactKind::Results)
+        .find_map(|a| read_results(repo, artifacts_dir, run_id, &a.path))?
+        .into_iter()
+        .find(|r| r.name == name)
 }
 
 /// The artifacts of the session's runs, newest run first. `run_id` and `kind` narrow the
@@ -74,7 +112,11 @@ pub fn list(
             if kind.is_some_and(|k| k != a.kind) {
                 continue;
             }
-            out.push(entry(&run, &a, current.as_deref()));
+            let mut e = entry(&run, &a, current.as_deref());
+            if a.kind == ArtifactKind::Results {
+                e.results = read_results(repo, &session.artifacts_dir(), &run.meta.run_id, &a.path);
+            }
+            out.push(e);
             if out.len() >= max {
                 return out;
             }
@@ -97,9 +139,10 @@ pub fn find(
         .find(|e| e.path == wanted)
 }
 
-/// A figure of a run placed on a slide: the slide document with an image element that cites the
-/// run (not written yet), and the hash of the slide file it was made from.
-pub struct PlacedFigure {
+/// An element placed on a slide from the analysis (a figure of a run, an equation of a
+/// function): the slide document with the element and its citation (not written yet), and the
+/// hash of the slide file it was made from.
+pub struct PlacedElement {
     pub slide: serde_json::Value,
     pub hash: String,
 }
@@ -123,7 +166,7 @@ pub async fn place_figure(
     artifact: &str,
     placeholder: Option<&str>,
     alt: Option<&str>,
-) -> super::ServiceResult<PlacedFigure> {
+) -> super::ServiceResult<PlacedElement> {
     use super::ServiceError;
     use analyst_deck_protocol::template::ContentKind;
     use serde_json::json;
@@ -132,6 +175,58 @@ pub async fn place_figure(
             "run `{run_id}` has no artifact `{artifact}`; call artifacts_list to see what its runs produced"
         ))
     })?;
+    let asset = copy_figure_asset(session, repo, svc, &entry)?;
+    let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
+        .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
+    let (slide, hash) = svc
+        .ws
+        .deck()
+        .read_slide(&id)
+        .map_err(|e| ServiceError::not_found(e.to_string()))?;
+    let mut doc =
+        serde_json::to_value(&slide).map_err(|e| ServiceError::internal(e.to_string()))?;
+    let key = free_placeholder(
+        svc,
+        &slide.layout,
+        &doc,
+        placeholder,
+        &[ContentKind::Image],
+        false,
+    )
+    .await?;
+    let alt = alt
+        .map(str::to_string)
+        .or(entry.title.clone())
+        .unwrap_or_else(|| format!("Figure from {}", entry.script));
+    let element_id = element_id_for(&doc, &key, "e-fig");
+    doc["placeholders"][key.as_str()] = json!({
+        "type": "image",
+        "id": element_id,
+        "asset": asset,
+        "alt": alt,
+        "run_cite": {
+            "run_id": entry.run_id,
+            "artifact": entry.path,
+            "script": entry.script,
+            "args": entry.args,
+            "tree_hash": entry.tree_hash,
+        },
+    });
+    Ok(PlacedElement { slide: doc, hash })
+}
+
+/// A figure of a run placed on a slide.
+pub type PlacedFigure = PlacedElement;
+
+/// Copy a run's figure into the deck's `assets/` by content hash and return the asset path.
+/// Only images are copied; data files stay where the run wrote them.
+pub(crate) fn copy_figure_asset(
+    session: &Session,
+    repo: &Path,
+    svc: &analyst_deck::service::DeckService,
+    entry: &ArtifactEntry,
+) -> super::ServiceResult<String> {
+    use super::ServiceError;
     let ext = entry
         .path
         .rsplit('.')
@@ -151,65 +246,76 @@ pub async fn place_figure(
     let source = crate::util::resolve_in_repo(repo, &entry.path, true)
         .ok()
         .filter(|p| p.is_file())
-        .unwrap_or_else(|| session.pulled_artifact_path(run_id, &entry.path));
+        .unwrap_or_else(|| session.pulled_artifact_path(&entry.run_id, &entry.path));
     let bytes = std::fs::read(&source).map_err(|e| {
         ServiceError::io(format!("the figure `{}` cannot be read: {e}", entry.path))
     })?;
-    let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
-        .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
-    let (slide, hash) = svc
-        .ws
-        .deck()
-        .read_slide(&id)
-        .map_err(|e| ServiceError::not_found(e.to_string()))?;
-    let mut doc =
-        serde_json::to_value(&slide).map_err(|e| ServiceError::internal(e.to_string()))?;
-    let key = match placeholder {
-        Some(k) => k.to_string(),
-        None => {
-            let template = svc.info().await.map_err(ServiceError::from)?.template;
-            let candidates: Vec<String> = template
-                .masters
-                .iter()
-                .flat_map(|m| m.layouts.iter())
-                .find(|l| l.name == slide.layout)
-                .into_iter()
-                .flat_map(|l| l.placeholders.iter())
-                .filter(|p| p.accepts.contains(&ContentKind::Image))
-                .map(|p| p.key.to_string())
-                .collect();
-            candidates
-                .iter()
-                .find(|k| {
-                    let cur = &doc["placeholders"][k.as_str()];
-                    cur.is_null() || cur["type"] == "empty"
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    ServiceError::invalid(format!(
-                        "layout {:?} has no free placeholder for an image (image placeholders: {}); pass `placeholder`, or use a layout with a picture placeholder",
-                        slide.layout,
-                        if candidates.is_empty() {
-                            "none".to_string()
-                        } else {
-                            candidates.join(", ")
-                        }
-                    ))
-                })?
-        }
-    };
     let asset = format!("assets/{}.{ext}", &crate::util::sha256_hex(&bytes)[..16]);
     let target = svc.ws.project.root.join(&asset);
     if !target.is_file() {
         analyst_deck::util::write_atomic(&target, &bytes)
             .map_err(|e| ServiceError::io(format!("writing {asset}: {e}")))?;
     }
-    let alt = alt
-        .map(str::to_string)
-        .or(entry.title.clone())
-        .unwrap_or_else(|| format!("Figure from {}", entry.script));
-    // A fresh element id, unless the placeholder already holds an element (keep its id).
-    let element_id = match doc["placeholders"][key.as_str()]["id"].as_str() {
+    Ok(asset)
+}
+
+/// The placeholder an element goes into: `placeholder` when given, else the first free one of
+/// the slide's layout that accepts one of `kinds` (titles skipped unless `titles`).
+pub(crate) async fn free_placeholder(
+    svc: &analyst_deck::service::DeckService,
+    layout: &str,
+    doc: &serde_json::Value,
+    placeholder: Option<&str>,
+    kinds: &[analyst_deck_protocol::template::ContentKind],
+    titles: bool,
+) -> super::ServiceResult<String> {
+    use super::ServiceError;
+    use analyst_deck_protocol::template::PlaceholderType;
+    if let Some(k) = placeholder {
+        return Ok(k.to_string());
+    }
+    let template = svc.info().await.map_err(ServiceError::from)?.template;
+    let candidates: Vec<String> = template
+        .masters
+        .iter()
+        .flat_map(|m| m.layouts.iter())
+        .find(|l| l.name == layout)
+        .into_iter()
+        .flat_map(|l| l.placeholders.iter())
+        .filter(|p| p.accepts.iter().any(|a| kinds.contains(a)))
+        .filter(|p| {
+            titles || !matches!(p.r#type, PlaceholderType::Title | PlaceholderType::CtrTitle)
+        })
+        .map(|p| p.key.to_string())
+        .collect();
+    let what = kinds
+        .iter()
+        .map(|k| format!("{k:?}").to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" or ");
+    candidates
+        .iter()
+        .find(|k| {
+            let cur = &doc["placeholders"][k.as_str()];
+            cur.is_null() || cur["type"] == "empty"
+        })
+        .cloned()
+        .ok_or_else(|| {
+            ServiceError::invalid(format!(
+                "layout {layout:?} has no free placeholder for {what} (candidates: {}); pass `placeholder`, or use a layout with a free one",
+                if candidates.is_empty() {
+                    "none".to_string()
+                } else {
+                    candidates.join(", ")
+                }
+            ))
+        })
+}
+
+/// A fresh element id with `prefix`, unless the placeholder already holds an element (its id
+/// is kept, so citations and locks of the element stay attached).
+pub(crate) fn element_id_for(doc: &serde_json::Value, key: &str, prefix: &str) -> String {
+    match doc["placeholders"][key]["id"].as_str() {
         Some(id) => id.to_string(),
         None => {
             let used: BTreeSet<String> = doc["placeholders"]
@@ -220,23 +326,9 @@ pub async fn place_figure(
                 .filter_map(|v| v["id"].as_str().map(str::to_string))
                 .collect();
             (1..)
-                .map(|n| format!("e-fig{n}"))
+                .map(|n| format!("{prefix}{n}"))
                 .find(|id| !used.contains(id))
                 .unwrap_or_default()
         }
-    };
-    doc["placeholders"][key.as_str()] = json!({
-        "type": "image",
-        "id": element_id,
-        "asset": asset,
-        "alt": alt,
-        "run_cite": {
-            "run_id": entry.run_id,
-            "artifact": entry.path,
-            "script": entry.script,
-            "args": entry.args,
-            "tree_hash": entry.tree_hash,
-        },
-    });
-    Ok(PlacedFigure { slide: doc, hash })
+    }
 }

@@ -97,7 +97,7 @@ export interface FigureSidecar {
 }
 
 export interface Artifact {
-  kind: "figure" | "table" | "array" | "json" | "text" | "file";
+  kind: "figure" | "table" | "array" | "json" | "text" | "file" | "results";
   path: string;
   size: number;
   created_at: string;
@@ -383,6 +383,56 @@ export interface ArtifactEntry {
   size: number;
   created_at: string;
   target: string;
+  /** The named results of a `results` artifact, when its file is on this machine. */
+  results?: NamedResult[];
+}
+
+/** One named numeric result of a run (`analyst_results.record`). */
+export interface NamedResult {
+  name: string;
+  value: number;
+  unit?: string;
+  uncertainty?: number;
+}
+
+/** Something a person can verify (docs/IPC.md section 10). */
+export type VerifyItem =
+  | { kind: "equation"; path: string; qualname: string }
+  | { kind: "figure"; run_id: RunId; artifact: string }
+  | { kind: "result"; run_id: RunId; name: string }
+  | { kind: "slide_claim"; deck: string; slide_id: string; element_id: string }
+  | { kind: "code_hunk"; proposal_id: string };
+
+export type VerifyState = "machine_checked" | "human_verified" | "flagged";
+export type VerificationState = "unverified" | VerifyState;
+export type Verifier = "user" | "agent";
+
+export interface LedgerEntry {
+  item: VerifyItem;
+  key: string;
+  hash: string;
+  state: VerifyState;
+  by: Verifier;
+  at: string;
+  note?: string;
+}
+
+export interface SlideUse {
+  deck: string;
+  slide_id: string;
+  element_id: string;
+}
+
+export interface VerificationView {
+  key: string;
+  item: VerifyItem;
+  label: string;
+  state: VerificationState;
+  /** It had an entry for content it no longer has. */
+  stale: boolean;
+  hash: string | null;
+  entry: LedgerEntry | null;
+  on_slides: SlideUse[];
 }
 
 /** One undo point of the session's repository: code and decks together. */
@@ -469,6 +519,7 @@ export type SessionEvent =
   /** An event of one deck; `event` is a `DeckEvent` of `./generated/deck`. */
   | { type: "deck"; deck: string; event: unknown }
   | { type: "decks_changed"; decks: DeckSummary[] }
+  | { type: "verification_changed"; key: string }
   | { type: "diagnostics"; paths: string[]; diagnostics: Diagnostic[] }
   | { type: "files_changed"; paths: string[] }
   | { type: "index_changed" }

@@ -17,6 +17,7 @@ import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
 import { deliverTerminalData, dropTerminal, useTerminals } from "./terminals";
 import { useUi } from "./ui";
+import { reloadVerificationSoon } from "./verification";
 
 /** Background refetches must never surface as unhandled rejections. */
 function quietly(p: Promise<unknown>): void {
@@ -135,8 +136,14 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
       break;
     case "decks_changed":
       useDecks.getState().setList(session, e.decks);
+      reloadVerificationSoon(session);
+      break;
+    case "verification_changed":
+      reloadVerificationSoon(session);
       break;
   }
+  // What can change an item's content resets its verification: reread the queue.
+  if (e.type === "files_changed" || e.type === "run_done" || (e.type === "deck" && (e.event as Deck.DeckEvent).type === "deck_changed")) reloadVerificationSoon(session);
 }
 
 interface Subscription {
