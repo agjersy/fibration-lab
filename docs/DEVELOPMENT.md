@@ -1,6 +1,6 @@
 # Development
 
-Phase 0 is a headless build: the Rust core and CLI, the Python kernel, and the evaluation suite, with no desktop UI yet. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [PROTOCOL.md](PROTOCOL.md) for the contract between components.
+Personal Analyst is one product: one core, one desktop app, and one `analyst` CLI for analysis and decks (the former Personal Present lives on as the deck library under `present/`). See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and [PROTOCOL.md](PROTOCOL.md) for the contract between components.
 
 ## Layout
 
@@ -13,9 +13,14 @@ crates/protocol/       serde types for the kernel protocol, config, typed transc
 crates/core/           sessions, agent loop, tools, kernel client, targets, sync, checkpoints; its provider, policy,
                        transcript and skills code is the shared crates plus thin adapters (model_client.rs,
                        tools/gate.rs, session.rs, skills.rs)
-crates/cli/            the `analyst` binary
+crates/cli/            the `analyst` binary (analysis commands, `deck ...`, `chat`, `eval`)
+present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
+present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and deck UI types
 python/kernel/         analyst_kernel (per-target kernel) and analyst_mpl (figure capture backend)
-evals/tasks/           model-agnostic evaluation tasks with fixture repos
+present/python/        present_kernel (the deck kernel) and present_sdk (deck build scripts)
+evals/tasks/           model-agnostic analysis evaluation tasks with fixture repos
+present/evals/         deck evaluation tasks and templates, run by the same `analyst eval run`
+tools/deck_walkthrough.sh  the deck commands end to end against the scripted model server
 docs/                  vision, architecture, protocol, decisions
 ```
 
@@ -57,7 +62,22 @@ analyst run scripts/example.py -- --help
 analyst eq analysis/models.py --check
 analyst chat -m <provider>/<model> "..."             # needs a provider in ~/.analyst/config.toml
 analyst eval run --model <provider>/<model> --tasks <workspace>/evals/tasks
+
+# decks: decks/<slug>/ in the same repository (a plain directory becomes a project first)
+analyst deck init q3 --template corp.potx --title "Q3 review"
+analyst deck refs add sales.xlsx                     # --deck <slug> when there are several
+analyst deck check                                   # build + deck checker (exit 2 on errors)
+analyst deck render --out exports/draft.pptx
+analyst deck export --format pdf                     # pptx, pdf, png, md, notes-docx; checkpointed first
+analyst deck eject && analyst deck build             # code generation mode
+analyst deck history list                            # git checkpoints: code and decks together
+analyst deck history revert-turn <conversation>-<n>  # as `analyst chat` prints it
+analyst deck template inspect corp.potx --catalog
 ```
+
+`analyst chat` offers the deck tools whenever the repository has a deck; `--mode` takes `plan`, `build`, `run`, `outline`, `slides`, or `polish`. Deck kernels need `present/python/kernel/.venv` (`uv sync` there) in a checkout, or `PRESENT_RUNTIME_PYTHON`. Tests and the walkthrough set `PRESENT_FONT_DIRS=$PWD/present/vendor/fonts` (the variable keeps its name).
+
+**`~/.present` migration.** The first `analyst` command (or desktop start) merges an existing `~/.present` into `$ANALYST_HOME` once (providers, `skills/`, `templates/`, missing `.env` keys) and writes `$ANALYST_HOME/.present-migrated`. `PRESENT_HOME` was removed and is not read; there is no `present` binary.
 
 Provider configuration lives in `~/.analyst/config.toml` (schema in PROTOCOL.md section 2.1). API keys are read from the environment variable named by `api_key_env` (default `<PROVIDER NAME>_API_KEY`), then from `$ANALYST_HOME/.env` (`analyst key set <provider>` writes it), then from an untracked `.env` in the repo. `[packages] index_url` sets the package index (default `https://pypi.org/simple`). Override the home directory with `--home` or `ANALYST_HOME`.
 
@@ -90,9 +110,22 @@ ANALYST_HOME=/tmp/analyst-home analyst eval run --model fake/scripted --tasks ev
 
 Both must report PASS. The other two tasks fail by design against the scripted server; they need a real model.
 
+Deck tasks run through the same command and the one loop; `present/evals/fake_model_server.py` scripts two of them:
+
+```sh
+python3 present/evals/fake_model_server.py --port 8766 &
+mkdir -p /tmp/deck-home && printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8766/v1"\n' > /tmp/deck-home/config.toml
+cd present
+ANALYST_HOME=/tmp/deck-home PRESENT_FONT_DIRS=$PWD/vendor/fonts analyst eval run --tasks evals/tasks --task spreadsheet-to-charts
+ANALYST_HOME=/tmp/deck-home PRESENT_FONT_DIRS=$PWD/vendor/fonts analyst eval run --tasks evals/tasks --task fix-checker-failures
+cd .. && tools/deck_walkthrough.sh                  # every deck command, with its own temporary home
+```
+
+Both deck tasks must PASS; the other six deck tasks need a real model.
+
 ## Desktop app (phase 1)
 
-The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust, thin commands over `analyst_core::service`) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`.
+The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust, thin commands over `analyst_core::service`, including the deck commands of IPC.md section 9) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`, and the deck types from `present/crates/protocol` by `cargo test -p analyst-deck-protocol` into `apps/desktop/src/ipc/generated/deck/`. The shell embeds `apps/desktop/dist`, so run `pnpm build` in `apps/desktop` before `cargo clippy` or `cargo test -p analyst-desktop`. `present/apps/desktop` is the old deck renderer, kept with its mock backend as porting material; its own `pnpm typecheck && pnpm lint && pnpm test && pnpm build` still pass.
 
 ```sh
 cd apps/desktop

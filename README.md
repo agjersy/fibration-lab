@@ -4,15 +4,18 @@ A desktop workbench for scientific, technical, and numerical analysis: an AI age
 
 Model agnostic (open-weight models via Ollama or any OpenAI-compatible server, frontier models via API keys), local first, sandboxed execution, with runs on this machine or on a remote Linux host over SSH.
 
-## Merged repository (in progress)
+## One product
 
-This repository now also holds Personal Present, with its history. The two apps are being folded into one desktop app with an analysis workbench and a deck workbench under one control loop.
+Personal Present (the deck workbench) has been folded in: Personal Analyst is one desktop app and one `analyst` CLI over one core, with one agent loop, one policy engine, one transcript, and one undo timeline. A project is one git repository; its decks live in it under `decks/<slug>/` and are checkpointed by git with the code. Slides cite analysis runs through the artifact index. The home is `~/.analyst` (`ANALYST_HOME`); an old `~/.present` is migrated once on first start and left in place.
 
 | Path | Contents |
 |---|---|
 | `crates/wb-*` | Shared core modules: `wb-net` (the network gate, egress ledger, and `.env` secrets), providers, policy, transcript, skills, sandbox launcher |
-| `crates/protocol`, `crates/core`, `crates/cli`, `apps/desktop`, `python/kernel`, `evals/`, `docs/` | The analysis workbench (Personal Analyst) |
-| `present/` | The deck workbench (Personal Present): its crates, desktop shell, Python kernel and SDK, evaluations, and documents, see [present/README.md](present/README.md) |
+| `crates/protocol`, `crates/core`, `crates/cli`, `apps/desktop` | The one core, the `analyst` CLI, and the one desktop shell and renderer |
+| `present/crates/core`, `present/crates/protocol` | `analyst-deck` and `analyst-deck-protocol`: the deck library of the core (deck store, references, deck kernel client, deck tools, per-deck service) |
+| `python/kernel`, `present/python/kernel`, `present/python/sdk` | The analysis kernel, the deck kernel, and the deck build SDK |
+| `evals/`, `present/evals/` | Analysis and deck evaluation tasks, both run by `analyst eval run` |
+| `present/apps/desktop` | The old deck renderer, kept (mock backend only) as porting material for the deck UI |
 | `packages/wb-ui` | Shared UI package |
 
 One Cargo workspace and one pnpm workspace cover everything; `.github/workflows/ci.yml` runs both test suites on Linux and macOS. Windows is parked.
@@ -23,10 +26,10 @@ One Cargo workspace and one pnpm workspace cover everything; `.github/workflows/
 
 - Desktop app (Tauri 2, macOS and Linux): session tabs, project and scripts sidebar with run forms, library and runs views, CodeMirror editor with diagnostics and per-hunk proposal review, agent chat with tool, proposal, and run cards, figures panel with run history and comparison, equations panel, packages panel, terminal, run output and diagnostics docks, Zed keymap subset and command palette
 
-- `analyst` CLI: `init`, `index`, `check`, `run`, `eq`, `env`, `target`, `chat`, `eval`
-- Rust core: review-gated edits and scope declaration with three policy presets (shared `wb-policy`), OpenAI-compatible and Anthropic streaming adapters with capability probing (shared `wb-providers`; native tool calling required), transcripts and compaction (shared `wb-transcript`), Agent Skills (shared `wb-skills`), kernel client over local stdio or SSH, repo sync and remote bootstrap, git checkpoints, agent loop with plan/build/run modes
+- `analyst` CLI: `init`, `index`, `check`, `run`, `eq`, `env`, `target`, `chat` (both tool sets), `eval` (analysis and deck tasks), `key`, and `deck init|list|template inspect|refs|render|check|build|eject|export|history`
+- Rust core: review-gated edits and scope declaration with three policy presets (shared `wb-policy`), OpenAI-compatible and Anthropic streaming adapters with capability probing (shared `wb-providers`; native tool calling required), transcripts and compaction (shared `wb-transcript`), Agent Skills (shared `wb-skills`), kernel client over local stdio or SSH, repo sync and remote bootstrap, git checkpoints covering code and decks, one agent loop with the analysis and deck tool sets and modes (plan, build, run, outline, slides, polish) as policy profiles, decks under `decks/<slug>/` with a no-network deck kernel each, and an artifact index whose run citations the deck checker reports as `stale` when the code changed
 - Python kernel: sandboxed detached runs with figure capture, script and library indexes, equation extraction (derived from code, or declared and numerically checked), the script contract checker with duplicate-logic detection, Ruff integration
-- Evaluation suite: four model-agnostic tasks with declarative graders and a scripted model server that drives the whole stack in CI
+- Evaluation suite: four analysis tasks and eight deck tasks, model-agnostic, with declarative graders and scripted model servers that drive the whole stack in CI (two analysis and two deck tasks)
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) to build and run it.
 

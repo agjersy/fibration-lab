@@ -10,7 +10,8 @@
 //! - copies the keys of the old `.env` that are not set in the new one;
 //! - writes the marker `.present-migrated`, so it runs once.
 //!
-//! `~/.present` itself is only read, never changed or deleted. `PRESENT_HOME` is not read.
+//! `~/.present` itself is only read, never changed or deleted. The old home override variable
+//! is not consulted: the old home is always `$HOME/.present`.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};

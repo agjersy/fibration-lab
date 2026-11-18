@@ -2,6 +2,8 @@
 
 *Status: phases 0 and 1 built; revised after the November 2026 implementation review ([REVIEW.md](REVIEW.md)). Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).*
 
+**One product (November 2026).** Personal Present has been folded in. There is one core (`crates/core` with the deck library `analyst-deck` in `present/crates/core`), one desktop shell, one `analyst` CLI, one agent loop, one policy engine, one transcript, and one undo timeline; there is no bus, no MCP, and no bridge between workbenches. A project is one git repository; its decks live under `decks/<slug>/` (section 4) and are checkpointed by git with the code (5.9). Slides cite analysis runs through the artifact index (5.12). The old deck home `~/.present` is migrated into `~/.analyst` once (5.16).
+
 This document specifies the architecture of the desktop application described in the vision. It is written to be built from. Decisions confirmed in review are marked as such; where a decision is still open, it states the recommendation and points to the open-questions document.
 
 ## 1. Decision summary
@@ -134,6 +136,7 @@ Known cost: WebKitGTK on Linux is slower than Chromium for heavy canvases and la
 | Skill | A markdown instruction set with trigger metadata, loaded into the agent's context on demand. | `.analyst/skills/`, `~/.analyst/skills/` |
 | Provider / Model | A configured endpoint plus a model identifier and its probed capability record. | `~/.analyst/config.toml`; keys from the environment or `.env` |
 | Policy | The per-session permission rules the agent operates under. | `.analyst/project.toml` with session overrides |
+| Deck | A presentation in the repo: `decks/<slug>/` with `deck/` (deck and slide documents, or a build script in code mode), `template/`, `references/`, `assets/`, `exports/` (ignored), and its own config `.present/project.toml` (`.present/cache/` ignored). A session lists and creates decks; a deck's kernel (no network) starts on first use; the reference index is per-user state under `~/.analyst/sessions/<id>/decks/<slug>/`. Decks are excluded from remote sync and never go to remote targets. | the repo; session store for the index |
 
 ## 5. Core services
 
@@ -304,6 +307,11 @@ Large outputs (run logs, file contents) are never inlined past a size limit; the
 | Plan | Read-only: files, search, script and library index, equations, run history. | Discuss and plan before touching anything. |
 | Build | Everything, subject to policy. | Write and change tools. |
 | Run | Read-only plus `run.script`, `exec.snippet`, and artifact tools. No edits, no installs. | Exploration with existing tools, parameter sweeps, interpretation. |
+| Outline | Read-only plus `outline.propose` and `export.run`. | A deck's storyline; no slide changes. |
+| Slides | Read-only plus every deck tool and `slide.place_figure`; no code edits, script runs, packages, shell, or git. | Create and change slides. |
+| Polish | Read-only plus slide updates and moves, deck code edits and builds, skill scripts, exports; nothing new (no slides, citations, or elements). | Improve existing slides. |
+
+Modes are `wb-policy` mode rules (`crates/core/src/tools/gate.rs`, `mode_rules`): they decide which tools the model is offered and are enforced again at call time. The loop registers the deck tools (`present/crates/core/src/tools`) next to the analysis tools whenever the repo has a deck; slide documents are repo-relative files to the policy, so one `declare_scope` (files and slides) and one checkpoint per turn cover code and slides, and slide proposals keep their before/after shape in the transcript and the approval request.
 
 **Tool set (built-in)**
 
@@ -403,6 +411,8 @@ Conflict detection: a proposal carries the content hash of the file it was based
 ### 5.9 Checkpoints
 
 Before every turn that could change files, the core writes the local working tree (including untracked, excluding ignored) to a tree object and stores it under `refs/analyst/checkpoints/<turn-id>` using git plumbing (`git add -A` into a temporary index, `git write-tree`, `git commit-tree`). This never touches the user's index, branches, or history, and these refs are never pushed. "Revert this turn" restores the tree and marks the remote mirror stale. Checkpoints are pruned by age and count.
+
+The same timeline covers decks: slide documents are files in the tree, and the deck service also checkpoints before an export (the export records its checkpoint), before a template is replaced, and before a switch to code mode (switching back restores the deck's `deck/` from that checkpoint). A restore first checkpoints the state it replaces, so it can itself be undone. This replaces the deck workbench's snapshot store. `analyst deck history` and the `history_*` commands (IPC.md section 9) list and restore it.
 
 ### 5.10 Model provider layer (D4)
 
@@ -509,6 +519,8 @@ Figures panel:
 
 Phase 1 captures static Matplotlib output only. Interactive figures (Plotly, Bokeh HTML) are a later phase.
 
+**Artifact index and run citations.** The core indexes what each run of the session produced from the run records and the artifact lists the kernel writes (no output folder is scanned): run id, path, kind, script, arguments, and the tree identity the run executed (`artifacts.list`, `artifacts_list`). `slide.place_figure` copies a figure into the deck's `assets/` by content hash (data files are refused) and the image element carries a `run_cite` (run id, artifact, script, arguments, tree identity). The deck checker reports an element whose run citation no longer matches the working tree's identity as `stale` (a warning). Decks are outside the tree identity, so editing slides does not make figures stale. This replaces the deck workbench's scan/import bridge.
+
 ### 5.13 Script contract and checker (D9)
 
 The contract encodes the conventions you enforce by hand today. It is both a prompt (the agent is told the rules) and a checker (the kernel verifies them with AST analysis). Two rules are confirmed as the ones you currently enforce manually and are hard failures by default; the rest are proposals pending OQ-6.
@@ -577,6 +589,8 @@ The earlier front matter keys keep working inside `SKILL.md`: `triggers` (words 
 
 Configuration layering, lowest to highest precedence: built-in defaults, `~/.analyst/config.toml`, `<repo>/.analyst/project.toml`, per-target overrides inside it, session overrides from the UI.
 
+**Migration from `~/.present`.** On first start the CLI and the desktop shell merge an existing `~/.present` into the analyst home once: its `[[providers]]` join `config.toml` (names that already exist are skipped; `key = "env:VAR"` becomes `api_key_env = "VAR"`), `skills/` and `templates/` are copied without overwriting, keys from its `.env` that are not set in `~/.analyst/.env` are copied, and the marker `.present-migrated` makes it run once. `~/.present` is never changed or deleted. `PRESENT_HOME` is no longer read (`crates/core/src/migrate.rs`).
+
 ## 6. User interface
 
 The layout follows Zed's shape so the muscle memory transfers, with analysis panels added.
@@ -626,7 +640,10 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
   egress.jsonl             ledger of every network decision (destination, purpose)
   tooling/                 app-owned Python environment for the local target
   ssh/                     control sockets for multiplexed connections
+  .present-migrated        marker: ~/.present was merged in once (providers, skills/, templates/, .env keys)
+  templates/               deck templates (also from the ~/.present migration)
   sessions/<id>/
+    decks/<slug>/          per-user deck state: reference index, export list
     session.toml           repo path, target, env path, layout, active model
     conversations/<id>.jsonl
     runs.jsonl             run records
@@ -644,6 +661,8 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
     .env                   optional API keys for this repo                      (ignored; never synced)
     env.sh                 generated; figure capture env for terminals          (ignored)
   scripts/  analysis/  data/  out/  notes.md  pyproject.toml  uv.lock
+  decks/<slug>/            deck/ template/ references/ assets/ .present/project.toml   (committed)
+                           exports/ .present/cache/                                     (ignored)
 ```
 
 `.analyst/project.toml`, `pyproject.toml`, and `uv.lock` are meant to be committed so a repo carries its own conventions and environment. Everything under `out/`, `.venv/`, and `.analyst/env.sh` is git-ignored by the template and excluded from sync.
@@ -675,7 +694,10 @@ apps/desktop/
 crates/protocol/       IPC and kernel message types; TypeScript bindings generated with ts-rs
 crates/wb-*/           shared with the deck workbench: network gate, providers, policy, transcript, skills, sandbox
 crates/core/           sessions, agent loop, tools, targets, sync, storage (providers, policy, transcript and skills come from crates/wb-*)
-crates/cli/            headless harness for phase 0 and evals
+crates/cli/            the `analyst` CLI: analysis commands, `deck ...`, `chat`, `eval` (analysis and deck tasks)
+present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
+present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and UI types (ts-rs into apps/desktop/src/ipc/generated/deck)
+present/python/        the deck kernel (present_kernel) and the deck build SDK (present_sdk)
 python/kernel/         analyst_kernel (runs, index, equations, contract) and analyst_mpl
 evals/                 task suite, graders, scorecard runner
 docs/

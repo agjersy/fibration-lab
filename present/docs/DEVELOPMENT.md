@@ -1,5 +1,7 @@
 # Development
 
+> **Historical design note.** This document describes Personal Present before it was folded into Personal Analyst. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `analyst` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.analyst` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
+
 Phase 0 is a headless build: the Rust core and CLI, the Python deck kernel and SDK, and the evaluation suite, with no desktop UI yet. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design, [PROTOCOL.md](PROTOCOL.md) for the contracts, and [BUILD-SPEC.md](BUILD-SPEC.md) for the work packages.
 
 ## Layout
@@ -46,7 +48,7 @@ cargo clippy --workspace --exclude present-desktop --all-targets -- -D warnings
 cargo fmt --all -- --check
 
 # The whole headless stack against a scripted model
-tools/cli_walkthrough.sh
+tools/deck_walkthrough.sh   # now at the repository root, driving `analyst deck ...`
 ```
 
 ## Desktop shell
@@ -61,7 +63,7 @@ cargo test -p present-desktop
 cargo build -p present-desktop
 ```
 
-The service layer itself needs no window and is tested in `crates/core/tests/service.rs` against the real kernel with a scripted model. `PRESENT_HOME`, `PRESENT_ENGINE`, `PRESENT_SANDBOX`, and `PRESENT_PYTHON` override the home directory, the rendering engine, the sandbox kind, and the kernel's interpreter.
+The service layer itself needs no window and is tested in `crates/core/tests/service.rs` against the real kernel with a scripted model. `PRESENT_ENGINE`, `PRESENT_SANDBOX`, and `PRESENT_PYTHON` overrode the rendering engine, the sandbox kind, and the kernel's interpreter (`PRESENT_HOME`, which overrode the home directory, was removed: the home is `ANALYST_HOME`).
 
 Regenerating committed artifacts:
 
@@ -77,7 +79,7 @@ cargo test -p present-protocol --test ts_export                          # apps/
 
 ## Running the CLI in development
 
-The CLI finds the kernel interpreter in this order: `PRESENT_RUNTIME_PYTHON`, `runtime_python` in `config.toml`, the bundled runtime under the Present home, then `python/kernel/.venv` of this checkout. After `uv sync`, development works with no configuration. The home directory is `PRESENT_HOME`, else `%APPDATA%\Present` on Windows, else `~/.present`; override per command with `--home`.
+The CLI finds the kernel interpreter in this order: `PRESENT_RUNTIME_PYTHON`, `runtime_python` in `config.toml`, the bundled runtime under the Present home, then `python/kernel/.venv` of this checkout. After `uv sync`, development works with no configuration. The home directory was `%APPDATA%\Present` on Windows, else `~/.present` (`PRESENT_HOME` was removed; the home is now `~/.analyst` or `ANALYST_HOME`, and `~/.present` is migrated once).
 
 ```sh
 cargo run -q -p present-cli -- init /tmp/demo --template evals/templates/corp/corp.potx
@@ -119,7 +121,7 @@ kind = "openai-compatible"
 base_url = "http://127.0.0.1:8765/v1"
 auth = "none"
 CONF
-PRESENT_HOME=/tmp/present-home present eval run --task spreadsheet-to-charts
+ANALYST_HOME=/tmp/analyst-home analyst eval run --tasks evals/tasks --task spreadsheet-to-charts   # was: present eval run (PRESENT_HOME removed)
 ```
 
 The other six tasks need a real model and fail by design against the scripted server.

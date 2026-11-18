@@ -1,5 +1,7 @@
 # Protocol and Integration Contract
 
+> **Historical design note.** This document describes Personal Present before it was folded into Personal Analyst. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `analyst` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.analyst` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
+
 *Status: phase 0 baseline, protocol version 1. Normative for `python/kernel`, `python/sdk`, `crates/*`, `schemas/`, and `evals/`. Changes require bumping `protocol_version` (kernel) or `schema_version` (deck document) and updating every side in the same commit. Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md) explains why; [IPC.md](IPC.md) is the desktop boundary; [BUILD-SPEC.md](BUILD-SPEC.md) is the build order.*
 
 This document fixes every boundary between components so the deck kernel, the deck SDK, the Rust core, the CLI, and the evaluation suite can be built independently and fit together. Where a part is the same as Personal Analyst's PROTOCOL.md, this document says so and lists only the differences.
@@ -316,7 +318,7 @@ Cached at `.present/cache/template-<sha256>.json`. The agent receives a compact 
 
 ### 4.1 Global `config.toml`
 
-Location: `~/.present/config.toml` (macOS, Linux) or `%APPDATA%\Present\config.toml` (Windows); override with `--home` / `PRESENT_HOME`.
+Location: `~/.present/config.toml` (macOS, Linux) or `%APPDATA%\Present\config.toml` (Windows); override with `--home` (`PRESENT_HOME` was removed; see `docs/ARCHITECTURE.md` 5.16 for the migration into `~/.analyst`).
 
 ```toml
 [defaults]

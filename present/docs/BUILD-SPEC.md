@@ -1,5 +1,7 @@
 # Build Specification
 
+> **Historical design note.** This document describes Personal Present before it was folded into Personal Analyst. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `analyst` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.analyst` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
+
 *Status: ready to build (2026-11-15). Audience: the coding agent (and any human) implementing Personal Present. This document says what to build, in what order, and how each step is accepted. Read in this order: [VISION.md](VISION.md) (why), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md) section 2 (the decision record), [ARCHITECTURE.md](ARCHITECTURE.md) (design), [PROTOCOL.md](PROTOCOL.md) and [IPC.md](IPC.md) (normative contracts), then this. When this document and a contract disagree, the contract wins; fix this document in the same change.*
 
 ## 1. Ground rules
