@@ -231,11 +231,7 @@ mod tests {
     #[test]
     fn tools_map_onto_the_shared_engine() {
         for spec in crate::tools::registry::registry() {
-            assert!(
-                action_for(spec.name, &json!({})).is_some(),
-                "{}",
-                spec.name
-            );
+            assert!(action_for(spec.name, &json!({})).is_some(), "{}", spec.name);
         }
         assert!(action_for("nope", &json!({})).is_none());
         let a = action_for("fs.propose_create", &json!({"path": "a.py"})).unwrap();

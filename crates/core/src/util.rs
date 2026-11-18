@@ -61,22 +61,9 @@ pub fn repo_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
     Ok(root.join(normalize_rel_path(rel)?))
 }
 
-/// Rough token estimate (4 characters per token) used for context budgeting.
-pub fn estimate_tokens(text: &str) -> usize {
-    text.len().div_ceil(4)
-}
-
-/// Truncate a string at a byte limit on a char boundary.
-pub fn truncate_bytes(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
+/// Rough token estimate (4 characters per token) and truncation at a byte limit on a char
+/// boundary, shared with the transcript crate.
+pub use wb_transcript::{estimate_tokens, truncate_bytes};
 
 /// Expand a leading `~` with `$HOME`.
 pub fn expand_tilde(p: &str) -> PathBuf {

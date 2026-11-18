@@ -11,6 +11,7 @@ pub mod kernel;
 pub mod model_client;
 pub mod service;
 pub mod session;
+pub mod skills;
 pub mod target;
 pub mod tools;
 pub mod util;

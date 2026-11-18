@@ -86,6 +86,9 @@ pub struct ToolContext {
     /// User-approved external data directories (the global config's target `data_dirs`):
     /// `fs.read` may follow a repo symlink into them. Empty by default.
     pub data_roots: Vec<String>,
+    /// Skills visible to this session (user and project folders), discovered when the
+    /// context is built.
+    pub skills: wb_skills::SkillSet,
 }
 
 impl ToolContext {
@@ -109,6 +112,7 @@ impl ToolContext {
             output_sink: None,
             on_run_started: None,
             data_roots: vec![],
+            skills: crate::skills::discover(home, repo),
         }
     }
 
@@ -128,6 +132,14 @@ impl ToolContext {
     ) -> Result<Value, ToolError> {
         match name {
             "fs.read" => self.fs_read(args),
+            "skill.load" => {
+                let skill = args.get("name").and_then(Value::as_str).unwrap_or("");
+                let instructions = self
+                    .skills
+                    .load(skill)
+                    .map_err(|e| ToolError::new(e.to_string()))?;
+                Ok(json!({"name": skill, "instructions": instructions}))
+            }
             "fs.list" => self.fs_list(args),
             "fs.search" => self.fs_search(args).await,
             "scripts.index" => {

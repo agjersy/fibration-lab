@@ -15,6 +15,7 @@ pub mod compact;
 pub mod event;
 pub mod pinned;
 pub mod replay;
+pub mod staged;
 pub mod store;
 pub mod util;
 
@@ -26,5 +27,7 @@ pub use compact::{
 pub use event::{DecidedBy, Event, ProposalDecision};
 pub use pinned::PinnedFacts;
 pub use replay::{ensure_ready_for_user, to_messages, ReplayOptions};
-pub use store::{append_jsonl, read_jsonl, ConversationSummary, ReadReport, TranscriptStore};
+pub use store::{
+    append_jsonl, read_jsonl, read_jsonl_lenient, ConversationSummary, ReadReport, TranscriptStore,
+};
 pub use util::{estimate_tokens, now_rfc3339, stamped_id, truncate_bytes};
