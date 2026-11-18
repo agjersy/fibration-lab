@@ -191,16 +191,16 @@ The kernel is a long-lived process per session, launched from the tooling enviro
 | `run.cancel` | Terminate a run (process group). |
 | `out.list` | List a run's output directory on the target with sizes and types, without transferring anything. |
 | `out.read` | Return a bounded preview of a non-rendered artifact on the target (head of a CSV, shape and summary of an array, first rows of a table). The agent and the UI inspect data outputs through this call; the files themselves are not transferred. |
-| `exec.snippet` | Run a short snippet in the persistent REPL of the kernel's helper process (session venv, sandboxed). For quick checks by the agent or the user. |
+| `exec.snippet` | Run a short snippet in the kernel's persistent REPL process (session venv, sandboxed). For quick checks by the agent or the user. |
 | `eq.extract` | Equation extraction for a file or function (section 5.11). |
 | `eq.check` | Numeric consistency check of a declared equation against a function. |
 | `contract.check` | Script contract checker (section 5.13). |
 | `contract.similar` | Near-duplicate function detection across scripts and the library (section 5.13). |
 | `lint.run` | Ruff diagnostics for a file. |
 
-**Process model.** Per session: the kernel (with a request thread pool), one long-lived **helper process**, and per run a supervisor, the sandbox wrapper, and the script. The helper (`analyst_kernel/helper.py`) runs in the session interpreter under the run sandbox and serves two kinds of request over one JSON-line pipe protocol, one at a time on its main thread: `exec.snippet` (the persistent REPL) and the SymPy equation analysis behind `eq.extract` and `eq.check` (`eqcore`, imported from the tooling environment, whose package directories the sandbox makes readable). `kernel.hello` starts it and its SymPy import in the background (the prewarm). A request over its budget (30 s per snippet by default, 10 s per analyzed function) kills the helper, so nothing keeps computing; the next request starts a fresh one, and the REPL state is gone. `eq.check` evaluates the real function in a separate sandboxed process per check.
+**Process model.** Per session: the kernel (with a request thread pool), two long-lived child processes, and per run a supervisor, the sandbox wrapper, and the script. The **REPL** (`analyst_kernel/snippet.py`) serves `exec.snippet`: it runs agent and user code in one persistent namespace in the session interpreter under the run sandbox (`_tool_spec("repl")`), 30 s per snippet by default; a timeout kills it and the next snippet starts a fresh one. The **equation worker** (`_eqworker.py` running `eqcore`) does the SymPy work behind `eq.extract` and `eq.check`. It is a separate process in the tooling interpreter, under its own sandbox spec (`equations.worker_spec`: it reads only the tooling interpreter, `analyst_kernel`, SymPy and mpmath, writes only a scratch directory, has no network, and the repository is not mounted; repository text arrives over its pipe), with its own 4 GiB address-space cap and a 10 s budget per analyzed function, over which it is killed and restarted. The two are kept apart on purpose: code run in a snippet cannot reach the process that decides whether an equation agrees (for example by patching `sympy.simplify`), and a snippet's memory use does not count against the equation cap. `kernel.hello` starts the equation worker and its SymPy import in the background (the prewarm). Both children are forked on one long-lived spawner thread (`spawner.py`), because `bwrap --die-with-parent` kills a child when the *thread* that forked it exits, and the prewarm and request threads are short-lived. `eq.check` evaluates the real function in a separate sandboxed process per check.
 
-The helper's REPL is the only stateful execution surface; script runs are always fresh processes so results are reproducible from the terminal. The kernel holds no state that is not on disk in the run directory, so a kernel restart is always safe.
+The REPL is the only stateful execution surface; script runs are always fresh processes so results are reproducible from the terminal. The kernel holds no state that is not on disk in the run directory, so a kernel restart is always safe.
 
 ### 5.5 Execution targets and remote execution over SSH (D5)
 
@@ -716,7 +716,7 @@ crates/cli/            the `analyst` CLI: analysis commands, `deck ...`, `chat`,
 present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
 present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and UI types (ts-rs into apps/desktop/src/ipc/generated/deck)
 present/python/        the deck kernel (present_kernel) and the deck build SDK (present_sdk)
-python/kernel/         analyst_kernel (runs, index, equations, contract, the helper process) and analyst_mpl
+python/kernel/         analyst_kernel (runs, index, equations, contract, the REPL and equation worker) and analyst_mpl
 evals/                 task suite, graders, scorecard runner
 docs/
 ```

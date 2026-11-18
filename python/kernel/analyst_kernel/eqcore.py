@@ -1,7 +1,7 @@
 """Equation analysis proper: tier A derivation, ``Math:`` parsing, simplification, rendering.
 
-This module imports SymPy and is meant to run inside the kernel's helper process
-(``helper.py``), never in the kernel process. Repository text is only ever read through
+This module imports SymPy and is meant to run inside the equation worker subprocess
+(``_eqworker``), never in the kernel process. Repository text is only ever read through
 ``ast.parse`` and a whitelisting walker: names become symbols, a fixed set of functions is
 callable, and nothing else is accepted. ``sympy.parse_expr``, ``sympify`` and ``eval`` are
 not used on repository text anywhere.

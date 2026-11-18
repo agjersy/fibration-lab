@@ -18,7 +18,7 @@ crates/serve/          analyst-serve: development bridge, the real core over a l
 crates/cli/            the `analyst` binary (analysis commands, `deck ...`, `chat`, `eval`)
 present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
 present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and deck UI types
-python/kernel/         analyst_kernel (per-target kernel and its helper process: REPL and equation analysis) and
+python/kernel/         analyst_kernel (per-target kernel, its REPL process and its equation worker) and
                        analyst_mpl (figure capture backend)
 present/python/        present_kernel (the deck kernel) and present_sdk (deck build scripts)
 evals/tasks/           model-agnostic analysis evaluation tasks with fixture repos
@@ -198,5 +198,5 @@ The app reaches the network for model endpoints, package installs from the confi
 
 - Rust: `cargo fmt`, clippy clean, no `unwrap()` on I/O paths in library code.
 - Python: Ruff clean, stdlib plus SymPy and Ruff only in the kernel; `analyst_mpl` is stdlib plus Matplotlib only.
-- The kernel never imports user code in its own process; evaluation of user functions happens in subprocesses using the session interpreter (the helper process and `eq.check`'s per-check process).
+- The kernel never imports user code in its own process; evaluation of user functions happens in subprocesses using the session interpreter (the REPL process and `eq.check`'s per-check process; the equation worker never evaluates repository code).
 - Protocol changes bump `protocol_version` and are made on both sides in the same commit.

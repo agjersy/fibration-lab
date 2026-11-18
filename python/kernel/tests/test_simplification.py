@@ -1,7 +1,7 @@
 """Regression tests for the simplification round (docs/DESIGN-REVIEW.md, docs/IPC.md section 8).
 
 Run completion is signalled instead of polled, output streams with low latency, the
-Matplotlib cache is shared, figures are saved in one format, the helper (REPL and equations) is
+Matplotlib cache is shared, figures are saved in one format, the equation worker is
 prewarmed, and ``env.packages`` is cached.
 """
 
@@ -272,19 +272,19 @@ def test_figure_formats_reach_the_run_from_project_toml(repo: Path, tmp_path: Pa
         k.close()
 
 
-# ---- 4. helper prewarm (the REPL and the equation analysis in one process) ----------------------
+# ---- 4. equation worker prewarm -----------------------------------------------------------------
 
 
 def _worker_pid(kernel: Kernel) -> int | None:
-    helper = kernel._helper
-    proc = helper._proc if helper is not None else None
+    eq = kernel._eq
+    proc = eq._proc if eq is not None else None
     return proc.pid if proc is not None and proc.poll() is None else None
 
 
-def test_hello_prewarms_the_helper_without_waiting_for_it(repo: Path, tmp_path: Path):
+def test_hello_prewarms_the_equation_worker_without_waiting_for_it(repo: Path, tmp_path: Path):
     k = Kernel(sys.executable, repo, tmp_path / "runs", sandbox="limits")
     try:
-        assert k._helper is None
+        assert k._eq is None
         t0 = time.monotonic()
         hello = k.call("kernel.hello", {"protocol_version": 1})
         t_hello = time.monotonic() - t0
@@ -295,21 +295,16 @@ def test_hello_prewarms_the_helper_without_waiting_for_it(repo: Path, tmp_path: 
         assert k.call("scripts.index")["scripts"]
         assert time.monotonic() - t0 < 1.5
         wait_until(lambda: _worker_pid(k) is not None, timeout=60)
-        # the prewarm analyzes one function (the SymPy import) before it lets go of the helper
-        wait_until(lambda: not any(t.name == "helper-prewarm" for t in threading.enumerate()), timeout=60)
-        pid = _worker_pid(k)
+        with k._eq._lock:  # the prewarm holds this until the worker has said it is ready
+            pid = _worker_pid(k)
         assert pid is not None
         t0 = time.monotonic()
         eqs = k.call("eq.extract", {"path": "analysis/models.py"})["equations"]
         warm = time.monotonic() - t0
-        assert eqs and _worker_pid(k) == pid  # served by the prewarmed helper, no second start
+        assert eqs and _worker_pid(k) == pid  # served by the prewarmed worker, no second start
         assert warm < 1.5, warm
-        # the same process is the REPL: a snippet runs there, and its state stays across equations
-        assert k.call("exec.snippet", {"code": "import os; kept = 1; os.getpid()"})["value_repr"] == str(pid)
-        assert k.call("eq.extract", {"path": "analysis/models.py"})["equations"]
-        assert k.call("exec.snippet", {"code": "kept"})["value_repr"] == "1"
         k.call("kernel.hello", {"protocol_version": 1})  # a second hello starts nothing new
-        wait_until(lambda: not any(t.name == "helper-prewarm" for t in threading.enumerate()), timeout=30)
+        wait_until(lambda: not any(t.name == "eq-prewarm" for t in threading.enumerate()), timeout=30)
         assert _worker_pid(k) == pid and k._prewarmed
     finally:
         k.close()
@@ -321,19 +316,19 @@ def test_prewarm_can_be_disabled_and_close_during_prewarm_leaves_no_worker(repo:
     try:
         k.call("kernel.hello", {"protocol_version": 1})
         time.sleep(0.2)
-        assert k._helper is None
+        assert k._eq is None
     finally:
         k.close()
 
     k = Kernel(sys.executable, repo, tmp_path / "runs2", sandbox="limits")
     k.call("kernel.hello", {"protocol_version": 1})
-    wait_until(lambda: k._helper is not None and k._helper._proc is not None, timeout=10, interval=0.005)
-    worker = k._helper
+    wait_until(lambda: k._eq is not None and k._eq._proc is not None, timeout=10, interval=0.005)
+    worker = k._eq
     pid = worker._proc.pid
-    k.close()  # while the helper is still importing SymPy
-    wait_until(lambda: not any(t.name == "helper-prewarm" for t in threading.enumerate()), timeout=20)
+    k.close()  # while the worker is still importing SymPy
+    wait_until(lambda: not any(t.name == "eq-prewarm" for t in threading.enumerate()), timeout=20)
     assert worker._proc is None and _pid_gone(pid)
-    assert k._helper is None
+    assert k._eq is None
 
 
 def _pid_gone(pid: int) -> bool:
