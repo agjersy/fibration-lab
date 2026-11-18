@@ -7,7 +7,7 @@
 - The renderer calls **commands** (Tauri `invoke`) for request/response. Every command takes a JSON object of named arguments and returns a JSON value or a structured error `{ code: string, message: string, detail?: unknown }`. Error codes: `not_found`, `conflict`, `policy_denied`, `kernel_offline`, `target_offline`, `engine_unavailable`, `sandbox_unavailable` (deck commands, section 9), `invalid`, `io`, `internal`.
 - The backend pushes **events** on a per-session **channel** (`tauri::ipc::Channel<SessionEvent>`) that the renderer opens with `session_subscribe`. One channel per open session per window. Events are ordered per session.
 - Long operations (bootstrap, sync, package changes) return a `task_id` immediately and report through `task_log` and `task_done` events.
-- The renderer never touches the filesystem, processes, or network directly. In a plain browser (no Tauri) the renderer runs against `MockBackend`, which implements the same interface in memory; this is how the frontend is developed and tested headlessly.
+- The renderer never touches the filesystem, processes, or network directly. In a plain browser (no Tauri) the renderer talks to the real core through the development bridge `analyst-serve` (section 11); this is how the frontend is developed and tested headlessly.
 - All paths crossing the boundary are repo-relative with forward slashes unless the field is named `*_abs`.
 
 The renderer-side interface (`src/ipc/backend.ts`):
@@ -19,7 +19,7 @@ export interface Backend {
 }
 ```
 
-`TauriBackend` maps `invoke` to `@tauri-apps/api/core` `invoke` and `subscribe` to `session_subscribe` with a `Channel`. `MockBackend` is section 6.
+`TauriBackend` maps `invoke` to `@tauri-apps/api/core` `invoke` and `subscribe` to `session_subscribe` with a `Channel`. `WsBackend` (`src/ipc/ws.ts`) is the same interface over the bridge's WebSocket (section 11).
 
 ## 2. Types
 
@@ -202,17 +202,9 @@ Argument names are exact. `session` is always a `SessionId`.
 - **Kernel lifecycle.** The kernel starts on `session_open` and on demand; `kernel_state` events report `starting`, `ready`, `offline` (remote unreachable), `error` (with message). Commands that need the kernel fail with `kernel_offline` or `target_offline` while it is not ready; the renderer disables the run form and run tools accordingly and keeps editing and reading working.
 - **Layout.** The renderer saves dockview layout on change (debounced) and restores it on open; absence means the default layout.
 
-## 6. MockBackend (renderer-only development)
+## 6. Browser mode (formerly MockBackend)
 
-Lives in `src/ipc/mock.ts` and is selected automatically when the Tauri API is not present. Requirements:
-
-- An in-memory repo with: `.analyst/project.toml`, `analysis/__init__.py`, `analysis/models.py` (a `single_exp` with a `Math:` section), `scripts/decay_sim.py` (argparse with five options), `data/sample.csv`, `notes.md`.
-- `index_get` returns the parsed shape of those scripts; `check_run` returns one warning and one error diagnostic on a deliberately flawed `scripts/bad.py`.
-- `run_start` streams several `run_output` chunks over about one second, then a `run_artifact` with an SVG figure (inline generated), then `run_done` with exit 0; `args` containing `--fail` makes it exit 1 with a traceback on stderr.
-- `chat_send` streams `agent_text`, then in build mode emits a `proposal` of kind `edit` on `analysis/models.py` (adds a function) and waits for `proposal_respond`; after accept it emits a `run_started`/`run_done` pair with a figure and a `turn_done`; in run mode it runs the script twice and finishes; in plan mode it streams text only. A text containing `error` produces `turn_error`.
-- `terminal_open` echoes input and answers `ls` and `python --version` plausibly.
-- `models_list` returns two entries (one local, one remote); `targets_list` returns `local` and one `ssh` target.
-- Latency is simulated at 50 to 300 ms so loading states are visible.
+The in-memory `MockBackend` and the hand-written TypeScript mirror of these types were removed in the simplification round. A plain browser uses the real core through `analyst-serve` (section 11); the renderer's unit tests use a small fake of the `Backend` interface (`src/test/fake.ts`) that enforces the boundary rules and lets each test script its events.
 
 ## 7. Additions after the November 2026 review
 
@@ -252,7 +244,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 - Policy presets: `policy.preset = "review" | "auto" | "read-only"` in `project.toml` expands to the detailed keys (`review`: edits review, runs auto, packages/shell/git ask; `auto`: edits auto within declared scope, runs auto, packages/shell/git ask; `read-only`: edits, packages, shell, git denied, runs auto). Detailed keys still override. The settings dialog offers the three presets. Comment-marker locked regions are removed; protected globs remain. The expansion lives in `wb-policy`; `edits = "deny"` is the read-only edit gate; `PolicyView.preset` reports the preset the keys amount to and `session_set_policy` accepts `preset`.
 - Models must support native tool calling. The text-protocol tier is removed; a model that fails the tool-calling probe is rejected with a clear error.
 - Contract rules `cli.option-for-every-input` and `lib.near-duplicate` are advisory (`warn`) by default and are not fed back to the agent as must-fix diagnostics.
-- Development and tests in a browser use the real core through `analyst serve` (a local WebSocket bridge speaking the same commands and events); `MockBackend` and the hand-written type mirror are removed.
+- Development and tests in a browser use the real core through `analyst-serve` (a separate loopback WebSocket bridge speaking the same commands and events, section 11); `MockBackend` and the hand-written type mirror are removed.
 - Remote sync pushes the checkpoint tree with git: the host holds a bare repository at `<mirror>.git`; the core pushes a commit of the working tree (tracked plus untracked, not ignored) to `refs/analyst/sync`, and the mirror is a detached checkout of it with `out/`, `.venv/`, and `.analyst/` left untouched. The tree id is the sync identity. rsync, the tar fallback, the deletion manifest, and the tree-hash file are removed.
 
 ## 9. Decks, history, and the artifact index (one app)
@@ -325,5 +317,17 @@ Dropped with the deck shell: `project_*` (a deck belongs to a session), `analyst
 | `slide_refresh` | `{ session, deck, slide_id, element_id? }` | `ProposalView \| null` | refresh from analysis: stale elements of the slide (or one) are brought up to date (the cited script re-run with the cited arguments when the run's tree differs; the equation extracted and checked again) and proposed as a normal `slide-update` proposal in the active conversation, its `message` listing the changed values and the verifications it invalidates; accepting takes a checkpoint first. Null when nothing is stale |
 | `deck_refresh_stale` | `{ session, deck }` | `ProposalView[]` | `slide_refresh` for every slide of the deck; one proposal per slide with a stale element |
 
-The renderer's Verify panel lists every item that is not `human_verified`, used on slides first and grouped by kind (keys: `j`/`k` move, `v` marks verified, `f` flags with a note, `Enter` opens the item in Equations, Figures, Runs, or Canvas). Slide elements, figures and equations show their verification state. The mock backend implements these commands with the same reset-on-change rule.
+The renderer's Verify panel lists every item that is not `human_verified`, used on slides first and grouped by kind (keys: `j`/`k` move, `v` marks verified, `f` flags with a note, `Enter` opens the item in Equations, Figures, Runs, or Canvas). Slide elements, figures and equations show their verification state.
+
+## 11. One command table, two transports
+
+**One table.** Every command of this document is a row of `analyst_core::commands` (`crates/core/src/commands.rs`): the row names the command, deserializes its snake_case arguments, and calls the workbench. Both transports call its `dispatch(workbench, host, command, args)`: the desktop shell's invoke handler and the development bridge. What only a transport can do (native dialogs, the asset scope, the file manager) is its `Host`; `session_subscribe` and `session_unsubscribe` are listed in the table but carried by each transport, since their event stream is the transport's own. The renderer's hand-written `src/ipc/commands.ts` is checked against the table by a Rust test (command names and argument names). The types are the ts-rs export only.
+
+**The development bridge.** `analyst-serve` (`crates/serve`) is a separate binary that hosts the same `Workbench` as the shell and speaks the table and the session events over one WebSocket. It is never compiled into the shipped app: `tools/check_egress.py` fails if any crate but `crates/serve` depends on a WebSocket or HTTP server crate, or if the desktop app or the CLI links the bridge (through `Cargo.lock`).
+
+- It binds loopback addresses only (default `127.0.0.1:0`, a free port; `--bind` to choose) and refuses others.
+- Every connection presents the token printed at start (`--token` or `ANALYST_SERVE_TOKEN` to give one) as `?token=` on the WebSocket URL; a missing or wrong token is HTTP 401. A browser `Origin` must be a loopback origin (403 otherwise). It sends no CORS headers and serves no files; the renderer comes from its own dev or preview server.
+- Messages are JSON text frames: request `{"id": n, "cmd": "<command>", "args": {...}}`; reply `{"id": n, "ok": <result>}` or `{"id": n, "error": IpcError}`; event `{"channel": c, "event": SessionEvent}`. `session_subscribe` takes `{ session, channel }`, where `channel` is a number the client picks (the stand-in for a Tauri `Channel`), and returns the subscription id.
+- Native dialogs answer from `--pick-dir` / `--pick-file` or as cancelled; `export_reveal` and `export_open` only log.
+- In browser mode figures load through `figure_data`, and deck images through `fs_read_binary` (repo-relative), as data URLs.
 

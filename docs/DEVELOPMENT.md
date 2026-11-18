@@ -10,13 +10,16 @@ crates/wb-*/           shared with the deck workbench: wb-net (network gate), wb
                        probe), wb-policy (policy engine, presets), wb-transcript (events, JSONL store, replay, compaction,
                        pinned facts), wb-skills (Agent Skills loader), wb-sandbox
 crates/protocol/       serde types for the kernel protocol, config, typed transcript events for the UI, evals
-crates/core/           sessions, agent loop, tools, kernel client, targets, sync, checkpoints; its provider, policy,
-                       transcript and skills code is the shared crates plus thin adapters (model_client.rs,
-                       tools/gate.rs, session.rs, skills.rs)
+crates/core/           sessions, agent loop, tools, kernel client, targets, sync, checkpoints, the IPC command table
+                       (commands.rs); its provider, policy, transcript and skills code is the shared crates plus
+                       thin adapters (model_client.rs, tools/gate.rs, session.rs, skills.rs)
+crates/evals/          analyst-evals: the analysis and deck evaluation harnesses (used by the CLI only)
+crates/serve/          analyst-serve: development bridge, the real core over a loopback WebSocket (never shipped)
 crates/cli/            the `analyst` binary (analysis commands, `deck ...`, `chat`, `eval`)
 present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
 present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and deck UI types
-python/kernel/         analyst_kernel (per-target kernel) and analyst_mpl (figure capture backend)
+python/kernel/         analyst_kernel (per-target kernel and its helper process: REPL and equation analysis) and
+                       analyst_mpl (figure capture backend)
 present/python/        present_kernel (the deck kernel) and present_sdk (deck build scripts)
 evals/tasks/           model-agnostic analysis evaluation tasks with fixture repos
 present/evals/         deck evaluation tasks and templates, run by the same `analyst eval run`
@@ -125,20 +128,34 @@ Both deck tasks must PASS; the other six deck tasks need a real model.
 
 ## Desktop app (phase 1)
 
-The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust, thin commands over `analyst_core::service`, including the deck commands of IPC.md section 9) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`, and the deck types from `present/crates/protocol` by `cargo test -p analyst-deck-protocol` into `apps/desktop/src/ipc/generated/deck/`. The shell embeds `apps/desktop/dist`, so run `pnpm build` in `apps/desktop` before `cargo clippy` or `cargo test -p analyst-desktop`. There is one renderer; the deck workbench's panels are part of it (`src/deck/`, `src/ui/deck/`, `src/state/decks.ts`).
+The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust: an invoke handler over the one command table `analyst_core::commands`, which the development bridge uses too) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`, and the deck types from `present/crates/protocol` by `cargo test -p analyst-deck-protocol` into `apps/desktop/src/ipc/generated/deck/`. The shell embeds `apps/desktop/dist`, so run `pnpm build` in `apps/desktop` before `cargo clippy` or `cargo test -p analyst-desktop`. There is one renderer; the deck workbench's panels are part of it (`src/deck/`, `src/ui/deck/`, `src/state/decks.ts`).
 
 ```sh
 cd apps/desktop
 pnpm install
-pnpm dev              # renderer in a browser at http://localhost:5173 against the in-memory MockBackend
 pnpm typecheck && pnpm lint && pnpm test && pnpm build
-pnpm test:e2e         # Playwright, headless Chromium, mock mode
+pnpm test:e2e         # Playwright, headless Chromium, against the real core (see below); build first
 
 # the real app (needs the Python kernel set up as above)
 cargo tauri dev                                   # from apps/desktop/src-tauri; starts Vite and opens the window
 cargo build -p analyst-desktop --features custom-protocol   # debug binary with the built frontend embedded
 cargo tauri build                                 # installers (.app/.dmg, .deb/.rpm/.AppImage)
 ```
+
+### The renderer in a browser, against the real core
+
+`analyst-serve` hosts the same core as the app and speaks its commands and events over a WebSocket on 127.0.0.1 (IPC.md section 11). It prints its URL, with a fresh token, on start; the renderer takes it as `?serve=` or `VITE_ANALYST_SERVE`:
+
+```sh
+cargo run -q -p analyst-serve                       # analyst-serve: listening on ws://127.0.0.1:41234/?token=3f9c...
+cd apps/desktop
+VITE_ANALYST_SERVE='ws://127.0.0.1:41234/?token=3f9c...' pnpm dev
+# or open http://localhost:5173/?serve=<the URL, percent-encoded>
+```
+
+It uses `ANALYST_HOME` like the app (point it at a scratch home to keep your own sessions apart), binds loopback addresses only, and refuses connections without the token. `--bind 127.0.0.1:<port>` fixes the port, `--token` (or `ANALYST_SERVE_TOKEN`) fixes the token, and `--pick-dir` / `--pick-file` answer the native dialogs it cannot show. It is a development tool: the shipped app never links it.
+
+The Playwright suite (`apps/desktop/e2e/`) uses it the same way: `e2e/harness.ts` builds nothing, so first `cargo build -p analyst-serve -p analyst-cli` (it looks in `target/debug`, or `ANALYST_BIN_DIR`), `uv sync` in `python/kernel` and `present/python/kernel`, and `pnpm build`. Each worker starts one bridge over a temporary home, the scripted model server (`evals/fake_model_server.py`, which also plays the e2e chat turns), and fixture projects made with `analyst init` from the parameter-sweep eval fixture and `e2e/fixture/`; decks are made from a copy of `present/evals/templates/corp/corp.potx`. Before each test the open sessions are closed and the projects reset to their fixture commit (their `.venv` is kept).
 
 Environment for the real app: `ANALYST_HOME` (default `~/.analyst`), `ANALYST_TOOLING_PYTHON` (a dev checkout auto-detects `python/kernel/.venv`), `ANALYST_SANDBOX` (override the sandbox kind for all runs), `RUST_LOG`.
 
@@ -175,11 +192,11 @@ The macOS sandbox also checks `file-read-metadata` on every directory along a pa
 
 ## Network rule
 
-The app reaches the network for model endpoints, package installs from the configured index, and SSH targets only, and only through `crates/wb-net` (ARCHITECTURE.md section 5.6). In `crates/core` that means: build HTTP requests with `wb_net::gate().request(..)`, never a client of your own; build `uv` installs with `egress::uv_install` (other `uv` calls run offline); and spawn command lines through the existing helpers (`target::run_command`, `TaskLogger::stream_command`, the kernel transports), which call `egress::guard`. `target::run_command` passes the working directory to the guard (`egress::guard_in`), which then also reads the project for package sources of its own before an install; code that spawns an install another way calls `egress::check_project_sources` itself. The only git command that may use the network is the mirror push built by `egress::git_push`. `python3 tools/check_egress.py` checks that no other crate can reach the network. Decisions are logged to `$ANALYST_HOME/egress.jsonl`. Kernels and terminals are spawned through `wb_sandbox::no_network::wrap`; tests that need isolation skip when neither `bwrap` nor `sandbox-exec` works.
+The app reaches the network for model endpoints, package installs from the configured index, and SSH targets only, and only through `crates/wb-net` (ARCHITECTURE.md section 5.6). In `crates/core` that means: build HTTP requests with `wb_net::gate().request(..)`, never a client of your own; build `uv` installs with `egress::uv_install` (other `uv` calls run offline); and spawn command lines through the existing helpers (`target::run_command`, `TaskLogger::stream_command`, the kernel transports), which call `egress::guard`. `target::run_command` passes the working directory to the guard (`egress::guard_in`), which then also reads the project for package sources of its own before an install; code that spawns an install another way calls `egress::check_project_sources` itself. The only git command that may use the network is the mirror push built by `egress::git_push`. `python3 tools/check_egress.py` checks that no other crate can reach the network, and that no crate but the development bridge (`crates/serve`) depends on a server crate or is linked by the app. Decisions are logged to `$ANALYST_HOME/egress.jsonl`. Kernels and terminals are spawned through `wb_sandbox::no_network::wrap`; tests that need isolation skip when neither `bwrap` nor `sandbox-exec` works.
 
 ## Conventions
 
 - Rust: `cargo fmt`, clippy clean, no `unwrap()` on I/O paths in library code.
 - Python: Ruff clean, stdlib plus SymPy and Ruff only in the kernel; `analyst_mpl` is stdlib plus Matplotlib only.
-- The kernel never imports user code in its own process; evaluation of user functions happens in subprocesses using the session interpreter.
+- The kernel never imports user code in its own process; evaluation of user functions happens in subprocesses using the session interpreter (the helper process and `eq.check`'s per-check process).
 - Protocol changes bump `protocol_version` and are made on both sides in the same commit.
