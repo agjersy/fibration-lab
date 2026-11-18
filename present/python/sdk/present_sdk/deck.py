@@ -270,6 +270,68 @@ class Slide:
             })  # fmt: skip
         return group
 
+    def equation(self, latex: str, placeholder: str | None = None, box=None, alt: str | None = None,
+                 element_id: str | None = None):
+        """A native, editable PowerPoint equation (OMML) from LaTeX.
+
+        LaTeX outside the converter's subset falls back to a rendered image with the LaTeX as
+        alt text (or, without Matplotlib, to the LaTeX as text); the fallback is recorded in
+        ``deck.warnings`` as ``eq.omml-fallback``."""
+        from . import omml
+
+        ph, ph_el, geom = self._target(placeholder, box)
+        x, y, cx, cy = geom
+        description = alt or latex
+        try:
+            para = omml.equation_paragraph(latex)
+        except omml.OmmlError as exc:
+            return self._equation_fallback(latex, ph, ph_el, geom, description, element_id, str(exc))
+        shape = self.raw.shapes.add_textbox(x, y, cx, cy)
+        tf = shape.text_frame
+        tf.word_wrap = True
+        body = tf._txBody
+        for old in body.findall(f"{{{A}}}p"):
+            body.remove(old)
+        body.append(para)
+        body_pr = body.find(f"{{{A}}}bodyPr")
+        if body_pr is not None:
+            body_pr.set("anchor", "ctr")
+        if ph is not None:
+            ph._adopt(shape._element, ph_el)
+        C.set_alt(shape._element, description)
+        self._register(shape._element, element_id, [])
+        return shape
+
+    def _equation_fallback(self, latex: str, ph, ph_el, geom, alt: str, element_id: str | None, why: str):
+        import tempfile
+
+        png = _render_latex_png(latex)
+        eid = element_id
+        if png is not None:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fh:
+                fh.write(png)
+                tmp = Path(fh.name)
+            try:
+                shape = C.add_picture(self.raw.shapes, tmp, geom, "fit", None)
+            finally:
+                tmp.unlink(missing_ok=True)
+            if ph is not None:
+                ph._adopt(shape._element, ph_el)
+            C.set_alt(shape._element, alt)
+            how = "a rendered image"
+        else:
+            x, y, cx, cy = geom
+            shape = self.raw.shapes.add_textbox(x, y, cx, cy)
+            C.apply_text(shape.text_frame, {"paragraphs": [{"runs": [{"t": latex}], "align": "center"}]})
+            C.set_alt(shape._element, alt)
+            how = "its LaTeX as text"
+        eid = self._register(shape._element, element_id, [])
+        self.deck.warnings.append({
+            "rule": "eq.omml-fallback", "severity": "warn", "slide_id": self.id, "element_id": eid,
+            "message": f"the equation could not be converted to a native equation ({why}); exported as {how}",
+        })  # fmt: skip
+        return shape
+
     def shape(self, spec: dict[str, Any], box, element_id: str | None = None):
         shp = C.add_shape(self.raw.shapes, spec, tuple(int(v) for v in box))
         self._register(shp._element, element_id, C.text_cites(spec.get("text") if isinstance(spec.get("text"), dict) else None))
@@ -295,6 +357,9 @@ class Slide:
             self.table(item["table"], placeholder=key, element_id=eid)
         elif kind == "diagram":
             self.diagram(item["diagram"], placeholder=key, element_id=eid)
+        elif kind == "equation":
+            self.equation(item["eq_cite"]["latex"], placeholder=key, element_id=eid,
+                          alt=_equation_alt(item["eq_cite"]))  # fmt: skip
         else:
             raise C.ContentError(f"unknown content type {kind!r}", eid)
 
@@ -314,6 +379,8 @@ class Slide:
             self.table(item["table"], box=box, element_id=eid)
         elif kind == "diagram":
             self.diagram(item["diagram"], box=box, element_id=eid)
+        elif kind == "equation":
+            self.equation(item["eq_cite"]["latex"], box=box, element_id=eid, alt=_equation_alt(item["eq_cite"]))
         elif kind == "shape":
             self.shape(item, box, eid)
         else:
@@ -340,6 +407,28 @@ class Slide:
                     run = etree.SubElement(para, f"{{{A}}}r")
                     etree.SubElement(run, f"{{{A}}}rPr", lang="en-US")
                     etree.SubElement(run, f"{{{A}}}t").text = footer_text
+
+
+def _equation_alt(cite: dict[str, Any]) -> str:
+    return f"{cite.get('latex', '')} ({cite.get('qualname', '?')} in {cite.get('path', '?')})"
+
+
+def _render_latex_png(latex: str) -> bytes | None:
+    """The equation drawn by Matplotlib's mathtext, when Matplotlib is installed and can draw it."""
+    try:
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+    except ImportError:
+        return None
+    try:
+        fig = Figure(figsize=(0.1, 0.1))
+        FigureCanvasAgg(fig)
+        fig.text(0, 0, f"${latex}$", fontsize=28)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", pad_inches=0.05, transparent=True)
+        return buf.getvalue()
+    except Exception:
+        return None
 
 
 def _diagram_cites(model: dict[str, Any]) -> list[str]:

@@ -97,9 +97,10 @@ pub fn find(
         .find(|e| e.path == wanted)
 }
 
-/// A figure of a run placed on a slide: the slide document with an image element that cites the
-/// run (not written yet), and the hash of the slide file it was made from.
-pub struct PlacedFigure {
+/// An element placed on a slide from the analysis (a figure of a run, an equation of a
+/// function): the slide document with the element and its citation (not written yet), and the
+/// hash of the slide file it was made from.
+pub struct PlacedElement {
     pub slide: serde_json::Value,
     pub hash: String,
 }
@@ -123,7 +124,7 @@ pub async fn place_figure(
     artifact: &str,
     placeholder: Option<&str>,
     alt: Option<&str>,
-) -> super::ServiceResult<PlacedFigure> {
+) -> super::ServiceResult<PlacedElement> {
     use super::ServiceError;
     use analyst_deck_protocol::template::ContentKind;
     use serde_json::json;
@@ -164,40 +165,15 @@ pub async fn place_figure(
         .map_err(|e| ServiceError::not_found(e.to_string()))?;
     let mut doc =
         serde_json::to_value(&slide).map_err(|e| ServiceError::internal(e.to_string()))?;
-    let key = match placeholder {
-        Some(k) => k.to_string(),
-        None => {
-            let template = svc.info().await.map_err(ServiceError::from)?.template;
-            let candidates: Vec<String> = template
-                .masters
-                .iter()
-                .flat_map(|m| m.layouts.iter())
-                .find(|l| l.name == slide.layout)
-                .into_iter()
-                .flat_map(|l| l.placeholders.iter())
-                .filter(|p| p.accepts.contains(&ContentKind::Image))
-                .map(|p| p.key.to_string())
-                .collect();
-            candidates
-                .iter()
-                .find(|k| {
-                    let cur = &doc["placeholders"][k.as_str()];
-                    cur.is_null() || cur["type"] == "empty"
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    ServiceError::invalid(format!(
-                        "layout {:?} has no free placeholder for an image (image placeholders: {}); pass `placeholder`, or use a layout with a picture placeholder",
-                        slide.layout,
-                        if candidates.is_empty() {
-                            "none".to_string()
-                        } else {
-                            candidates.join(", ")
-                        }
-                    ))
-                })?
-        }
-    };
+    let key = free_placeholder(
+        svc,
+        &slide.layout,
+        &doc,
+        placeholder,
+        &[ContentKind::Image],
+        false,
+    )
+    .await?;
     let asset = format!("assets/{}.{ext}", &crate::util::sha256_hex(&bytes)[..16]);
     let target = svc.ws.project.root.join(&asset);
     if !target.is_file() {
@@ -208,23 +184,7 @@ pub async fn place_figure(
         .map(str::to_string)
         .or(entry.title.clone())
         .unwrap_or_else(|| format!("Figure from {}", entry.script));
-    // A fresh element id, unless the placeholder already holds an element (keep its id).
-    let element_id = match doc["placeholders"][key.as_str()]["id"].as_str() {
-        Some(id) => id.to_string(),
-        None => {
-            let used: BTreeSet<String> = doc["placeholders"]
-                .as_object()
-                .into_iter()
-                .flat_map(|m| m.values())
-                .chain(doc["elements"].as_array().into_iter().flatten())
-                .filter_map(|v| v["id"].as_str().map(str::to_string))
-                .collect();
-            (1..)
-                .map(|n| format!("e-fig{n}"))
-                .find(|id| !used.contains(id))
-                .unwrap_or_default()
-        }
-    };
+    let element_id = element_id_for(&doc, &key, "e-fig");
     doc["placeholders"][key.as_str()] = json!({
         "type": "image",
         "id": element_id,
@@ -238,5 +198,82 @@ pub async fn place_figure(
             "tree_hash": entry.tree_hash,
         },
     });
-    Ok(PlacedFigure { slide: doc, hash })
+    Ok(PlacedElement { slide: doc, hash })
+}
+
+/// A figure of a run placed on a slide.
+pub type PlacedFigure = PlacedElement;
+
+/// The placeholder an element goes into: `placeholder` when given, else the first free one of
+/// the slide's layout that accepts one of `kinds` (titles skipped unless `titles`).
+pub(crate) async fn free_placeholder(
+    svc: &analyst_deck::service::DeckService,
+    layout: &str,
+    doc: &serde_json::Value,
+    placeholder: Option<&str>,
+    kinds: &[analyst_deck_protocol::template::ContentKind],
+    titles: bool,
+) -> super::ServiceResult<String> {
+    use super::ServiceError;
+    use analyst_deck_protocol::template::PlaceholderType;
+    if let Some(k) = placeholder {
+        return Ok(k.to_string());
+    }
+    let template = svc.info().await.map_err(ServiceError::from)?.template;
+    let candidates: Vec<String> = template
+        .masters
+        .iter()
+        .flat_map(|m| m.layouts.iter())
+        .find(|l| l.name == layout)
+        .into_iter()
+        .flat_map(|l| l.placeholders.iter())
+        .filter(|p| p.accepts.iter().any(|a| kinds.contains(a)))
+        .filter(|p| {
+            titles || !matches!(p.r#type, PlaceholderType::Title | PlaceholderType::CtrTitle)
+        })
+        .map(|p| p.key.to_string())
+        .collect();
+    let what = kinds
+        .iter()
+        .map(|k| format!("{k:?}").to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" or ");
+    candidates
+        .iter()
+        .find(|k| {
+            let cur = &doc["placeholders"][k.as_str()];
+            cur.is_null() || cur["type"] == "empty"
+        })
+        .cloned()
+        .ok_or_else(|| {
+            ServiceError::invalid(format!(
+                "layout {layout:?} has no free placeholder for {what} (candidates: {}); pass `placeholder`, or use a layout with a free one",
+                if candidates.is_empty() {
+                    "none".to_string()
+                } else {
+                    candidates.join(", ")
+                }
+            ))
+        })
+}
+
+/// A fresh element id with `prefix`, unless the placeholder already holds an element (its id
+/// is kept, so citations and locks of the element stay attached).
+pub(crate) fn element_id_for(doc: &serde_json::Value, key: &str, prefix: &str) -> String {
+    match doc["placeholders"][key]["id"].as_str() {
+        Some(id) => id.to_string(),
+        None => {
+            let used: BTreeSet<String> = doc["placeholders"]
+                .as_object()
+                .into_iter()
+                .flat_map(|m| m.values())
+                .chain(doc["elements"].as_array().into_iter().flatten())
+                .filter_map(|v| v["id"].as_str().map(str::to_string))
+                .collect();
+            (1..)
+                .map(|n| format!("{prefix}{n}"))
+                .find(|id| !used.contains(id))
+                .unwrap_or_default()
+        }
+    }
 }

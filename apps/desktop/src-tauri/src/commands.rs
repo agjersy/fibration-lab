@@ -969,6 +969,25 @@ pub async fn slide_place_figure(
         .map_err(Into::into)
 }
 
+/// Places the equation of a function on a slide as a user edit, with its equation record (LaTeX,
+/// tier, numeric check, function, file, content hash): the core function of the agent's
+/// `slide.place_equation` (`SessionRuntime::slide_place_equation`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_place_equation(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    path: String,
+    function: String,
+    placeholder: Option<String>,
+) -> R<SlideView> {
+    rt_of(&state, &session)?
+        .slide_place_equation(&deck, &slide_id, &path, &function, placeholder.as_deref())
+        .await
+        .map_err(Into::into)
+}
+
 #[tauri::command(rename_all = "snake_case")]
 pub async fn slide_create(
     state: State<'_, AppState>,

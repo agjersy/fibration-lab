@@ -590,6 +590,38 @@
         {
           "additionalProperties": false,
           "properties": {
+            "acknowledged": {
+              "description": "The user has seen that the equation is unchecked (LaTeX-only) or disagrees with its code, and keeps it: the checker reports it as a warning instead of an error.",
+              "type": "boolean"
+            },
+            "eq_cite": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/EqCite"
+                }
+              ],
+              "description": "The equation and where it came from: the function, its file and content hash, the provenance tier, and the numeric check."
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "equation"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "eq_cite",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "fill": {
               "$ref": "#/definitions/ThemeColor"
             },
@@ -623,6 +655,113 @@
     },
     "ElementId": {
       "pattern": "^e-[0-9A-Za-z][0-9A-Za-z-]{0,31}$",
+      "type": "string"
+    },
+    "EqCheckRecord": {
+      "additionalProperties": false,
+      "description": "The numeric check as it was when the equation was placed.",
+      "properties": {
+        "counterexample": {
+          "$ref": "#/definitions/EqCounterexample"
+        },
+        "reason": {
+          "description": "Why the check is unavailable, when it is.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/EqCheckState"
+        },
+        "tol": {
+          "description": "Relative tolerance of the comparison.",
+          "type": "number"
+        },
+        "trials": {
+          "default": 0,
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "EqCheckState": {
+      "description": "The outcome of the numeric check of a function against its equation.",
+      "enum": [
+        "agree",
+        "mismatch",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "EqCite": {
+      "additionalProperties": false,
+      "description": "Where an equation on a slide came from (the equation record of the provenance contract, PROTOCOL 11): the LaTeX the analysis kernel extracted for a function, its tier, the numeric check of the code against it, and the source file's content hash when it was placed. When the file's hash no longer matches the working tree, the checker reports the element as stale.",
+      "properties": {
+        "check": {
+          "$ref": "#/definitions/EqCheckRecord"
+        },
+        "latex": {
+          "type": "string"
+        },
+        "path": {
+          "description": "The source file, repo-relative.",
+          "type": "string"
+        },
+        "qualname": {
+          "description": "The function's qualified name in its module (`Model.predict`, `double_exp`).",
+          "type": "string"
+        },
+        "source_hash": {
+          "description": "SHA-256 (hex) of the source file's content the equation was extracted from.",
+          "type": "string"
+        },
+        "tier": {
+          "$ref": "#/definitions/EqTier"
+        }
+      },
+      "required": [
+        "check",
+        "latex",
+        "path",
+        "qualname",
+        "source_hash",
+        "tier"
+      ],
+      "type": "object"
+    },
+    "EqCounterexample": {
+      "additionalProperties": false,
+      "description": "Inputs on which the code and the equation disagree.",
+      "properties": {
+        "actual": {
+          "type": "number"
+        },
+        "expected": {
+          "type": "number"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "actual",
+        "expected",
+        "inputs"
+      ],
+      "type": "object"
+    },
+    "EqTier": {
+      "description": "The provenance tier of an equation (ARCHITECTURE 5.11): derived from the code, declared in a `Math:` docstring section and numerically checked, or LaTeX for display only.",
+      "enum": [
+        "derived",
+        "declared",
+        "latex"
+      ],
       "type": "string"
     },
     "FreeElement": {
@@ -971,6 +1110,38 @@
           },
           "required": [
             "diagram",
+            "id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "acknowledged": {
+              "description": "The user has seen that the equation is unchecked (LaTeX-only) or disagrees with its code, and keeps it: the checker reports it as a warning instead of an error.",
+              "type": "boolean"
+            },
+            "eq_cite": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/EqCite"
+                }
+              ],
+              "description": "The equation and where it came from: the function, its file and content hash, the provenance tier, and the numeric check."
+            },
+            "id": {
+              "$ref": "#/definitions/ElementId"
+            },
+            "type": {
+              "enum": [
+                "equation"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "eq_cite",
             "id",
             "type"
           ],

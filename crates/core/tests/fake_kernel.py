@@ -323,11 +323,16 @@ class Kernel:
         return {"kind": kind, "preview": preview, "truncated": len(data) > n, "summary": None}
 
     def eq_extract(self, p):
-        return {"equations": [{"function": p.get("function") or "double_exp", "qualname": p.get("function") or "double_exp",
-                               "line": 1, "tier": "declared", "latex": "A e^{-t/\\tau_1} + B e^{-t/\\tau_2}",
+        # A function named `show_*` has a display-only LaTeX section; `bad_*` disagrees with its code.
+        name = p.get("function") or "double_exp"
+        return {"equations": [{"function": name, "qualname": name,
+                               "line": 1, "tier": "latex" if name.startswith("show_") else "declared", "latex": "A e^{-t/\\tau_1} + B e^{-t/\\tau_2}",
                                "source_expr": "A*exp(-t/tau1) + B*exp(-t/tau2)", "status": "ok", "reason": None}]}
 
     def eq_check(self, p):
+        if p.get("function", "").startswith("bad_"):
+            return {"status": "mismatch", "trials": 32, "max_abs_err": 1.0, "max_rel_err": 0.5,
+                    "counterexample": {"inputs": {"t": 1.0}, "expected": 2.0, "actual": 3.0}, "reason": None}
         return {"status": "agree", "trials": 32, "max_abs_err": 0.0, "max_rel_err": 0.0, "counterexample": None, "reason": None}
 
     def contract_check(self, p):

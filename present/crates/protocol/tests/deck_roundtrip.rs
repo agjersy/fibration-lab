@@ -445,3 +445,44 @@ fn kernel_corpus_directory_round_trips_when_given() {
     assert!(count > 0);
     eprintln!("round-tripped {count} corpus slides");
 }
+
+#[test]
+fn an_equation_element_carries_its_equation_record() {
+    let v = json!({
+        "id": "s-eq1", "kind": "layout", "layout": "Title and Content", "elements": [],
+        "placeholders": {
+            "body": {
+                "type": "equation", "id": "e-eq1", "acknowledged": true,
+                "eq_cite": {
+                    "latex": "\\frac{a^{2}}{b}", "tier": "declared",
+                    "check": {
+                        "status": "mismatch", "trials": 32, "tol": 1e-6,
+                        "counterexample": {"inputs": {"a": 1.5, "b": 2.0}, "expected": 1.125, "actual": 1.0}
+                    },
+                    "qualname": "ratio", "path": "lib/model.py", "source_hash": "ab12"
+                }
+            }
+        }
+    });
+    let slide: Slide = serde_json::from_value(v.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&slide).unwrap(), v);
+    match &slide.placeholders["body"] {
+        PlaceholderContent::Equation {
+            eq_cite,
+            acknowledged,
+            ..
+        } => {
+            assert_eq!(eq_cite.tier, EqTier::Declared);
+            assert_eq!(eq_cite.check.status, EqCheckState::Mismatch);
+            assert_eq!(*acknowledged, Some(true));
+        }
+        other => panic!("{other:?}"),
+    }
+    // The record is closed: an unknown field or tier is a schema error.
+    let mut bad = v.clone();
+    bad["placeholders"]["body"]["eq_cite"]["tier"] = json!("guessed");
+    assert!(serde_json::from_value::<Slide>(bad).is_err());
+    let mut bad = v;
+    bad["placeholders"]["body"]["eq_cite"]["extra"] = json!(1);
+    assert!(serde_json::from_value::<Slide>(bad).is_err());
+}

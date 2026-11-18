@@ -79,7 +79,9 @@ def validate_deck(project: Path, deck_rel: str = "deck/deck.json") -> list[dict[
                               "fix_hint": f"available: {', '.join(keys)}"})  # fmt: skip
                 continue
             kind = item.get("type")
-            if kind not in (None, "empty") and kind not in info["accepts"]:
+            # An equation is a text box with a native equation (or an image when it falls back).
+            fits = kind == "equation" and ("text" in info["accepts"] or "image" in info["accepts"])
+            if kind not in (None, "empty") and kind not in info["accepts"] and not fits:
                 diags.append({"rule": "schema", "severity": "error", "slide_id": sid, "element_id": item.get("id"),
                               "pointer": f"/placeholders/{key}",
                               "message": f"placeholder {key!r} ({info['type']}) does not accept {kind}",

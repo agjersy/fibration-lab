@@ -47,6 +47,9 @@ def _slide_parts(doc: dict[str, Any]) -> tuple[str, list[tuple[int, str]], list[
             add_cites(item.get("cite") or [])
         elif kind == "diagram":
             extras.append(f"Diagram: {item['diagram'].get('family')} ({item['diagram'].get('variant')})")
+        elif kind == "equation":
+            cite = item.get("eq_cite") or {}
+            extras.append(f"Equation: ${cite.get('latex', '')}$ ({cite.get('qualname')} in {cite.get('path')})")
     return title, body, extras, cites
 
 

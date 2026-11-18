@@ -133,7 +133,9 @@ fn slide_schema_matches_protocol_2_2() {
     assert!(!slide_schema_json().contains("\"format\""));
 
     let content = &defs["PlaceholderContent"];
-    for t in ["text", "image", "chart", "table", "diagram", "empty"] {
+    for t in [
+        "text", "image", "chart", "table", "diagram", "equation", "empty",
+    ] {
         let v = variant(content, "type", t);
         assert_eq!(v["additionalProperties"], false, "{t}");
     }
@@ -143,7 +145,19 @@ fn slide_schema_matches_protocol_2_2() {
     );
     assert_eq!(required(variant(content, "type", "empty")), ["type"]);
     let element = &defs["ElementContent"];
-    assert_eq!(element["oneOf"].as_array().unwrap().len(), 6);
+    assert_eq!(element["oneOf"].as_array().unwrap().len(), 7);
+    assert_eq!(
+        required(variant(content, "type", "equation")),
+        ["eq_cite", "id", "type"]
+    );
+    assert_eq!(
+        required(&defs["EqCite"]),
+        ["check", "latex", "path", "qualname", "source_hash", "tier"]
+    );
+    assert_eq!(
+        defs["EqTier"]["enum"],
+        serde_json::json!(["derived", "declared", "latex"])
+    );
     assert_eq!(
         required(variant(element, "type", "shape")),
         ["id", "shape", "type"]

@@ -270,6 +270,28 @@ impl ToolContext {
         Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
     }
 
+    /// `slide.place_equation`: the equation placed on the slide by
+    /// [`crate::service::provenance::place_equation`] (the same function the UI's
+    /// `slide_place_equation` uses), as the arguments of the equivalent `slide.propose_update`.
+    async fn place_equation_args(&self, args: &Value) -> Result<Value, ToolError> {
+        let slug = self.deck_slug(args)?;
+        let path = str_arg(args, "path")?;
+        let function = str_arg(args, "function")?;
+        let slide_id = str_arg(args, "slide_id")?;
+        let svc = self.decks.open(&slug).await?;
+        let placed = crate::service::provenance::place_equation(
+            self.kernel()?,
+            &self.repo,
+            &svc,
+            slide_id,
+            path,
+            function,
+            args.get("placeholder").and_then(Value::as_str),
+        )
+        .await?;
+        Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
+    }
+
     /// Run the first half of a deck tool: read tools finish here, edit tools come back as a
     /// [`Change`] for the loop to gate. Starts the deck's kernel when needed.
     pub async fn deck_prepare(
@@ -279,6 +301,12 @@ impl ToolContext {
     ) -> Result<(Arc<DeckService>, Prepared), ToolError> {
         if name == crate::tools::registry::PLACE_FIGURE {
             let update = self.place_figure_args(args).await?;
+            return self
+                .deck_prepare_tool("slide.propose_update", &update)
+                .await;
+        }
+        if name == crate::tools::registry::PLACE_EQUATION {
+            let update = self.place_equation_args(args).await?;
             return self
                 .deck_prepare_tool("slide.propose_update", &update)
                 .await;

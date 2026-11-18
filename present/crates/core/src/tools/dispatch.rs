@@ -590,11 +590,18 @@ fn check_layout(desc: &Value, slide: &Slide) -> Result<(), String> {
             ));
         };
         let kind = item["type"].as_str().unwrap_or("empty");
-        if kind != "empty"
-            && !ph["accepts"]
+        // An equation is a text box holding a native equation (an image when it falls back).
+        let accepts = |k: &str| {
+            ph["accepts"]
                 .as_array()
-                .is_some_and(|a| a.iter().any(|x| x == kind))
-        {
+                .is_some_and(|a| a.iter().any(|x| x == k))
+        };
+        let fits = if kind == "equation" {
+            accepts("text") || accepts("image")
+        } else {
+            accepts(kind)
+        };
+        if kind != "empty" && !fits {
             return Err(format!(
                 "placeholder {key:?} of layout {:?} does not accept {kind}; it accepts {}",
                 slide.layout, ph["accepts"]

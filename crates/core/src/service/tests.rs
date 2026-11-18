@@ -2405,3 +2405,160 @@ print("wrote", *sys.argv[1:])
     }
     fx.wb.shutdown().await;
 }
+
+/// An equation goes from the analysis kernel to a slide with its equation record: the agent's
+/// `slide.place_equation` and the UI's `slide_place_equation` share one core function; the
+/// checker reports a numeric mismatch and display-only LaTeX as errors (info once
+/// acknowledged), and an equation whose source file changed as stale.
+#[tokio::test]
+async fn an_equation_travels_to_a_slide_with_its_record_and_goes_stale() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    std::fs::create_dir_all(fx.rt.repo.join("lib")).unwrap();
+    let source = "def double_exp(t, A, tau1, B, tau2):\n    return A\n";
+    std::fs::write(fx.rt.repo.join("lib/model.py"), source).unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let deck = fx.rt.deck("q3").await.unwrap();
+    let first = deck.slide_create(None, "Title and Content").await.unwrap();
+    let first_id = first.slide.id.to_string();
+
+    // The agent proposes it; the proposal carries the equation record.
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-eq",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.decks = fx.rt.decks.clone();
+    ctx.set_kernel(fx.rt.kernel().await.ok());
+    let placed = ctx
+        .dispatch(
+            "t1",
+            "slide.place_equation",
+            &json!({"slide_id": first_id, "path": "lib/model.py", "function": "double_exp"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(placed["updated"], first_id.as_str(), "{placed}");
+    let doc: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fx.rt
+                .repo
+                .join(crate::service::decks::slide_rel("q3", &first_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let el = &doc["placeholders"]["body"];
+    assert_eq!(el["type"], "equation", "{doc}");
+    assert_eq!(el["id"], "e-eq1");
+    let cite = &el["eq_cite"];
+    assert_eq!(cite["tier"], "declared");
+    assert_eq!(cite["check"]["status"], "agree");
+    assert_eq!(cite["check"]["trials"], 32);
+    assert_eq!(cite["check"]["tol"], 1e-6);
+    assert_eq!(cite["qualname"], "double_exp");
+    assert_eq!(cite["path"], "lib/model.py");
+    assert_eq!(
+        cite["source_hash"],
+        crate::util::sha256_hex(source.as_bytes()).as_str()
+    );
+    assert!(cite["latex"].as_str().unwrap().contains("tau"));
+
+    // The user places one that disagrees with its code, and a display-only one.
+    let second = deck
+        .slide_create(Some(&first_id), "Title and Content")
+        .await
+        .unwrap();
+    let second_id = second.slide.id.to_string();
+    let view = fx
+        .rt
+        .slide_place_equation("q3", &second_id, "lib/model.py", "bad_fit", None)
+        .await
+        .unwrap();
+    let v = serde_json::to_value(&view.slide).unwrap();
+    let bad = &v["placeholders"]["body"];
+    assert_eq!(bad["eq_cite"]["check"]["status"], "mismatch");
+    assert_eq!(
+        bad["eq_cite"]["check"]["counterexample"]["inputs"]["t"],
+        1.0
+    );
+    let third = deck
+        .slide_create(Some(&second_id), "Title and Content")
+        .await
+        .unwrap();
+    let third_id = third.slide.id.to_string();
+    fx.rt
+        .slide_place_equation("q3", &third_id, "lib/model.py", "show_derivation", None)
+        .await
+        .unwrap();
+    let missing = fx
+        .rt
+        .slide_place_equation("q3", &third_id, "lib/none.py", "f", Some("body"))
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code, IpcErrorCode::NotFound, "{missing}");
+
+    let of = |diags: &[Value], rule: &str| -> Vec<(String, String)> {
+        diags
+            .iter()
+            .filter(|d| d["rule"] == rule)
+            .map(|d| {
+                (
+                    d["slide_id"].as_str().unwrap_or("").to_string(),
+                    d["severity"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect()
+    };
+    let diags = deck.run_checks(None).await.unwrap();
+    assert_eq!(
+        of(&diags, "eq.mismatch"),
+        vec![(second_id.clone(), "error".into())]
+    );
+    assert_eq!(
+        of(&diags, "eq.latex-only"),
+        vec![(third_id.clone(), "error".into())]
+    );
+    assert!(of(&diags, "stale").is_empty(), "{diags:?}");
+
+    // Acknowledged: listed, no longer an error.
+    let (mut slide, hash) = deck
+        .ws
+        .deck()
+        .read_slide(&analyst_deck_protocol::ids::SlideId::new(second_id.clone()).unwrap())
+        .unwrap();
+    if let Some(analyst_deck_protocol::deck::PlaceholderContent::Equation {
+        acknowledged, ..
+    }) = slide.placeholders.get_mut("body")
+    {
+        *acknowledged = Some(true);
+    }
+    deck.slide_update(slide, Some(&hash)).unwrap();
+    let diags = deck.run_checks(None).await.unwrap();
+    assert_eq!(
+        of(&diags, "eq.mismatch"),
+        vec![(second_id.clone(), "info".into())]
+    );
+
+    // The source changes: every equation from it is stale.
+    std::fs::write(
+        fx.rt.repo.join("lib/model.py"),
+        source.replace("A\n", "B\n"),
+    )
+    .unwrap();
+    let diags = deck.run_checks(None).await.unwrap();
+    let stale = of(&diags, "stale");
+    assert_eq!(stale.len(), 3, "{diags:?}");
+    assert!(diags
+        .iter()
+        .any(|d| d["rule"] == "stale" && d["message"].as_str().unwrap().contains("double_exp")));
+    fx.wb.shutdown().await;
+}

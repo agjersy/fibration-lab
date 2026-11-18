@@ -14,7 +14,7 @@ use crate::checkpoint;
 use analyst_deck::project::Project;
 use analyst_deck::service::DeckHost;
 pub use analyst_deck::service::DeckService;
-use analyst_deck::workspace::{OpenOptions, Workspace};
+use analyst_deck::workspace::{OpenOptions, Provenance, Workspace};
 use analyst_deck_protocol::deck::DeckMode;
 use analyst_protocol::ui::{DeckSummary, SessionEvent};
 use std::collections::HashMap;
@@ -186,6 +186,8 @@ pub struct DeckServices {
     /// Slugs with a running kernel, readable without awaiting.
     opened: Mutex<Vec<String>>,
     events: Mutex<Option<EventHub>>,
+    /// How the checker of every deck opened from now on looks at the project.
+    provenance: Mutex<Option<Arc<dyn Provenance>>>,
 }
 
 impl DeckServices {
@@ -198,7 +200,20 @@ impl DeckServices {
             open: tokio::sync::Mutex::new(HashMap::new()),
             opened: Mutex::new(Vec::new()),
             events: Mutex::new(None),
+            provenance: Mutex::new(None),
         })
+    }
+
+    /// The provenance decks are checked against (the session's runs and files); without one,
+    /// a deck sees the repository's tree and files only.
+    pub fn set_provenance(&self, p: Arc<dyn Provenance>) {
+        if let Ok(mut slot) = self.provenance.lock() {
+            *slot = Some(p);
+        }
+    }
+
+    fn provenance(&self) -> Option<Arc<dyn Provenance>> {
+        self.provenance.lock().ok().and_then(|p| p.clone())
     }
 
     /// Forward the events of every deck onto a session channel (`SessionEvent::Deck`).
@@ -291,9 +306,14 @@ impl DeckServices {
         let ws = Workspace::open(&root, &options)
             .await
             .map_err(|e| ServiceError::kernel_offline(format!("opening deck `{slug}`: {e:#}")))?;
-        // Run citations on slides are checked against the project's code as it is now.
+        // Run citations, equations, and bound numbers on slides are checked against the
+        // project as it is now.
         let repo = self.repo.clone();
-        ws.set_tree_identity(Arc::new(move || super::artifacts::current_tree(&repo)));
+        let provenance: Arc<dyn Provenance> = match self.provenance() {
+            Some(p) => p,
+            None => Arc::new(super::provenance::RepoProvenance::new(&repo)),
+        };
+        ws.set_provenance(provenance);
         let host = Arc::new(GitHost {
             repo: self.repo.clone(),
             slug: slug.to_string(),

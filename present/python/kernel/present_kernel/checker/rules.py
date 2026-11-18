@@ -37,6 +37,7 @@ DEFAULT_SEVERITY = {
     "src.coverage": "warn", "src.numbers": "warn", "src.chart-stale": "warn", "src.dangling": "error",
     "a11y.alt-text": "error", "a11y.contrast": "warn", "a11y.reading-order": "info", "struct.titles": "error",
     "img.resolution": "warn", "code.hardcoded-style": "warn", "out.opens-clean": "error",
+    "eq.mismatch": "error", "eq.latex-only": "error", "eq.omml-fallback": "warn",
 }  # fmt: skip
 _FACTUAL = re.compile(r"\d|[%€$£¥]")
 
@@ -89,8 +90,10 @@ class _Out:
         self.items: list[dict[str, Any]] = []
 
     def add(self, rule: str, message: str, slide: _SlideCtx | None = None, element_id: str | None = None,
-            fix_hint: str | None = None, pointer: str | None = None) -> None:
+            fix_hint: str | None = None, pointer: str | None = None, severity: str | None = None) -> None:
         sev = self.contract.severity.get(rule, "warn")
+        if severity is not None and sev != "off":
+            sev = severity
         if sev == "off" or (self.only is not None and rule not in self.only):
             return
         d: dict[str, Any] = {"rule": rule, "severity": sev, "message": message}
@@ -533,6 +536,38 @@ def _check_doc(out: _Out, ctx: _SlideCtx, doc: dict[str, Any], contract: Contrac
             for c in item.get("cite") or []:
                 if resolve_cite(c) is None:
                     out.add("src.dangling", f"citation {c} does not resolve to a reference", ctx, item.get("id"))
+        elif kind == "equation":
+            _check_equation(out, ctx, item, f"/{_key}" if _key.startswith("elements/") else f"/placeholders/{_key}")
+
+
+def _check_equation(out: _Out, ctx: _SlideCtx, item: dict[str, Any], pointer: str) -> None:
+    """An equation's own record: a numeric mismatch with its code, or LaTeX that nothing checked,
+    is an error until the user acknowledges it (then it is listed as info)."""
+    from present_sdk.omml import OmmlError, latex_to_omath
+
+    cite = item.get("eq_cite") or {}
+    eid = item.get("id")
+    acknowledged = item.get("acknowledged") is True
+    where = f"{cite.get('qualname', '?')} in {cite.get('path', '?')}"
+    check = cite.get("check") or {}
+    if check.get("status") == "mismatch":
+        ce = check.get("counterexample") or {}
+        detail = ""
+        if ce:
+            inputs = ", ".join(f"{k}={v:g}" for k, v in (ce.get("inputs") or {}).items())
+            detail = f" (at {inputs}: equation {ce.get('expected')!r}, code {ce.get('actual')!r})"
+        out.add("eq.mismatch", f"the equation of {where} disagrees with its code{detail}", ctx, eid,
+                "fix the code or the Math: section, then place the equation again; or acknowledge it", pointer,
+                severity="info" if acknowledged else None)  # fmt: skip
+    if cite.get("tier") == "latex":
+        out.add("eq.latex-only", f"the equation of {where} is display-only LaTeX that nothing checks", ctx, eid,
+                "declare it in a Math: section so it is checked against the code, or acknowledge it", pointer,
+                severity="info" if acknowledged else None)  # fmt: skip
+    try:
+        latex_to_omath(cite.get("latex") or "")
+    except OmmlError as exc:
+        out.add("eq.omml-fallback", f"the equation of {where} exports as an image, not a native equation ({exc})",
+                ctx, eid, pointer=pointer)  # fmt: skip
 
 
 def _tables_equal(a: dict[str, Any], b: dict[str, Any]) -> bool:

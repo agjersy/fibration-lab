@@ -1719,6 +1719,36 @@ impl SessionRuntime {
             .map_err(ServiceError::from)
     }
 
+    /// Place the equation of a function on a slide, as a user edit (the UI's
+    /// `slide_place_equation`): the same placement as the agent's `slide.place_equation`
+    /// (extracted and checked by the analysis kernel), written at once against the slide's hash.
+    pub async fn slide_place_equation(
+        &self,
+        deck: &str,
+        slide_id: &str,
+        path: &str,
+        function: &str,
+        placeholder: Option<&str>,
+    ) -> ServiceResult<analyst_deck_protocol::ui::SlideView> {
+        let svc = self.deck(deck).await?;
+        let k = self.kernel().await?;
+        self.sync_debounced().await?;
+        let placed = super::provenance::place_equation(
+            &k,
+            &self.repo,
+            &svc,
+            slide_id,
+            path,
+            function,
+            placeholder,
+        )
+        .await?;
+        let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(placed.slide)
+            .map_err(|e| ServiceError::internal(format!("the placed slide: {e}")))?;
+        svc.slide_update(slide, Some(&placed.hash))
+            .map_err(ServiceError::from)
+    }
+
     // ---- artifact index ----
 
     /// What the session's runs produced, by run id and path (figures, tables, files).

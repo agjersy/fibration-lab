@@ -32,6 +32,12 @@ pub struct ToolSpec {
 /// `slide.place_figure`: place a figure of an analysis run on a slide, cited by its run.
 pub const PLACE_FIGURE: &str = "slide.place_figure";
 
+/// `slide.place_equation`: place the equation of a function on a slide, with its equation record.
+pub const PLACE_EQUATION: &str = "slide.place_equation";
+
+/// The tools that place analysis results on slides (structured decks only).
+pub const PLACE_TOOLS: [&str; 2] = [PLACE_FIGURE, PLACE_EQUATION];
+
 /// Which kinds of decks the project has; the deck tools offered follow from it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeckKinds {
@@ -95,6 +101,16 @@ fn all() -> &'static [ToolSpec] {
             parameters: obj(
                 json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "run_id": {"type": "string"}, "artifact": {"type": "string", "description": "The figure's repo-relative path, as artifacts_list returns it."}, "placeholder": {"type": "string", "description": "The placeholder key to fill; by default the first empty placeholder of the slide's layout that accepts an image."}, "alt": {"type": "string", "description": "Alt text; by default the figure's title."}}),
                 &["slide_id", "run_id", "artifact"],
+            ),
+        });
+        tools.push(ToolSpec {
+            deck: true,
+            name: PLACE_EQUATION,
+            class: ToolClass::Edit,
+            description: "Propose placing the equation of a function on a slide as a native, editable equation: name the source file and the function as eq_extract shows them. The analysis kernel extracts the equation and checks declared ones numerically; the element carries the equation record (LaTeX, tier, check result, function, file, the file's content hash), so the checker flags mismatches and LaTeX-only equations as errors and warns when the source changes.",
+            parameters: obj(
+                json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "path": {"type": "string", "description": "The repo-relative source file."}, "function": {"type": "string", "description": "The function's name or qualified name."}, "placeholder": {"type": "string", "description": "The placeholder key to fill; by default the first empty non-title placeholder that takes text or an image."}}),
+                &["slide_id", "path", "function"],
             ),
         });
         tools
@@ -192,7 +208,7 @@ pub fn defs_for(mode: Mode, decks: DeckKinds) -> Vec<ToolDef> {
             if analyst_deck::tools::CODE_MODE_TOOLS.contains(&t.name) {
                 decks.code
             } else if analyst_deck::tools::STRUCTURED_TOOLS.contains(&t.name)
-                || t.name == PLACE_FIGURE
+                || PLACE_TOOLS.contains(&t.name)
             {
                 decks.structured
             } else {
