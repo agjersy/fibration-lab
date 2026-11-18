@@ -233,15 +233,18 @@ class Helper:
             env = self.env
             if env is None:
                 env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT")}
-            proc = subprocess.Popen(
-                self._argv(req_r, resp_w),
-                cwd=str(self.root) if self.root is not None else tempfile.gettempdir(),
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                pass_fds=(req_r, resp_w),
-                start_new_session=True,
+            argv = self._argv(req_r, resp_w)
+            proc = _spawner.call(
+                lambda: subprocess.Popen(
+                    argv,
+                    cwd=str(self.root) if self.root is not None else tempfile.gettempdir(),
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    pass_fds=(req_r, resp_w),
+                    start_new_session=True,
+                )
             )
         except BaseException:
             for fd in (req_r, req_w, resp_r, resp_w):
@@ -361,6 +364,49 @@ class Helper:
             _kill_group(proc)  # the request in flight sees EOF and returns
         with self._lock:
             self._kill()
+
+
+class _Spawner:
+    """Starts helper processes from one long-lived thread.
+
+    ``bwrap --die-with-parent`` (and ``PR_SET_PDEATHSIG`` in general) kills the child when the
+    *thread* that forked it exits, not the process. The helper is often started by a short-lived
+    thread (the prewarm, a request), so the fork happens on this thread, which lives as long as
+    the kernel process.
+    """
+
+    def __init__(self) -> None:
+        self._jobs: list[tuple[Callable[[], Any], threading.Event, list[Any]]] = []
+        self._cond = threading.Condition()
+        self._thread = threading.Thread(target=self._loop, name="helper-spawner", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            with self._cond:
+                while not self._jobs:
+                    self._cond.wait()
+                fn, done, box = self._jobs.pop(0)
+            try:
+                box.append((True, fn()))
+            except BaseException as exc:  # handed back to the caller
+                box.append((False, exc))
+            done.set()
+
+    def call(self, fn: Callable[[], Any]) -> Any:
+        done = threading.Event()
+        box: list[Any] = []
+        with self._cond:
+            self._jobs.append((fn, done, box))
+            self._cond.notify()
+        done.wait()
+        ok, value = box[0]
+        if not ok:
+            raise value
+        return value
+
+
+_spawner = _Spawner()
 
 
 class _LineReader:
