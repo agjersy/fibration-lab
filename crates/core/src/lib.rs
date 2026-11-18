@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod checkpoint;
+pub mod commands;
 pub mod config;
 pub mod egress;
 pub mod evals;
