@@ -128,6 +128,12 @@ pub fn spawn_line_without_env(line: &[String], env_remove: &[String]) -> Result<
         cmd.env_remove(name);
     }
     guard.apply_tokio(&mut cmd);
+    // Any `uv` the kernel starts (the package listing, a script's own call) uses an
+    // interpreter that is installed and never downloads one.
+    cmd.env(
+        crate::egress::NO_PYTHON_DOWNLOADS.0,
+        crate::egress::NO_PYTHON_DOWNLOADS.1,
+    );
     let mut child = cmd
         .spawn()
         .with_context(|| format!("spawning kernel: {}", line.join(" ")))?;
@@ -232,7 +238,7 @@ pub struct SshStdio {
     pub no_network: bool,
 }
 
-/// Options for every ssh, scp, and rsync-over-ssh invocation: connection multiplexing (when a
+/// Options for every ssh and scp invocation, and for the ssh that git runs for a push: connection multiplexing (when a
 /// control directory is given), batch mode, a connect timeout, and keepalives so a dead
 /// connection (laptop sleep, network change) fails within about 45 s instead of hanging.
 pub fn ssh_options(control_dir: Option<&Path>) -> Vec<String> {
@@ -285,7 +291,12 @@ impl SshStdio {
 impl KernelTransport for SshStdio {
     fn command_line(&self) -> Vec<String> {
         let mut v = ssh_prefix(&self.host, self.control_dir.as_deref());
-        v.push(self.remote_command());
+        // The remote kernel, like every remote command, may not download Python.
+        v.push(format!(
+            "{}{}",
+            crate::egress::remote_env_prefix(),
+            self.remote_command()
+        ));
         v
     }
 
@@ -541,7 +552,7 @@ mod tests {
         assert_eq!(line[15..17], ["--", "lab-gpu"]);
         assert_eq!(
             line[17],
-            "~/.analyst/tooling/.venv/bin/python -m analyst_kernel --python ~/analyst/repo/.venv/bin/python --root ~/analyst/repo --runs-dir ~/.analyst/runs --sandbox auto"
+            "export UV_PYTHON_DOWNLOADS=never; ~/.analyst/tooling/.venv/bin/python -m analyst_kernel --python ~/analyst/repo/.venv/bin/python --root ~/analyst/repo --runs-dir ~/.analyst/runs --sandbox auto"
         );
     }
 
