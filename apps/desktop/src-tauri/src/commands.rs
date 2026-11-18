@@ -47,13 +47,14 @@ pub async fn sessions_list(state: State<'_, AppState>) -> R<Vec<SessionSummary>>
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn session_create(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     repo_abs: String,
     target: Option<String>,
     model: Option<String>,
     init: Option<bool>,
 ) -> R<SessionInfo> {
-    state
+    let info = state
         .workbench
         .create_session(
             &repo_abs,
@@ -62,16 +63,24 @@ pub async fn session_create(
             init.unwrap_or(false),
         )
         .await
-        .map_err(Into::into)
+        .map_err(IpcError::from)?;
+    allow_deck_assets(&app, &state, &info.summary.id);
+    Ok(info)
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn session_open(state: State<'_, AppState>, session: String) -> R<SessionInfo> {
-    state
+pub async fn session_open(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session: String,
+) -> R<SessionInfo> {
+    let info = state
         .workbench
         .open_session(&session)
         .await
-        .map_err(Into::into)
+        .map_err(IpcError::from)?;
+    allow_deck_assets(&app, &state, &session);
+    Ok(info)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -702,6 +711,103 @@ pub async fn dialog_pick_directory(
     }
 }
 
+/// Native open dialog for files (a deck template, references); `null` when cancelled.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn dialog_pick_files(
+    app: tauri::AppHandle,
+    title: Option<String>,
+    filters: Option<Vec<DialogFilter>>,
+    multiple: Option<bool>,
+) -> R<Option<Vec<String>>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app.dialog().file();
+    if let Some(t) = title {
+        dialog = dialog.set_title(t);
+    }
+    for f in filters.unwrap_or_default() {
+        let exts: Vec<&str> = f.extensions.iter().map(String::as_str).collect();
+        dialog = dialog.add_filter(f.name, &exts);
+    }
+    if multiple.unwrap_or(false) {
+        dialog.pick_files(move |p| {
+            let _ = tx.send(p);
+        });
+    } else {
+        dialog.pick_file(move |p| {
+            let _ = tx.send(p.map(|one| vec![one]));
+        });
+    }
+    let picked = rx
+        .await
+        .map_err(|_| IpcError::internal("the file dialog was dropped"))?;
+    match picked {
+        None => Ok(None),
+        Some(files) => files
+            .into_iter()
+            .map(|p| {
+                p.into_path()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .map_err(|e| IpcError::invalid(format!("not a filesystem path: {e}")))
+            })
+            .collect::<R<Vec<String>>>()
+            .map(Some),
+    }
+}
+
+/// One filter of [`dialog_pick_files`]: a label and the file extensions it shows.
+#[derive(serde::Deserialize)]
+pub struct DialogFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+// ---- asset scope ----
+
+/// The folders of a session's decks the webview may load through the asset protocol: each
+/// deck's render cache (slide thumbnails, fidelity renders, layout thumbnails, PDF page images
+/// under `.present/cache/`), its image `assets/`, and its `references/` (image references are
+/// shown as their source page). Nothing else of the repository is opened to the webview here.
+pub fn deck_asset_dirs(repo: &std::path::Path, slugs: &[String]) -> Vec<std::path::PathBuf> {
+    slugs
+        .iter()
+        .filter(|s| analyst_core::service::decks::valid_slug(s).is_ok())
+        .flat_map(|slug| {
+            let root = repo.join("decks").join(slug);
+            [
+                root.join(".present").join("cache"),
+                root.join("assets"),
+                root.join("references"),
+            ]
+        })
+        .collect()
+}
+
+/// Adds the deck folders of an open session to the asset protocol scope (once per folder).
+/// Called when a session is opened or created and when its decks change.
+pub(crate) fn allow_deck_assets(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    session: &str,
+) {
+    use tauri::Manager;
+    let Ok(rt) = rt_of(state, session) else {
+        return;
+    };
+    let slugs: Vec<String> = rt.decks_list().into_iter().map(|d| d.slug).collect();
+    let dirs = deck_asset_dirs(&rt.repo, &slugs);
+    let Ok(mut allowed) = state.asset_dirs.lock() else {
+        return;
+    };
+    let scope = app.asset_protocol_scope();
+    for dir in dirs {
+        if allowed.insert(dir.clone()) {
+            if let Err(e) = scope.allow_directory(&dir, true) {
+                tracing::warn!("asset scope: {}: {e}", dir.display());
+            }
+        }
+    }
+}
+
 // ---- decks (docs/IPC.md section 9) ----
 //
 // Thin glue over the per-deck service of a session: `session` plus `deck` (the slug under
@@ -724,12 +830,19 @@ fn de(e: DeckIpcError) -> IpcError {
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn decks_list(state: State<'_, AppState>, session: String) -> R<Vec<DeckSummary>> {
-    Ok(rt_of(&state, &session)?.decks_list())
+pub async fn decks_list(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session: String,
+) -> R<Vec<DeckSummary>> {
+    let list = rt_of(&state, &session)?.decks_list();
+    allow_deck_assets(&app, &state, &session);
+    Ok(list)
 }
 
 #[tauri::command(rename_all = "snake_case")]
 pub async fn deck_create(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session: String,
     title: String,
@@ -737,14 +850,16 @@ pub async fn deck_create(
     slug: Option<String>,
     code: Option<bool>,
 ) -> R<DeckSummary> {
-    rt_of(&state, &session)?
+    let summary = rt_of(&state, &session)?
         .deck_create(
             slug.as_deref(),
             &title,
             &template_abs,
             code.unwrap_or(false),
         )
-        .map_err(Into::into)
+        .map_err(IpcError::from)?;
+    allow_deck_assets(&app, &state, &session);
+    Ok(summary)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -801,6 +916,24 @@ pub async fn slide_update(
         .await?
         .slide_update(slide, expected_hash.as_deref())
         .map_err(de)
+}
+
+/// Places a figure of a run on a slide as a user edit, cited by its run: the core function of
+/// the agent's `slide.place_figure` (`SessionRuntime::slide_place_figure`).
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_place_figure(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    run_id: String,
+    artifact: String,
+    placeholder: Option<String>,
+) -> R<SlideView> {
+    rt_of(&state, &session)?
+        .slide_place_figure(&deck, &slide_id, &run_id, &artifact, placeholder.as_deref())
+        .await
+        .map_err(Into::into)
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -1211,4 +1344,46 @@ pub async fn artifacts_list(
     limit: Option<u32>,
 ) -> R<Vec<ArtifactEntry>> {
     Ok(rt_of(&state, &session)?.artifacts_list(run_id.as_deref(), kind, limit))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deck_asset_dirs;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn the_asset_scope_covers_each_decks_cache_assets_and_references_only() {
+        let repo = Path::new("/home/u/analysis");
+        let dirs = deck_asset_dirs(repo, &["q3-review".into(), "board".into()]);
+        let want: Vec<PathBuf> = [
+            "decks/q3-review/.present/cache",
+            "decks/q3-review/assets",
+            "decks/q3-review/references",
+            "decks/board/.present/cache",
+            "decks/board/assets",
+            "decks/board/references",
+        ]
+        .iter()
+        .map(|p| repo.join(p))
+        .collect();
+        assert_eq!(dirs, want);
+        // Every folder is inside the repository's `decks/`; the repository itself, its code,
+        // data and outputs, and the deck documents are not opened to the webview.
+        for d in &dirs {
+            assert!(d.starts_with(repo.join("decks")), "{}", d.display());
+            assert!(!d.ends_with("deck"), "{}", d.display());
+        }
+        assert!(!dirs.contains(&repo.to_path_buf()));
+    }
+
+    #[test]
+    fn a_slug_that_could_leave_decks_is_not_added_to_the_asset_scope() {
+        let repo = Path::new("/home/u/analysis");
+        for bad in ["..", "../..", "a/b", "", ".hidden", "UPPER"] {
+            assert!(
+                deck_asset_dirs(repo, &[bad.to_string()]).is_empty(),
+                "slug {bad:?} must be refused"
+            );
+        }
+    }
 }

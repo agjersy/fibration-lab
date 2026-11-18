@@ -20,6 +20,8 @@ pub struct Subscription {
 pub struct AppState {
     pub workbench: Arc<Workbench>,
     pub subscriptions: Mutex<HashMap<String, Subscription>>,
+    /// Folders already added to the asset protocol scope (deck caches, assets, references).
+    pub asset_dirs: Mutex<std::collections::HashSet<std::path::PathBuf>>,
 }
 
 impl AppState {
@@ -27,6 +29,7 @@ impl AppState {
         AppState {
             workbench,
             subscriptions: Mutex::new(HashMap::new()),
+            asset_dirs: Mutex::new(Default::default()),
         }
     }
 
@@ -133,6 +136,7 @@ pub const COMMANDS: &[&str] = &[
     "terminal_resize",
     "terminal_close",
     "dialog_pick_directory",
+    "dialog_pick_files",
     "decks_list",
     "deck_create",
     "deck_open",
@@ -145,6 +149,7 @@ pub const COMMANDS: &[&str] = &[
     "slide_duplicate",
     "slide_move",
     "slide_lock",
+    "slide_place_figure",
     "slide_preview_png",
     "chart_compute",
     "deck_code_read",
@@ -325,6 +330,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             terminal_resize,
             terminal_close,
             dialog_pick_directory,
+            dialog_pick_files,
             decks_list,
             deck_create,
             deck_open,
@@ -337,6 +343,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             slide_duplicate,
             slide_move,
             slide_lock,
+            slide_place_figure,
             slide_preview_png,
             chart_compute,
             deck_code_read,
@@ -435,6 +442,7 @@ mod tests {
         "terminal_resize",
         "terminal_close",
         "dialog_pick_directory",
+        "dialog_pick_files",
         "decks_list",
         "deck_create",
         "deck_open",
@@ -447,6 +455,7 @@ mod tests {
         "slide_duplicate",
         "slide_move",
         "slide_lock",
+        "slide_place_figure",
         "slide_preview_png",
         "chart_compute",
         "deck_code_read",

@@ -3,6 +3,7 @@ import { backend, errorMessage, getBackend, isIpcError } from "../ipc";
 import type { Attachment, ConversationId, ProposalDecision, ProposalId, SessionId } from "../ipc";
 import { flushAgentText, useChat } from "./chat";
 import { isSubscribed, subscribeSession, unsubscribeSession } from "./dispatcher";
+import { useDecks } from "./decks";
 import { dropSessionFigures } from "./figureCache";
 import { detectLineSeparator, dirtyPaths, snapshotBuffer, useFiles } from "./files";
 import { usePackages } from "./packages";
@@ -109,6 +110,7 @@ export async function closeSession(session: SessionId): Promise<boolean> {
   for (const id of useTerminals.getState().clearSession(session)) dropTerminal(id);
   useFiles.getState().dropSession(session);
   useRuns.getState().dropSession(session);
+  useDecks.getState().dropSession(session);
   dropSessionFigures(session);
   usePackages.getState().dropSession(session);
   flushAgentText();

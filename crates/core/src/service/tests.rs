@@ -2309,6 +2309,52 @@ print("wrote", *sys.argv[1:])
         vec![asset.trim_start_matches("assets/").to_string()]
     );
 
+    // The UI places a figure as a direct user action (`slide_place_figure`): the same core
+    // function, written at once against the slide's hash, the placeholder chosen from the
+    // layout, the same content-addressed asset, the same run citation.
+    let other = deck
+        .slide_create(Some(&slide_id), "Title and Content")
+        .await
+        .unwrap();
+    let other_id = other.slide.id.to_string();
+    let view = fx
+        .rt
+        .slide_place_figure("q3", &other_id, &run_id, &fig.path, None)
+        .await
+        .unwrap();
+    let placed_doc = serde_json::to_value(&view.slide).unwrap();
+    let (_, ui_image) = placed_doc["placeholders"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, v)| v["type"] == "image")
+        .expect("an image placeholder was filled");
+    assert_eq!(ui_image["asset"], asset);
+    assert_eq!(ui_image["run_cite"]["run_id"], run_id.as_str());
+    assert_eq!(ui_image["run_cite"]["artifact"], fig.path.as_str());
+    assert_eq!(ui_image["run_cite"]["args"], json!(["--region", "north"]));
+    assert!(ui_image["id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("e-")));
+    let on_disk: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fx.rt
+                .repo
+                .join(crate::service::decks::slide_rel("q3", &other_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(on_disk["placeholders"], placed_doc["placeholders"]);
+    // Data is refused here too.
+    let err = fx
+        .rt
+        .slide_place_figure("q3", &other_id, &run_id, &csv.path, Some("body"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, IpcErrorCode::Invalid, "{err}");
+    deck.slide_delete(&other_id).unwrap();
+
     // The checker: not stale while the code is the code the run executed (changing the
     // deck does not change that) ...
     let stale = |diags: &[Value]| -> Vec<Value> {

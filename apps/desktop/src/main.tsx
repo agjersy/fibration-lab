@@ -1,6 +1,8 @@
 import "dockview-react/dist/styles/dockview.css";
 import "./styles/theme.css";
 import "./styles/app.css";
+import "./styles/slide.css";
+import "./styles/deck.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";

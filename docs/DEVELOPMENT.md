@@ -125,7 +125,7 @@ Both deck tasks must PASS; the other six deck tasks need a real model.
 
 ## Desktop app (phase 1)
 
-The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust, thin commands over `analyst_core::service`, including the deck commands of IPC.md section 9) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`, and the deck types from `present/crates/protocol` by `cargo test -p analyst-deck-protocol` into `apps/desktop/src/ipc/generated/deck/`. The shell embeds `apps/desktop/dist`, so run `pnpm build` in `apps/desktop` before `cargo clippy` or `cargo test -p analyst-desktop`. `present/apps/desktop` is the old deck renderer, kept with its mock backend as porting material; its own `pnpm typecheck && pnpm lint && pnpm test && pnpm build` still pass.
+The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust, thin commands over `analyst_core::service`, including the deck commands of IPC.md section 9) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`, and the deck types from `present/crates/protocol` by `cargo test -p analyst-deck-protocol` into `apps/desktop/src/ipc/generated/deck/`. The shell embeds `apps/desktop/dist`, so run `pnpm build` in `apps/desktop` before `cargo clippy` or `cargo test -p analyst-desktop`. There is one renderer; the deck workbench's panels are part of it (`src/deck/`, `src/ui/deck/`, `src/state/decks.ts`).
 
 ```sh
 cd apps/desktop

@@ -3,6 +3,8 @@
 // `resync`. Nothing here waits for the kernel: data that needs none
 // (tree, runs, figures, transcripts) loads on its own, and the index follows
 // when `kernel_state: ready` or `index_changed` arrives (IPC.md section 7).
+import { reloadDeck } from "./deckActions";
+import { useDecks } from "./decks";
 import { backend, isIpcError } from "../ipc";
 import type { ConversationId, RunId, SessionId, SessionInfo } from "../ipc";
 import { flushAgentText, useChat } from "./chat";
@@ -188,6 +190,14 @@ function report(results: PromiseSettledResult<unknown>[]): void {
   if (failed) notifyError(failed.reason);
 }
 
+/** The decks of a session that have been opened in the deck panels. */
+function openDecks(session: SessionId): string[] {
+  const prefix = `${session}\n`;
+  return Object.keys(useDecks.getState().decks)
+    .filter((k) => k.startsWith(prefix))
+    .map((k) => k.slice(prefix.length));
+}
+
 /** Initial load after open or create. Each part is independent; one failing does not hold back the others. */
 export async function loadSessionData(session: SessionId): Promise<void> {
   const b = backend();
@@ -196,6 +206,7 @@ export async function loadSessionData(session: SessionId): Promise<void> {
     b.invoke("fs_tree", { session, depth: 1 }).then((tree) => useFiles.getState().setTree(session, "", tree)),
     b.invoke("runs_list", { session, limit: 100 }).then((list) => useRuns.getState().setRuns(session, list)),
     b.invoke("figures_list", { session }).then((groups) => useRuns.getState().setFigures(session, groups)),
+    b.invoke("decks_list", { session }).then((list) => useDecks.getState().setList(session, list)),
     info ? loadTranscript(session, info.active_conversation) : Promise.resolve(),
     refreshIndex(session),
   ]);
@@ -228,6 +239,8 @@ export async function resyncSession(session: SessionId): Promise<void> {
     b.invoke("runs_list", { session, limit: 100 }).then((list) => useRuns.getState().setRuns(session, list)),
     b.invoke("figures_list", { session }).then((groups) => useRuns.getState().setFigures(session, groups)),
     loadTranscript(session, info.active_conversation, true),
+    b.invoke("decks_list", { session }).then((list) => useDecks.getState().setList(session, list)),
+    ...openDecks(session).map((deck) => reloadDeck(session, deck)),
     refreshIndex(session),
     ...visibleDirs(session).map((dir) => loadDir(session, dir)),
     checkExternalChanges(session, Object.keys(useFiles.getState().buffers[session] ?? {})),

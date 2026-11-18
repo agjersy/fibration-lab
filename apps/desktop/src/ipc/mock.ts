@@ -13,13 +13,17 @@
 import type { Backend } from "./backend";
 import type { Commands } from "./commands";
 import { applyPolicyPatch } from "../state/policyPresets";
-import { makeDeckHandlers } from "./mock/decks";
+import { slideTitle, withTitle } from "../deck/model";
+import { makeDeckMock } from "./mock/decks";
+import type { DeckAgentApi } from "./mock/decks";
 import { unifiedDiff } from "./mock/diff";
 import { decayPng, residualsPng, simParamsFromArgs, type MockPng, type SimParams } from "./mock/figure";
 import { DOUBLE_EXP_SNIPPET, RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED, fixtureFiles } from "./mock/fixtures";
 import { extractEquations, indexLibrary, parseScript } from "./mock/indexer";
 import type {
   Artifact,
+  ArtifactEntry,
+  Deck,
   ConversationId,
   ConversationSummary,
   Diagnostic,
@@ -291,6 +295,24 @@ export class MockBackend implements Backend {
   private readonly layouts = new Map<SessionId, string>();
   private readonly providers = defaultProviders();
   private seq = 0;
+  private readonly deckMock = makeDeckMock({
+    requireOpen: (session) => {
+      this.requireOpen(session);
+    },
+    emit: (session, event) => this.emit(session, event),
+    nextId: () => ++this.seq,
+    later: (ms) => this.stream(ms),
+    artifacts: (session) => this.artifacts(session),
+    figureUrl: (session, path) => {
+      const content = this.sessions.get(session)?.files.get(path);
+      if (content === undefined) return null;
+      const data = fileBase64(path, content);
+      return `data:${data.mime};base64,${data.base64}`;
+    },
+  });
+  private get deckAgent(): DeckAgentApi {
+    return this.deckMock.agent;
+  }
 
   constructor(opts: MockOptions = {}) {
     this.latency = opts.latency ?? [50, 300];
@@ -578,6 +600,27 @@ export class MockBackend implements Backend {
     }
     entries.sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === "dir" ? -1 : 1));
     return entries;
+  }
+
+  /** The artifact index of a session: every figure its runs wrote. */
+  private artifacts(session: SessionId): ArtifactEntry[] {
+    const s = this.sessions.get(session);
+    if (!s) return [];
+    return s.runs.flatMap((r) =>
+      r.figures.map((f) => ({
+        run_id: r.view.meta.run_id,
+        path: f.path,
+        kind: "figure" as const,
+        script: r.view.meta.script,
+        args: [...r.view.meta.args],
+        tree_hash: null,
+        stale: false,
+        title: f.sidecar?.title ?? null,
+        size: f.size,
+        created_at: f.created_at,
+        target: r.view.target,
+      })),
+    );
   }
 
   private figureGroups(s: MockSession, limit?: number): FigureGroup[] {
@@ -872,6 +915,8 @@ export class MockBackend implements Backend {
       return this.finishTurn(s, conv, turn, "Ran decay_sim.py twice (tau 1.0 and 3.0); fits agree with inputs.", [], runs, figures);
     }
 
+    if (mode === "slides" || mode === "polish" || mode === "outline") return this.runDeckTurn(s, conv, turn);
+
     // build mode
     await this.toolCall(s, conv, turn, "lib.index", {}, "2 public functions in analysis: single_exp, residuals");
     await this.streamText(s, conv, turn, "The library already has `single_exp` and `residuals`, so I will add a `double_exp` model next to them rather than a new module. ");
@@ -929,6 +974,58 @@ export class MockBackend implements Backend {
       [view.meta.run_id],
       run.figures.map((f) => f.path),
     );
+  }
+
+  /** Slides, polish and outline modes: one slide proposal (a new action title), then the checker. */
+  private async runDeckTurn(s: MockSession, conv: MockConversation, turn: TurnId): Promise<void> {
+    const sid = s.info.id;
+    const target = this.deckAgent.firstSlide(sid);
+    if (!target) {
+      await this.streamText(s, conv, turn, "There is no slide to work on yet. Create a deck from a template and add a slide, then ask again.");
+      return this.finishTurn(s, conv, turn, "No deck or slide to change.", [], [], []);
+    }
+    const { deck, slide } = target;
+    await this.toolCall(s, conv, turn, "deck.read_slide", { deck, slide_id: slide.id }, `slide ${slide.id}: ${slideTitle(slide) || "(no title)"}`);
+    await this.streamText(s, conv, turn, "An action title states the finding, so I will retitle the first slide. ");
+    if (conv.cancelled) return this.finishTurn(s, conv, turn, "Cancelled by user.", [], [], []);
+    const after: Deck.Slide = withTitle(slide, "Decay constant recovered within 2% of the input");
+    const proposal: ProposalView = {
+      id: `p${++s.counters.proposal}`,
+      conversation: conv.summary.id,
+      kind: "slide-update",
+      path: `decks/${deck}/deck/slides/${slide.id}.json`,
+      summary: `Retitle slide 1: “${slideTitle(after)}”`,
+      original: null,
+      proposed: null,
+      diff: null,
+      command: null,
+      packages: null,
+      message: null,
+      in_scope: true,
+      reason: s.info.policy.edits === "review" ? "review" : "ask",
+      deck,
+      slide_ids: [slide.id],
+      before: slide,
+      after,
+    };
+    conv.transcript.push({ ts: nowIso(), type: "proposal", id: proposal.id, kind: "slide-update", summary: proposal.summary });
+    const decision = await this.waitForProposal(s, proposal);
+    if (decision.decision === "reject") {
+      await this.streamText(s, conv, turn, "Understood, the slide stays as it is.");
+      return this.finishTurn(s, conv, turn, "Slide proposal rejected; the deck is unchanged.", [], [], []);
+    }
+    let accepted = after;
+    if (decision.content) {
+      try {
+        accepted = { ...(JSON.parse(decision.content) as Deck.Slide), id: slide.id };
+      } catch {
+        accepted = after;
+      }
+    }
+    this.deckAgent.applySlide(sid, deck, accepted);
+    await this.streamText(s, conv, turn, decision.content ? "Applied your edited version of the slide. " : "Applied the new title. ");
+    await this.toolCall(s, conv, turn, "check.run", { deck }, JSON.stringify({ errors: 0, warnings: 0, findings: [] }));
+    return this.finishTurn(s, conv, turn, `Retitled slide 1 of ${deck}; the checker reports no findings.`, [proposal.path ?? ""], [], []);
   }
 
   // ---- terminals ----
@@ -1538,14 +1635,9 @@ export class MockBackend implements Backend {
     // No native picker without Tauri; the dialog falls back to a typed path.
     dialog_pick_directory: () => null,
 
+    dialog_pick_files: () => null,
+
     // Decks, history, and the artifact index (IPC.md section 9).
-    ...makeDeckHandlers({
-      requireOpen: (session) => {
-        this.requireOpen(session);
-      },
-      emit: (session, event) => this.emit(session, event),
-      nextId: () => ++this.seq,
-      later: (ms) => this.stream(ms),
-    }),
+    ...this.deckMock.handlers,
   };
 }

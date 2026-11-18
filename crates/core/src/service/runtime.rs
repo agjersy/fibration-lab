@@ -1688,6 +1688,37 @@ impl SessionRuntime {
         self.decks.open(slug).await
     }
 
+    /// Place a figure of one of the session's runs on a slide, as a user edit (the UI's
+    /// `slide_place_figure`): the same placement as the agent's `slide.place_figure`, written
+    /// at once against the slide's hash as it was read (a slide lock holds the agent back, not
+    /// the user, as for `slide_update`).
+    pub async fn slide_place_figure(
+        &self,
+        deck: &str,
+        slide_id: &str,
+        run_id: &str,
+        artifact: &str,
+        placeholder: Option<&str>,
+    ) -> ServiceResult<analyst_deck_protocol::ui::SlideView> {
+        let svc = self.deck(deck).await?;
+        let placed = super::artifacts::place_figure(
+            &self.runs,
+            &self.session_snapshot(),
+            &self.repo,
+            &svc,
+            slide_id,
+            run_id,
+            artifact,
+            placeholder,
+            None,
+        )
+        .await?;
+        let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(placed.slide)
+            .map_err(|e| ServiceError::internal(format!("the placed slide: {e}")))?;
+        svc.slide_update(slide, Some(&placed.hash))
+            .map_err(ServiceError::from)
+    }
+
     // ---- artifact index ----
 
     /// What the session's runs produced, by run id and path (figures, tables, files).

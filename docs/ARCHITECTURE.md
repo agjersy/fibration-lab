@@ -593,7 +593,7 @@ Configuration layering, lowest to highest precedence: built-in defaults, `~/.ana
 
 ## 6. User interface
 
-The layout follows Zed's shape so the muscle memory transfers, with analysis panels added.
+One window, one renderer (`apps/desktop/src`), one dock for both workbenches. The layout follows Zed's shape so the muscle memory transfers, with the analysis panels and the deck panels added to the same `dockview` instance; the agent chat, command palette and keymap, settings, provider and model picker, and theme are shared.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -625,6 +625,14 @@ Panels and their primary interactions:
 | Packages | Installed list on the session's target, search and add, remove, sync, Python version. Pending agent requests show here too. |
 | Preview | Markdown or PDF. Follows the active document. |
 | Terminal / Run output / Diagnostics | Bottom dock. Run output shows structured runs with stdout, stderr, target, and artifact links. |
+| Decks | Sidebar view: the session's decks (`decks/<slug>/`) and the New deck dialog (title, template file from the native open dialog, structured or code mode). Opening a deck shows it in the deck panels below; they follow the session's active deck. |
+| Slides | The slide rail: live-preview thumbnails (the fidelity render when current), check and number badges, locks, drag to reorder, add, duplicate, delete. |
+| Canvas | The selected slide drawn from the deck document and template description; click a text element to edit it in place (`slide_update` with the expected hash), layout picker, lock toggle, reference citation markers (open Sources), run citation badges and stale markers. |
+| Outline | The storyline as an editable table: action title (the slide title), key message (`.present/outline.json`), layout, sources (references and runs). |
+| References / Sources | Reference list with extraction status, add through the native dialog, remove unused, search; Sources shows the passage, table cells, or page image behind a clicked citation. |
+| Checks / Notes / Exports | Deck checker findings by slide and rule (click to select the slide); speaker notes of the selected slide; export pptx, pdf, png or outline, export history, reveal and open. |
+
+**Both workbenches in one control loop.** The one agent chat has six modes (plan, build, run only, outline, slides, polish); slide proposals render as before/after cards drawn with the canvas's renderer, next to code diff cards, with accept, reject, and accept-modified through `proposal_respond`; deck check and export results show as cards. **Verification is one click away:** an image element placed from a run carries a `run_cite`, and its badge selects that run in the Runs view, the figure in the Figures panel, and the run output with its script and arguments; a `stale` finding marks the element and lists in Checks. The Figures panel's "Place on slide" puts the shown figure on the selected slide as a user action (`slide_place_figure`). **Mixed docking:** every panel of either workbench can be dragged into any group, so a slide can sit beside its source figure and equation, or the editor beside the slide it feeds; the layout is saved per session. The renderer holds no authority: every change goes through the commands of IPC.md, and deck images load through the asset protocol (deck caches, assets, references in the scope) with no network in the renderer.
 
 Docking uses `dockview`: any panel can be dragged into any dock group or into a floating group. Undocking into a separate OS window creates a second Tauri `WebviewWindow` hosting that panel, subscribed to the same session's event channel; this is what makes a figures-only window on a second monitor work.
 

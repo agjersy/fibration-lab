@@ -1,9 +1,12 @@
 // The deck commands of the MockBackend (IPC.md section 9): decks of an open session kept in
 // memory, with the event shapes of the real service (`{type: "deck", deck, event}` on the
-// session channel, `decks_changed` when a deck is created). There is no deck UI yet; this
-// keeps the command table complete so the renderer can be built and tested against it.
+// session channel, `decks_changed` when a deck is created). Every deck uses the template
+// description of the corp template fixture (the real output of `template inspect`), so the deck
+// panels draw real layouts.
+import { registerDeckFile } from "../../deck/files";
 import type { Commands } from "../commands";
-import type { CheckpointView, Deck, DeckSummary, IpcError, SessionEvent, SessionId, TaskId } from "../types";
+import type { ArtifactEntry, CheckpointView, Deck, DeckSummary, IpcError, SessionEvent, SessionId, TaskId } from "../types";
+import { TEMPLATE } from "./deck/fixtures";
 
 type DeckCommand =
   | "decks_list"
@@ -18,6 +21,7 @@ type DeckCommand =
   | "slide_duplicate"
   | "slide_move"
   | "slide_lock"
+  | "slide_place_figure"
   | "slide_preview_png"
   | "chart_compute"
   | "deck_code_read"
@@ -54,6 +58,18 @@ export interface DeckMockEnv {
   nextId: () => number;
   /** Resolves after a simulated delay. */
   later: (ms: number) => Promise<void>;
+  /** What the session's runs produced (the artifact index). */
+  artifacts: (session: SessionId) => ArtifactEntry[];
+  /** A loadable URL of a run's figure, for placing it on a slide. */
+  figureUrl: (session: SessionId, path: string) => string | null;
+}
+
+/** What the mock agent needs to propose slide changes. */
+export interface DeckAgentApi {
+  /** The first slide of the session's first deck. */
+  firstSlide(session: SessionId): { deck: string; slide: Deck.Slide } | null;
+  /** Writes an accepted slide proposal (`by: "agent"`, as the service reports it). */
+  applySlide(session: SessionId, deck: string, slide: Deck.Slide): void;
 }
 
 interface MockDeck {
@@ -77,26 +93,17 @@ function hashOf(value: unknown): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-const LAYOUTS = ["Title Slide", "Title and Content", "Section Header", "Closing"];
+const LAYOUTS = TEMPLATE.masters.flatMap((m) => m.layouts);
 
 function template(name: string): Deck.TemplateDescription {
-  return {
-    path: `template/${name}`,
-    sha256: hashOf(name),
-    slide_size: { cx: 12192000, cy: 6858000 },
-    theme: { name: "Office", colors: { dk1: "000000", lt1: "FFFFFF", accent1: "4472C4" }, fonts: { major: "Calibri Light", minor: "Calibri" } },
-    masters: [
-      {
-        name: "Office Theme",
-        layouts: LAYOUTS.map((layout, index) => ({ name: layout, master: "Office Theme", index, placeholders: [], usable: true })),
-      },
-    ],
-    table_styles: [],
-    fonts_missing: [],
-  };
+  return { ...structuredClone(TEMPLATE), path: `template/${name}` };
 }
 
 export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
+  return makeDeckMock(env).handlers;
+}
+
+export function makeDeckMock(env: DeckMockEnv): { handlers: DeckHandlers; agent: DeckAgentApi } {
   const decks = new Map<SessionId, Map<string, MockDeck>>();
   const checkpoints = new Map<SessionId, CheckpointView[]>();
 
@@ -156,17 +163,36 @@ export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
       numbers: { green: 0, amber: 0, red: 0, grey: 0 },
     };
   };
-  const changed = (session: SessionId, d: MockDeck, changedIds: string[], removed: string[] = []): void => {
+  const changed = (session: SessionId, d: MockDeck, changedIds: string[], removed: string[] = [], by = "user"): void => {
     d.summary.slides = order(d).length;
-    emitDeck(session, d.summary.slug, { type: "deck_changed", deck: structuredClone(d.deck), changed: changedIds, removed, by: "user" });
+    emitDeck(session, d.summary.slug, { type: "deck_changed", deck: structuredClone(d.deck), changed: changedIds, removed, by });
   };
-  const newSlide = (layout: string): Deck.Slide => ({
-    id: `s-${env.nextId().toString(36).padStart(6, "0")}`,
-    kind: "layout",
-    layout,
-    placeholders: { title: { type: "text", id: `e-${env.nextId()}`, text: { paragraphs: [{ runs: [{ t: "" }] }] } } },
-    elements: [],
-  });
+  const newSlide = (layout: string): Deck.Slide => {
+    const titleKey = LAYOUTS.find((l) => l.name === layout)?.placeholders.find((p) => p.type === "title" || p.type === "ctrTitle")?.key;
+    return {
+      id: `s-${env.nextId().toString(36).padStart(6, "0")}`,
+      kind: "layout",
+      layout,
+      placeholders: titleKey ? { [titleKey]: { type: "text", id: `e-${env.nextId()}`, text: { paragraphs: [{ runs: [{ t: "" }] }] } } } : {},
+      elements: [],
+    };
+  };
+  /** Image elements whose run citation is stale (the run's artifact is stale in the index). */
+  const staleFindings = (session: SessionId, d: MockDeck): Deck.Diagnostic[] => {
+    const stale = new Set(env.artifacts(session).filter((a) => a.stale).map((a) => `${a.run_id}\n${a.path}`));
+    const out: Deck.Diagnostic[] = [];
+    order(d).forEach((id, index) => {
+      const slide = d.slides.get(id)?.slide;
+      if (!slide) return;
+      const contents = [...Object.values(slide.placeholders), ...slide.elements.map((e) => e.content)];
+      for (const c of contents) {
+        if (c && c.type === "image" && c.run_cite && stale.has(`${c.run_cite.run_id}\n${c.run_cite.artifact}`)) {
+          out.push({ rule: "stale", severity: "warn", message: `the figure comes from run ${c.run_cite.run_id}; the code has changed since`, slide_id: id, element_id: c.id, slide_index: index });
+        }
+      }
+    });
+    return out;
+  };
   const insert = (d: MockDeck, id: string, after?: string, section?: string): void => {
     for (const s of d.deck.sections) s.slides = s.slides.filter((x) => x !== id);
     if (after) {
@@ -186,7 +212,7 @@ export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
     target.slides.push(id);
   };
 
-  return {
+  const handlers: DeckHandlers = {
     decks_list: ({ session }) => [...of(session).values()].map((d) => structuredClone(d.summary)),
 
     deck_create: ({ session, title, template_abs, slug, code }) => {
@@ -237,7 +263,7 @@ export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
 
     template_thumbnails: ({ session, deck }) => {
       deckOf(session, deck);
-      return LAYOUTS.map((layout) => ({ layout, png: "" }));
+      return LAYOUTS.map((l) => ({ layout: l.name, png: "" }));
     },
 
     template_replace: ({ session, deck, template_abs }) => {
@@ -260,7 +286,6 @@ export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
       const entry = d.slides.get(slide.id);
       if (!entry) throw ipcError("not_found", `no slide ${slide.id}`);
       if (expected_hash && expected_hash !== entry.hash) throw ipcError("conflict", `slide ${slide.id} changed since it was read`);
-      if (entry.slide.locked) throw ipcError("policy_denied", `slide ${slide.id} is locked`);
       d.slides.set(slide.id, { slide: structuredClone(slide), hash: hashOf(slide) });
       changed(session, d, [slide.id]);
       return view(d, slide.id);
@@ -320,6 +345,35 @@ export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
       return null;
     },
 
+    slide_place_figure: ({ session, deck, slide_id, run_id, artifact, placeholder }) => {
+      const d = deckOf(session, deck);
+      const entry = d.slides.get(slide_id);
+      if (!entry) throw ipcError("not_found", `no slide ${slide_id}`);
+      const a = env.artifacts(session).find((x) => x.run_id === run_id && x.path === artifact);
+      if (!a) throw ipcError("not_found", `run \`${run_id}\` has no artifact \`${artifact}\``);
+      const ext = artifact.split(".").pop()?.toLowerCase() ?? "";
+      if (a.kind !== "figure" || !["png", "svg", "jpg", "jpeg", "gif"].includes(ext)) throw ipcError("invalid", `\`${artifact}\` is not an image a slide can show; only figures are placed`);
+      const layout = LAYOUTS.find((l) => l.name === entry.slide.layout);
+      const candidates = (layout?.placeholders ?? []).filter((p) => p.accepts.includes("image")).map((p) => p.key);
+      const key = placeholder ?? candidates.find((k) => !entry.slide.placeholders[k] || entry.slide.placeholders[k]?.type === "empty");
+      if (!key) throw ipcError("invalid", `layout "${entry.slide.layout}" has no free placeholder for an image`);
+      const asset = `assets/${hashOf(`${run_id}/${artifact}`).padEnd(16, "0")}.${ext}`;
+      const url = env.figureUrl(session, artifact);
+      if (url) registerDeckFile(session, deck, asset, url);
+      const id = `e-${env.nextId()}`;
+      const slide: Deck.Slide = {
+        ...structuredClone(entry.slide),
+        placeholders: {
+          ...structuredClone(entry.slide.placeholders),
+          [key]: { type: "image", id, asset, alt: a.title ?? `Figure from ${a.script}`, run_cite: { run_id, artifact, script: a.script, args: [...a.args], ...(a.tree_hash ? { tree_hash: a.tree_hash } : {}) } },
+        },
+      };
+      if (!d.assets.some((x) => x.path === asset)) d.assets.push({ path: asset, sha256: hashOf(asset), width: 800, height: 600 });
+      d.slides.set(slide_id, { slide, hash: hashOf(slide) });
+      changed(session, d, [slide_id]);
+      return view(d, slide_id);
+    },
+
     slide_preview_png: ({ session, deck, slide_id }) => {
       const d = deckOf(session, deck);
       if (!d.slides.has(slide_id)) throw ipcError("not_found", `no slide ${slide_id}`);
@@ -377,10 +431,7 @@ export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
       return task(session, deck, "Rendering slides", () => `${order(d).length} slides rendered`);
     },
 
-    deck_check_run: ({ session, deck }) => {
-      deckOf(session, deck);
-      return [];
-    },
+    deck_check_run: ({ session, deck }) => staleFindings(session, deckOf(session, deck)),
 
     refs_list: ({ session, deck }) => structuredClone(deckOf(session, deck).refs),
 
@@ -512,9 +563,29 @@ export function makeDeckHandlers(env: DeckMockEnv): DeckHandlers {
       return structuredClone(cp);
     },
 
-    artifacts_list: ({ session }) => {
+    artifacts_list: ({ session, run_id, kind, limit }) => {
       of(session);
-      return [];
+      const list = env.artifacts(session).filter((a) => (!run_id || a.run_id === run_id) && (!kind || a.kind === kind));
+      return structuredClone(limit ? list.slice(0, limit) : list);
     },
   };
+
+  const agent: DeckAgentApi = {
+    firstSlide: (session) => {
+      const m = decks.get(session);
+      if (!m) return null;
+      for (const d of m.values()) {
+        const id = order(d)[0];
+        const entry = id ? d.slides.get(id) : undefined;
+        if (entry) return { deck: d.summary.slug, slide: structuredClone(entry.slide) };
+      }
+      return null;
+    },
+    applySlide: (session, deck, slide) => {
+      const d = deckOf(session, deck);
+      d.slides.set(slide.id, { slide: structuredClone(slide), hash: hashOf(slide) });
+      changed(session, d, [slide.id], [], "agent");
+    },
+  };
+  return { handlers, agent };
 }
