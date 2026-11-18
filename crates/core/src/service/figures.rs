@@ -106,7 +106,9 @@ pub fn figure_view(repo: &Path, file: &Path, run_id: &str, script: &str) -> Opti
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| mtime_rfc3339(file));
     Some(FigureView {
-        file_abs: None,
+        // The file is on this machine (a local run's output, or a remote figure already
+        // pulled back), so the renderer loads it through the asset protocol.
+        file_abs: Some(file.to_string_lossy().to_string()),
         run_id: run_id.to_string(),
         script: script.to_string(),
         path: rel,

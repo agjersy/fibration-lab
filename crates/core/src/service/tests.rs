@@ -531,6 +531,18 @@ async fn watcher_reports_changes_and_terminal_runs() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].run.meta.run_id, "terminal-20260101-000000-abcdef");
     assert_eq!(groups[0].figures.len(), 1);
+    // A local figure travels by path (asset protocol), not as base64.
+    assert_eq!(
+        groups[0].figures[0]
+            .file_abs
+            .as_deref()
+            .map(std::path::PathBuf::from),
+        Some(
+            fx.rt
+                .repo
+                .join("out/terminal/20260101-000000-abcdef/figures/fig-1.png")
+        )
+    );
     let data = fx
         .rt
         .figure_data("out/terminal/20260101-000000-abcdef/figures/fig-1.png")
