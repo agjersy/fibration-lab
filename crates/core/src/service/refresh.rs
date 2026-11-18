@@ -406,8 +406,26 @@ pub async fn refresh_slide(
                     Ok(()) => true,
                     Err(e) => {
                         // The slide changed since the proposal was made (or the document is
-                        // invalid): the proposal resolves as rejected and the slide is untouched.
+                        // invalid): the proposal resolves as rejected, the slide is untouched,
+                        // and the user is told so, with the offer to refresh again.
                         tracing::warn!("refreshing {deck}/{slide_id}: {e}");
+                        let message = if e.code == analyst_protocol::ui::IpcErrorCode::Conflict {
+                            format!(
+                                "Slide {slide_id} of {deck} changed after the refresh was proposed, so the refresh was not applied. Refresh again to propose it against the current slide."
+                            )
+                        } else {
+                            format!(
+                                "The refresh of slide {slide_id} of {deck} could not be applied: {}. Refresh again to propose it anew.",
+                                e.message
+                            )
+                        };
+                        this.emit(SessionEvent::RefreshFailed {
+                            conversation: conversation.clone(),
+                            proposal_id: proposal_id.clone(),
+                            deck: deck.clone(),
+                            slide_id: slide_id.clone(),
+                            message,
+                        });
                         false
                     }
                 }

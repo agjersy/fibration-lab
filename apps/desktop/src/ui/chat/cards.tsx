@@ -7,6 +7,7 @@ import type { ChatItem } from "../../state/chat";
 import { useRuns } from "../../state/runs";
 import { useVisibleOnce } from "../common/useVisibleOnce";
 import { compactJson, formatDuration, shortArgs } from "../common/format";
+import { refreshFromAnalysis } from "../../state/deckActions";
 import { acceptProposal, rejectProposal } from "../editor/review";
 import { openFile, openProposal, showPanel } from "../workbench/controller";
 
@@ -174,6 +175,31 @@ export const SummaryCard = memo(function SummaryCard({ summary }: { summary: Tur
           ) : null}
         </div>
       ) : null}
+    </div>
+  );
+});
+
+/** An accepted refresh that could not be written because the slide changed meanwhile. */
+export const RefreshFailedCard = memo(function RefreshFailedCard({ session, deck, slideId, message }: { session: SessionId; deck: string; slideId: string; message: string }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="card error" data-testid="refresh-failed-card">
+      <div className="card-header" style={{ cursor: "default" }}>
+        <span className="badge error">refresh not applied</span>
+        <span className="grow">{message}</span>
+        <button
+          type="button"
+          className="small"
+          disabled={busy}
+          data-testid="refresh-again"
+          onClick={() => {
+            setBusy(true);
+            void refreshFromAnalysis(session, deck, slideId).finally(() => setBusy(false));
+          }}
+        >
+          Refresh again
+        </button>
+      </div>
     </div>
   );
 });

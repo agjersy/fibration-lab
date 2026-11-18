@@ -255,6 +255,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 
 - `{ type: "deck"; deck: string; event: Deck.DeckEvent }`: one deck's event. `Deck.DeckEvent` is `deck_changed` (deck document, changed and removed slide ids, `by`), `slide_view`, `diagnostics` (per slide), `refs_changed`, `build_output`, `export_done`, `kernel_state`, `task_progress`, `task_done`, `info_changed`. Deck commands that return a `TaskId` finish with a deck `task_done` (task ids `deck-task-<n>`), not the session-level `task_done`.
 - `{ type: "decks_changed"; decks: DeckSummary[] }`: a deck was created, or a checkpoint restore changed the repository.
+- `{ type: "refresh_failed"; conversation; proposal_id; deck; slide_id; message }`: an accepted refresh from analysis (`slide_refresh`, `deck_refresh_stale`) could not be written, usually because the slide changed after the refresh was proposed. The slide is untouched and the proposal resolves as rejected; the renderer adds an error card to the conversation with a "Refresh again" button (and a toast).
 
 **Commands**
 

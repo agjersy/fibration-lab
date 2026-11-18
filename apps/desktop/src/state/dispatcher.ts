@@ -134,6 +134,10 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
     case "deck":
       applyDeckEvent(session, e.deck, e.event as Deck.DeckEvent);
       break;
+    case "refresh_failed":
+      useChat.getState().refreshFailed(e.conversation, e.proposal_id, e.deck, e.slide_id, e.message);
+      useUi.getState().toast("error", e.message);
+      break;
     case "decks_changed":
       useDecks.getState().setList(session, e.decks);
       reloadVerificationSoon(session);

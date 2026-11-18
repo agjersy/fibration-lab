@@ -2748,7 +2748,7 @@ json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name
 /// `slide.insert_result` with `row` and `column`, checked by `num.bound`, reported `stale` when
 /// the code changes, and brought up to date by a refresh.
 #[tokio::test]
-async fn a_bound_number_in_a_table_cell_is_checked_and_refreshed() {
+async fn a_bound_number_in_a_table_cell_is_checked_and_refreshed_and_a_refresh_race_is_reported() {
     let fx = fixture_with(deck_options).await;
     if !deck_runtime_available(&fx.rt.home) {
         return;
@@ -2881,6 +2881,61 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     assert_eq!(stale[0]["rule"], "stale");
     assert_eq!(stale[0]["pointer"], ptr);
     let mut rx = fx.rt.subscribe();
+    // The race: the slide changes between the proposal and its acceptance. The write is refused,
+    // the slide is untouched, and the user is told, with the offer to refresh again.
+    let raced = crate::service::refresh::refresh_slide(&fx.rt, "q3", &slide_id, None)
+        .await
+        .unwrap()
+        .expect("a proposal");
+    let mut meanwhile = doc.clone();
+    meanwhile["placeholders"]["body"]["table"]["rows"][0]["cells"][0]["text"]["paragraphs"][0]
+        ["runs"][0]["t"] = json!("Quantity");
+    deck.slide_update(
+        serde_json::from_value(meanwhile).unwrap(),
+        Some(
+            &deck
+                .ws
+                .deck()
+                .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+                .unwrap()
+                .1,
+        ),
+    )
+    .unwrap();
+    fx.rt
+        .proposal_respond(
+            &raced.id,
+            analyst_protocol::ui::ProposalDecision::Accept { content: None },
+        )
+        .unwrap();
+    let failed = next_matching(&mut rx, |e| {
+        matches!(e, SessionEvent::RefreshFailed { proposal_id, .. } if proposal_id == &raced.id)
+    })
+    .await;
+    let SessionEvent::RefreshFailed {
+        deck: d,
+        slide_id: s,
+        message,
+        ..
+    } = failed
+    else {
+        unreachable!()
+    };
+    assert_eq!((d.as_str(), s.as_str()), ("q3", slide_id.as_str()));
+    assert!(
+        message.contains("changed after the refresh was proposed")
+            && message.contains("Refresh again"),
+        "{message}"
+    );
+    next_matching(&mut rx, |e| {
+        matches!(e, SessionEvent::ProposalResolved { proposal_id, decision, .. }
+            if proposal_id == &raced.id && *decision == analyst_protocol::transcript::Decision::Reject)
+    })
+    .await;
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(doc.pointer(ptr).unwrap()["t"], "1.823 s");
+
+    // Refreshing again proposes against the current slide, and applies.
     let proposal = crate::service::refresh::refresh_slide(&fx.rt, "q3", &slide_id, None)
         .await
         .unwrap()
@@ -2907,6 +2962,11 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     .await;
     let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(doc.pointer(ptr).unwrap()["t"], "1.900 s");
+    assert_eq!(
+        doc["placeholders"]["body"]["table"]["rows"][0]["cells"][0]["text"]["paragraphs"][0]
+            ["runs"][0]["t"],
+        "Quantity"
+    );
     assert!(relevant(&deck.run_checks(None).await.unwrap()).is_empty());
     fx.wb.shutdown().await;
 }

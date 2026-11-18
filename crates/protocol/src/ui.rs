@@ -787,6 +787,17 @@ pub enum SessionEvent {
         #[ts(type = "unknown")]
         event: Value,
     },
+    /// An accepted refresh from analysis could not be written: the slide changed after the
+    /// refresh was proposed (or the refreshed document was refused). The slide is untouched and
+    /// the proposal resolves as rejected; the renderer shows an error card that offers to
+    /// refresh again.
+    RefreshFailed {
+        conversation: ConversationId,
+        proposal_id: ProposalId,
+        deck: String,
+        slide_id: String,
+        message: String,
+    },
     /// A deck was created (or removed) in the session's repository.
     DecksChanged {
         decks: Vec<DeckSummary>,

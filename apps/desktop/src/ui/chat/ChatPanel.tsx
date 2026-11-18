@@ -9,7 +9,7 @@ import { useActiveSession, useSessionInfo, useSessions } from "../../state/sessi
 import { notifyError } from "../../state/ui";
 import { MessageText, StreamingMessage } from "./MessageText";
 import { ChatInput } from "./ChatInput";
-import { ErrorCard, ProposalCard, RunCard, SummaryCard, ToolCard } from "./cards";
+import { ErrorCard, ProposalCard, RefreshFailedCard, RunCard, SummaryCard, ToolCard } from "./cards";
 import { DeckToolCard, SlideProposalCard, deckToolKind, isDeckProposal } from "./deckCards";
 
 /** Code diffs and slide proposals side by side in one conversation. */
@@ -68,6 +68,8 @@ const ChatItemRow = memo(function ChatItemRow({ item, session, conversation }: {
       return <SummaryCard summary={item.summary} />;
     case "error":
       return <ErrorCard message={item.message} />;
+    case "refresh_failed":
+      return <RefreshFailedCard session={session} deck={item.deck} slideId={item.slide_id} message={item.message} />;
   }
 });
 

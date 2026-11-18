@@ -13,7 +13,9 @@ export type ChatItem =
   | { kind: "proposal"; id: string; proposal_id: ProposalId }
   | { kind: "run"; id: string; run_id: RunId }
   | { kind: "summary"; id: string; turn: TurnId; summary: TurnSummary }
-  | { kind: "error"; id: string; turn: TurnId; message: string };
+  | { kind: "error"; id: string; turn: TurnId; message: string }
+  /** An accepted refresh from analysis that could not be written (the slide changed meanwhile). */
+  | { kind: "refresh_failed"; id: string; proposal_id: ProposalId; deck: string; slide_id: string; message: string };
 
 export interface Usage {
   input_tokens: number;
@@ -85,6 +87,7 @@ interface ChatState {
   addRun(conversation: ConversationId, run_id: RunId): void;
   turnDone(conversation: ConversationId, turn: TurnId, summary: TurnSummary): void;
   turnError(conversation: ConversationId, turn: TurnId, message: string): void;
+  refreshFailed(conversation: ConversationId, proposal_id: ProposalId, deck: string, slide_id: string, message: string): void;
   setUsage(conversation: ConversationId, usage: Usage): void;
   setBusy(conversation: ConversationId, busy: boolean): void;
   setDraft(conversation: ConversationId, text: string): void;
@@ -236,6 +239,13 @@ export const useChat = create<ChatState>((set) => ({
     set((s) => update(s, conversation, (c) => ({ ...append(c, { kind: "summary", id: nextId("s"), turn, summary }), busy: false, turn: null }))),
   turnError: (conversation, turn, message) =>
     set((s) => update(s, conversation, (c) => ({ ...append(c, { kind: "error", id: nextId("e"), turn, message }), busy: false, turn: null }))),
+  refreshFailed: (conversation, proposal_id, deck, slide_id, message) =>
+    set((s) =>
+      update(s, conversation, (c) => {
+        const id = `refresh-failed:${proposal_id}:${nextId("r")}`;
+        return append(c, { kind: "refresh_failed", id, proposal_id, deck, slide_id, message });
+      }),
+    ),
   setUsage: (conversation, usage) => set((s) => update(s, conversation, () => ({ usage }))),
   setBusy: (conversation, busy) => set((s) => update(s, conversation, () => ({ busy }))),
   setDraft: (conversation, text) => set((s) => ({ drafts: { ...s.drafts, [conversation]: text } })),
