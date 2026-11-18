@@ -74,7 +74,35 @@ jobs:
       - name: Renderer (both workbenches)
         working-directory: apps/desktop
         run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
-      - name: Browser tests against the mock backend
+
+  # The Playwright suite runs the built renderer against the real core through the development
+  # bridge (analyst-serve), with the scripted model server and fixture projects that
+  # `analyst init` makes (apps/desktop/e2e/harness.ts).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Install LibreOffice and bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap
+      - name: Kernel environments
+        run: |
+          (cd python/kernel && uv sync)
+          (cd present/python/kernel && uv sync)
+      - name: The bridge and the CLI that makes the fixture projects
+        run: cargo build -p analyst-serve -p analyst-cli -p wb-sandbox
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile && pnpm --dir apps/desktop build
+      - name: Browser tests against the real core
+        env:
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
         run: |
           pnpm --dir apps/desktop exec playwright install --with-deps chromium
           pnpm --dir apps/desktop test:e2e --trace off
@@ -215,7 +243,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Shared crates must not depend on workbench crates
+      - name: Crate boundaries (shared crates; no evals or bridge in the desktop app)
         run: python3 tools/check_wb_boundaries.py
-      - name: Only the network gate can reach the network
+      - name: Only the network gate can reach the network; only the dev bridge listens
         run: python3 tools/check_egress.py
