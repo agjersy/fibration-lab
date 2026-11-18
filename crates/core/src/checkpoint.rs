@@ -153,9 +153,8 @@ fn under(path: &str, dirs: &[String]) -> bool {
 }
 
 /// Bring the temp index up to date with the working tree, skipping data directories and
-/// large files.
-fn load_worktree(repo: &Path, env: &[(&str, &str)], exclude: &[String]) -> Result<()> {
-    use std::io::Write;
+/// large files. Returns the large files that were skipped.
+fn load_worktree(repo: &Path, env: &[(&str, &str)], exclude: &[String]) -> Result<Vec<String>> {
     let listed = git_bytes(
         repo,
         &[
@@ -169,6 +168,7 @@ fn load_worktree(repo: &Path, env: &[(&str, &str)], exclude: &[String]) -> Resul
         Some(env),
     )?;
     let mut input: Vec<u8> = Vec::new();
+    let mut skipped = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for raw in listed.split(|b| *b == 0).filter(|p| !p.is_empty()) {
         if !seen.insert(raw) {
@@ -186,20 +186,30 @@ fn load_worktree(repo: &Path, env: &[(&str, &str)], exclude: &[String]) -> Resul
         #[cfg(not(unix))]
         let full = repo.join(path.as_ref());
         match std::fs::symlink_metadata(&full) {
-            Ok(m) if m.is_file() && m.len() > MAX_CHECKPOINT_FILE_BYTES => continue,
+            Ok(m) if m.is_file() && m.len() > MAX_CHECKPOINT_FILE_BYTES => {
+                skipped.push(path.to_string());
+                continue;
+            }
             Ok(m) if m.is_dir() => continue, // nested repository
             _ => {}
         }
         input.extend_from_slice(raw);
         input.push(0);
     }
+    update_index(repo, env, &["--add", "--remove"], input)?;
+    Ok(skipped)
+}
+
+/// `git update-index <flags> -z --stdin` over NUL-separated paths in the temp index.
+fn update_index(repo: &Path, env: &[(&str, &str)], flags: &[&str], input: Vec<u8>) -> Result<()> {
+    use std::io::Write;
     if input.is_empty() {
         return Ok(());
     }
-    let mut cmd = git_command(
-        repo,
-        &["update-index", "--add", "--remove", "-z", "--stdin"],
-    );
+    let mut args = vec!["update-index"];
+    args.extend_from_slice(flags);
+    args.extend_from_slice(&["-z", "--stdin"]);
+    let mut cmd = git_command(repo, &args);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -234,12 +244,53 @@ pub fn worktree_tree(repo: &Path) -> Result<String> {
 
 /// [`worktree_tree`] with an explicit list of repo-relative directories to leave out.
 pub fn worktree_tree_excluding(repo: &Path, exclude: &[String]) -> Result<String> {
+    Ok(worktree_tree_without(repo, exclude, &[])?.tree)
+}
+
+/// A working-tree snapshot and what it leaves out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    /// The tree object id.
+    pub tree: String,
+    /// Changed or untracked files above [`MAX_CHECKPOINT_FILE_BYTES`], which are not in the
+    /// tree (a tracked one keeps the content the user's index has for it).
+    pub skipped_large: Vec<String>,
+}
+
+/// The checkpoint tree with `drop` removed from it: repo-relative files or directories
+/// (literal paths, not patterns) that must not be part of the snapshot even when they are
+/// tracked. Remote sync uses this to keep `.env` and the host-owned directories out of what
+/// it pushes.
+pub fn worktree_tree_without(repo: &Path, exclude: &[String], drop: &[String]) -> Result<Snapshot> {
     let idx = TempIndex::new(repo)?;
     let env = idx.env();
-    let env = with_env(&env);
-    load_worktree(repo, &env, exclude)?;
+    let mut env = with_env(&env);
+    env.push(("GIT_LITERAL_PATHSPECS", "1"));
+    let skipped_large = load_worktree(repo, &env, exclude)?;
+    if !drop.is_empty() {
+        let mut args = vec!["ls-files", "-z", "--"];
+        args.extend(drop.iter().map(String::as_str));
+        let listed = git_bytes(repo, &args, Some(&env))?;
+        update_index(repo, &env, &["--force-remove"], listed)?;
+    }
     let tree = git(repo, &["write-tree"], Some(&env))?;
-    Ok(tree.trim().to_string())
+    Ok(Snapshot {
+        tree: tree.trim().to_string(),
+        skipped_large,
+    })
+}
+
+/// A parentless commit of `tree` with a fixed date, so the same tree always gives the same
+/// commit id. It carries no history: pushing it sends the tree and nothing else. No ref is
+/// created.
+pub fn commit_tree_detached(repo: &Path, tree: &str, message: &str) -> Result<String> {
+    const DATE: &str = "2000-01-01T00:00:00+0000";
+    let env = [("GIT_AUTHOR_DATE", DATE), ("GIT_COMMITTER_DATE", DATE)];
+    Ok(
+        git(repo, &["commit-tree", tree, "-m", message], Some(&env))?
+            .trim()
+            .to_string(),
+    )
 }
 
 /// A checkpoint id that is unique across conversations, processes, and restarts:
