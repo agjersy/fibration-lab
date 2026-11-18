@@ -25,11 +25,14 @@ pub fn file_hash(repo: &Path, rel: &str) -> Option<String> {
     Some(crate::util::sha256_hex(&bytes))
 }
 
+/// Looks up a named result of a run: `(run id, name) -> {name, value, unit?, uncertainty?}`.
+type ResultLookup = Box<dyn Fn(&str, &str) -> Option<Value> + Send + Sync>;
+
 /// The project as the deck checker sees it: the repository's tree identity and files, and (with
 /// a session) the named results its runs recorded.
 pub struct RepoProvenance {
     repo: PathBuf,
-    results: Option<Box<dyn Fn(&str, &str) -> Option<Value> + Send + Sync>>,
+    results: Option<ResultLookup>,
 }
 
 impl RepoProvenance {

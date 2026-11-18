@@ -169,8 +169,11 @@ test.describe("verification (mock backend)", () => {
     await page.keyboard.press("ControlOrMeta+s");
     await palette(page, "Show deck checks");
     const checks = page.getByTestId("checks-panel");
-    await checks.getByTestId("run-deck-checks").click();
-    await expect(checks.locator('[data-testid="check-row"][data-rule="stale"]')).toHaveCount(1);
+    // The save lands asynchronously; run the checks until they see the new file.
+    await expect(async () => {
+      await checks.getByTestId("run-deck-checks").click();
+      await expect(checks.locator('[data-testid="check-row"][data-rule="stale"]')).toHaveCount(1, { timeout: 1000 });
+    }).toPass({ timeout: 15_000 });
     const canvas = page.getByTestId("slide-canvas");
     await page.locator(".dv-tab", { hasText: "Canvas" }).click();
     await expect(canvas.getByTestId("element-refresh")).toBeVisible();

@@ -84,6 +84,7 @@ fn format_result(r: &analyst_protocol::kernel::NamedResult, decimals: Option<usi
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Bring one element up to date in `el` (a placeholder content or a free element's content).
 async fn refresh_element(
     rt: &SessionRuntime,
