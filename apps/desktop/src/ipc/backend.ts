@@ -29,7 +29,11 @@ export function hasTauri(): boolean {
   return typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined;
 }
 
-/** Picks TauriBackend inside the desktop shell, MockBackend in a plain browser. */
+/**
+ * Picks TauriBackend inside the desktop shell. In a plain browser the renderer talks to the real
+ * core through the development bridge (`analyst-serve`), named by `?serve=` or
+ * `VITE_ANALYST_SERVE` (docs/DEVELOPMENT.md).
+ */
 export async function getBackend(): Promise<Backend> {
   if (instance) return instance;
   if (window.__ANALYST_BACKEND__) {
@@ -40,8 +44,12 @@ export async function getBackend(): Promise<Backend> {
     const { TauriBackend } = await import("./tauri");
     instance = new TauriBackend();
   } else {
-    const { MockBackend } = await import("./mock");
-    instance = new MockBackend();
+    const { WsBackend, serveUrl } = await import("./ws");
+    const url = serveUrl();
+    if (!url) {
+      throw new Error("No backend: open this page inside the desktop app, or start analyst-serve and pass its URL as ?serve=ws://127.0.0.1:<port>/?token=<token> (or VITE_ANALYST_SERVE).");
+    }
+    instance = new WsBackend(url);
   }
   window.__ANALYST_BACKEND__ = instance;
   return instance;
