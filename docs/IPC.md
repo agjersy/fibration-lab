@@ -274,7 +274,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 | `template_thumbnails` | `{ session, deck }` | `Deck.LayoutThumbnail[]` | |
 | `template_replace` | `{ session, deck, template_abs }` | `TaskId` | checkpointed first |
 | `deck_get` | `{ session, deck }` | `Deck.DeckView` | |
-| `slide_update` | `{ session, deck, slide, expected_hash? }` | `Deck.SlideView` | `conflict` on a stale hash, `policy_denied` on a locked slide |
+| `slide_update` | `{ session, deck, slide, expected_hash? }` | `Deck.SlideView` | `conflict` on a stale hash; a user edit, so slide and element locks (which hold the agent back) do not apply |
 | `slide_create` | `{ session, deck, after?, layout }` | `Deck.SlideView` | |
 | `slide_delete` | `{ session, deck, slide_id }` | `null` | |
 | `slide_duplicate` | `{ session, deck, slide_id }` | `Deck.SlideView` | |

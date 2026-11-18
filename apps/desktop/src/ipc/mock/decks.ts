@@ -286,7 +286,6 @@ export function makeDeckMock(env: DeckMockEnv): { handlers: DeckHandlers; agent:
       const entry = d.slides.get(slide.id);
       if (!entry) throw ipcError("not_found", `no slide ${slide.id}`);
       if (expected_hash && expected_hash !== entry.hash) throw ipcError("conflict", `slide ${slide.id} changed since it was read`);
-      if (entry.slide.locked) throw ipcError("policy_denied", `slide ${slide.id} is locked`);
       d.slides.set(slide.id, { slide: structuredClone(slide), hash: hashOf(slide) });
       changed(session, d, [slide.id]);
       return view(d, slide.id);
