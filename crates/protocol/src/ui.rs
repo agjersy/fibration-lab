@@ -33,6 +33,10 @@ pub enum IpcErrorCode {
     PolicyDenied,
     KernelOffline,
     TargetOffline,
+    /// A deck command needs a rendering engine (PowerPoint or LibreOffice) and none is there.
+    EngineUnavailable,
+    /// A deck build or skill script needs a sandbox this machine does not have.
+    SandboxUnavailable,
     Invalid,
     Io,
     Internal,
@@ -46,6 +50,8 @@ impl IpcErrorCode {
             IpcErrorCode::PolicyDenied => "policy_denied",
             IpcErrorCode::KernelOffline => "kernel_offline",
             IpcErrorCode::TargetOffline => "target_offline",
+            IpcErrorCode::EngineUnavailable => "engine_unavailable",
+            IpcErrorCode::SandboxUnavailable => "sandbox_unavailable",
             IpcErrorCode::Invalid => "invalid",
             IpcErrorCode::Io => "io",
             IpcErrorCode::Internal => "internal",

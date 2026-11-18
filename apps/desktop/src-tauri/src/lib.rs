@@ -51,6 +51,19 @@ impl AppState {
 /// `ANALYST_SANDBOX` overrides the kernel sandbox kind.
 pub fn workbench_from_env() -> anyhow::Result<Arc<Workbench>> {
     let home = analyst_core::config::analyst_home();
+    // First start: bring the deck workbench's old home (`~/.present`) over once.
+    match analyst_core::migrate::migrate_legacy_home(&home) {
+        Ok(Some(r)) => tracing::info!(
+            "migrated {} into {}: {} provider(s), {} file(s), {} key(s)",
+            r.from.display(),
+            home.display(),
+            r.providers.len(),
+            r.files.len(),
+            r.keys.len()
+        ),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("migrating ~/.present failed: {e:#}"),
+    }
     let mut opts = WorkbenchOptions::new(home);
     if let Ok(s) = std::env::var("ANALYST_SANDBOX") {
         if !s.is_empty() {
@@ -62,7 +75,7 @@ pub fn workbench_from_env() -> anyhow::Result<Arc<Workbench>> {
 }
 
 /// The command names registered in `generate_handler!`, kept in one place so a test can check
-/// them against docs/IPC.md sections 4 and 7.
+/// them against docs/IPC.md sections 4, 7, and 9.
 pub const COMMANDS: &[&str] = &[
     "app_info",
     "sessions_list",
@@ -120,6 +133,42 @@ pub const COMMANDS: &[&str] = &[
     "terminal_resize",
     "terminal_close",
     "dialog_pick_directory",
+    "decks_list",
+    "deck_create",
+    "deck_open",
+    "template_thumbnails",
+    "template_replace",
+    "deck_get",
+    "slide_update",
+    "slide_create",
+    "slide_delete",
+    "slide_duplicate",
+    "slide_move",
+    "slide_lock",
+    "slide_preview_png",
+    "chart_compute",
+    "deck_code_read",
+    "deck_code_write",
+    "deck_build",
+    "deck_switch_mode",
+    "render_fidelity",
+    "deck_check_run",
+    "refs_list",
+    "refs_add",
+    "refs_remove",
+    "refs_remove_unused",
+    "refs_search",
+    "source_passage",
+    "assets_list",
+    "asset_add",
+    "exports_list",
+    "export_run",
+    "export_reveal",
+    "export_open",
+    "history_list",
+    "history_restore",
+    "history_revert_turn",
+    "artifacts_list",
 ];
 
 /// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see
@@ -276,6 +325,42 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             terminal_resize,
             terminal_close,
             dialog_pick_directory,
+            decks_list,
+            deck_create,
+            deck_open,
+            template_thumbnails,
+            template_replace,
+            deck_get,
+            slide_update,
+            slide_create,
+            slide_delete,
+            slide_duplicate,
+            slide_move,
+            slide_lock,
+            slide_preview_png,
+            chart_compute,
+            deck_code_read,
+            deck_code_write,
+            deck_build,
+            deck_switch_mode,
+            render_fidelity,
+            deck_check_run,
+            refs_list,
+            refs_add,
+            refs_remove,
+            refs_remove_unused,
+            refs_search,
+            source_passage,
+            assets_list,
+            asset_add,
+            exports_list,
+            export_run,
+            export_reveal,
+            export_open,
+            history_list,
+            history_restore,
+            history_revert_turn,
+            artifacts_list,
         ])
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("building the Tauri app: {e}"))?
@@ -292,7 +377,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
 mod tests {
     use super::COMMANDS;
 
-    /// Copied from docs/IPC.md sections 4 and 7 (the `command` columns).
+    /// Copied from docs/IPC.md sections 4, 7, and 9 (the `command` columns).
     const IPC_MD_COMMANDS: &[&str] = &[
         "app_info",
         "sessions_list",
@@ -350,6 +435,42 @@ mod tests {
         "terminal_resize",
         "terminal_close",
         "dialog_pick_directory",
+        "decks_list",
+        "deck_create",
+        "deck_open",
+        "template_thumbnails",
+        "template_replace",
+        "deck_get",
+        "slide_update",
+        "slide_create",
+        "slide_delete",
+        "slide_duplicate",
+        "slide_move",
+        "slide_lock",
+        "slide_preview_png",
+        "chart_compute",
+        "deck_code_read",
+        "deck_code_write",
+        "deck_build",
+        "deck_switch_mode",
+        "render_fidelity",
+        "deck_check_run",
+        "refs_list",
+        "refs_add",
+        "refs_remove",
+        "refs_remove_unused",
+        "refs_search",
+        "source_passage",
+        "assets_list",
+        "asset_add",
+        "exports_list",
+        "export_run",
+        "export_reveal",
+        "export_open",
+        "history_list",
+        "history_restore",
+        "history_revert_turn",
+        "artifacts_list",
     ];
 
     #[test]

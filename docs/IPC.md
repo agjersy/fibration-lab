@@ -4,7 +4,7 @@
 
 ## 1. Shape of the boundary
 
-- The renderer calls **commands** (Tauri `invoke`) for request/response. Every command takes a JSON object of named arguments and returns a JSON value or a structured error `{ code: string, message: string, detail?: unknown }`. Error codes: `not_found`, `conflict`, `policy_denied`, `kernel_offline`, `target_offline`, `invalid`, `io`, `internal`.
+- The renderer calls **commands** (Tauri `invoke`) for request/response. Every command takes a JSON object of named arguments and returns a JSON value or a structured error `{ code: string, message: string, detail?: unknown }`. Error codes: `not_found`, `conflict`, `policy_denied`, `kernel_offline`, `target_offline`, `engine_unavailable`, `sandbox_unavailable` (deck commands, section 9), `invalid`, `io`, `internal`.
 - The backend pushes **events** on a per-session **channel** (`tauri::ipc::Channel<SessionEvent>`) that the renderer opens with `session_subscribe`. One channel per open session per window. Events are ordered per session.
 - Long operations (bootstrap, sync, package changes) return a `task_id` immediately and report through `task_log` and `task_done` events.
 - The renderer never touches the filesystem, processes, or network directly. In a plain browser (no Tauri) the renderer runs against `MockBackend`, which implements the same interface in memory; this is how the frontend is developed and tested headlessly.
@@ -253,3 +253,55 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 - Contract rules `cli.option-for-every-input` and `lib.near-duplicate` are advisory (`warn`) by default and are not fed back to the agent as must-fix diagnostics.
 - Development and tests in a browser use the real core through `analyst serve` (a local WebSocket bridge speaking the same commands and events); `MockBackend` and the hand-written type mirror are removed.
 - Remote sync pushes the checkpoint tree with git: the host holds a bare repository at `<mirror>.git`; the core pushes a commit of the working tree (tracked plus untracked, not ignored) to `refs/analyst/sync`, and the mirror is a detached checkout of it with `out/`, `.venv/`, and `.analyst/` left untouched. The tree id is the sync identity. rsync, the tar fallback, the deletion manifest, and the tree-hash file are removed.
+
+## 9. Decks, history, and the artifact index (one app)
+
+The deck workbench's shell is gone; its commands live in this shell as thin glue over the per-deck service of a session (`analyst_deck::service::DeckService`, owned by `SessionRuntime::decks`). A deck is `decks/<slug>/` in the session's repository; every deck command takes `session` and `deck` (the slug) where the deck workbench took a project id. A deck's kernel (no network) starts on the first command that needs it. Deck types are the ts-rs export of `analyst-deck-protocol` in `apps/desktop/src/ipc/generated/deck/`, re-exported to the renderer as the namespace `Deck` (`Deck.DeckView`, `Deck.SlideView`, `Deck.DeckEvent`, ...), because several names (`Diagnostic`, `SearchHit`, `FileContent`, `IpcError`) exist in both sets. `Mode` gains the deck modes: `"plan" | "build" | "run" | "outline" | "slides" | "polish"`.
+
+**Events** (on the session channel)
+
+- `{ type: "deck"; deck: string; event: Deck.DeckEvent }`: one deck's event. `Deck.DeckEvent` is `deck_changed` (deck document, changed and removed slide ids, `by`), `slide_view`, `diagnostics` (per slide), `refs_changed`, `build_output`, `export_done`, `kernel_state`, `task_progress`, `task_done`, `info_changed`. Deck commands that return a `TaskId` finish with a deck `task_done` (task ids `deck-task-<n>`), not the session-level `task_done`.
+- `{ type: "decks_changed"; decks: DeckSummary[] }`: a deck was created, or a checkpoint restore changed the repository.
+
+**Commands**
+
+| command | args | result | notes |
+|---|---|---|---|
+| `decks_list` | `{ session }` | `DeckSummary[]` | reads `decks/*/deck/deck.json`; starts nothing |
+| `deck_create` | `{ session, title, template_abs, slug?, code? }` | `DeckSummary` | copies the template into `decks/<slug>/` (slug from the title when omitted); `conflict` when it exists |
+| `deck_open` | `{ session, deck }` | `Deck.DeckInfo` | starts the deck's kernel; deck, template description, engines, sandbox |
+| `template_thumbnails` | `{ session, deck }` | `Deck.LayoutThumbnail[]` | |
+| `template_replace` | `{ session, deck, template_abs }` | `TaskId` | checkpointed first |
+| `deck_get` | `{ session, deck }` | `Deck.DeckView` | |
+| `slide_update` | `{ session, deck, slide, expected_hash? }` | `Deck.SlideView` | `conflict` on a stale hash, `policy_denied` on a locked slide |
+| `slide_create` | `{ session, deck, after?, layout }` | `Deck.SlideView` | |
+| `slide_delete` | `{ session, deck, slide_id }` | `null` | |
+| `slide_duplicate` | `{ session, deck, slide_id }` | `Deck.SlideView` | |
+| `slide_move` | `{ session, deck, slide_id, after?, section? }` | `null` | |
+| `slide_lock` | `{ session, deck, slide_id, element_id?, locked }` | `null` | slide or element lock |
+| `slide_preview_png` | `{ session, deck, slide_id, png_base64 }` | `null` | renderer-made preview thumbnail |
+| `chart_compute` | `{ session, deck, source, steps? }` | `Deck.ChartComputeResult` | |
+| `deck_code_read` | `{ session, deck, path }` | `Deck.FileContent` | Python files under `deck/` (code mode) |
+| `deck_code_write` | `{ session, deck, path, content, expected_hash? }` | `Deck.WriteResult` | |
+| `deck_build` | `{ session, deck }` | `TaskId` | build script in the sandbox; `build_output` events |
+| `deck_switch_mode` | `{ session, deck, to, via? }` | `TaskId` | to code: checkpointed first; back: `via: "revert"` restores the deck from that checkpoint |
+| `render_fidelity` | `{ session, deck, slides? }` | `TaskId` | engine thumbnails |
+| `deck_check_run` | `{ session, deck, slides? }` | `Deck.Diagnostic[]` | the deck checker, including `stale` run citations; named apart from the analysis `check_run` |
+| `refs_list` | `{ session, deck }` | `Deck.RefView[]` | |
+| `refs_add` | `{ session, deck, paths_abs }` | `TaskId` | copies into `references/` and indexes |
+| `refs_remove` | `{ session, deck, ref_id }` | `null` | refused while slides cite it |
+| `refs_remove_unused` | `{ session, deck }` | `string[]` | |
+| `refs_search` | `{ session, deck, query, ref_ids? }` | `Deck.SearchHit[]` | |
+| `source_passage` | `{ session, deck, cite }` | `Deck.SourcePassage` | |
+| `assets_list` | `{ session, deck }` | `Deck.AssetView[]` | |
+| `asset_add` | `{ session, deck, path_abs }` | `Deck.AssetView` | images only |
+| `exports_list` | `{ session, deck }` | `Deck.ExportView[]` | |
+| `export_run` | `{ session, deck, format }` | `TaskId` | `pptx`, `pdf`, `png`, `md`, `notes-docx`; checkpointed first, `ExportView.checkpoint` names it; `engine_unavailable` without an engine |
+| `export_reveal` | `{ session, deck, export_id }` | `null` | file manager |
+| `export_open` | `{ session, deck, export_id }` | `null` | default application |
+| `history_list` | `{ session, limit? }` | `CheckpointView[]` | the repository's git checkpoints, newest first: turns, exports, mode switches, restores; code and decks together |
+| `history_restore` | `{ session, checkpoint }` | `null` | restores the working tree (the replaced state is checkpointed first); open decks re-read and emit `deck_changed`, then `decks_changed` |
+| `history_revert_turn` | `{ session, turn }` | `CheckpointView` | `turn` is `<conversation>-<n>` |
+| `artifacts_list` | `{ session, run_id?, kind?, limit? }` | `ArtifactEntry[]` | what the session's runs produced, with `stale` when the tree changed since the run; slides cite runs from it |
+
+Dropped with the deck shell: `project_*` (a deck belongs to a session), `analyst_scan` / `analyst_import` (slides cite runs from the artifact index instead), the snapshot history (`history_*` above is the checkpoint timeline), and the deck shell's own conversation, chat, model, skill, and audit commands (the one loop's commands in section 4 cover decks).
