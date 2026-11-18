@@ -697,9 +697,7 @@ impl ToolContext {
         };
         let tree_hash = match tree_hash {
             Some(h) => Some(h),
-            None => target::sync::file_list(&self.repo)
-                .ok()
-                .map(|l| target::sync::tree_hash(&l)),
+            None => target::sync::tree_id(&self.repo).ok(),
         };
         let mut rx = kernel.subscribe();
         let started = kernel

@@ -104,6 +104,18 @@ impl TempIndex {
             // Seeding keeps the stat cache, so only files that changed are hashed again.
             std::fs::copy(&user_index, &path)
                 .with_context(|| format!("seeding {}", path.display()))?;
+            // Git trusts a cached stat entry only when the file is older than the index
+            // itself; anything as new as the index is hashed again. A copy has a fresh
+            // timestamp, which would make an edit that kept a file's size, made in the same
+            // instant the user's index was written, look unchanged. Keep the original time.
+            let written = std::fs::metadata(&user_index)
+                .and_then(|m| m.modified())
+                .with_context(|| format!("reading the time of {}", user_index.display()))?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_modified(written))
+                .with_context(|| format!("seeding {}", path.display()))?;
         }
         Ok(TempIndex { path })
     }
