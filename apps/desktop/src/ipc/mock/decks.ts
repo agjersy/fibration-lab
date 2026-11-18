@@ -350,7 +350,6 @@ export function makeDeckMock(env: DeckMockEnv): { handlers: DeckHandlers; agent:
       const d = deckOf(session, deck);
       const entry = d.slides.get(slide_id);
       if (!entry) throw ipcError("not_found", `no slide ${slide_id}`);
-      if (entry.slide.locked) throw ipcError("policy_denied", `slide ${slide_id} is locked`);
       const a = env.artifacts(session).find((x) => x.run_id === run_id && x.path === artifact);
       if (!a) throw ipcError("not_found", `run \`${run_id}\` has no artifact \`${artifact}\``);
       const ext = artifact.split(".").pop()?.toLowerCase() ?? "";

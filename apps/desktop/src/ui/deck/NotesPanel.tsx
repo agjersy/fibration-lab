@@ -29,7 +29,7 @@ export function NotesPanel() {
   const view = selectedView(ctx.d);
   if (!view) return <div className="empty">Select a slide to see its notes.</div>;
   const value = plainText(view.slide.notes);
-  const readOnly = ctx.d.deck?.mode === "code" || !!view.slide.locked;
+  const readOnly = ctx.d.deck?.mode === "code";
   return (
     <div className="panel" data-testid="notes-panel">
       <div className="panel-toolbar">

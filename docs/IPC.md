@@ -190,6 +190,7 @@ Argument names are exact. `session` is always a `SessionId`.
 | `terminal_resize` | `{ terminal_id, cols, rows }` | `null` | |
 | `terminal_close` | `{ terminal_id }` | `null` | |
 | `dialog_pick_directory` | `{ title? }` | `string \| null` | native folder picker (absolute path) |
+| `dialog_pick_files` | `{ title?, filters?: { name, extensions }[], multiple? }` | `string[] \| null` | native open dialog (absolute paths): a deck template, references |
 
 ## 5. Behavior that both sides rely on
 
@@ -246,7 +247,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 
 ## 8. Simplification round (DESIGN-REVIEW.md)
 
-- `FigureView` gains `file_abs: string | null`. When non-null and running under Tauri, the renderer displays the figure with `convertFileSrc(file_abs)` (asset protocol; the backend allows each open session's repo and its artifacts directory in the asset scope). `figure_data` remains for remote figures not yet pulled and for browser mode.
+- `FigureView` gains `file_abs: string | null`. When non-null and running under Tauri, the renderer displays the figure with `convertFileSrc(file_abs)` (asset protocol). The backend does not set `file_abs` yet and allows no figure folder in the asset scope (only deck folders, section 9), so figures still come through `figure_data`, as for remote figures not yet pulled and in browser mode.
 - One figure, one tab: the capture backend writes PNG only by default (`[figures] formats = ["png"]` in `project.toml`; `"svg"` and `"pdf"` may be added). The Figures panel groups files by stem, shows the PNG, and offers other formats as alternates.
 - Policy presets: `policy.preset = "review" | "auto" | "read-only"` in `project.toml` expands to the detailed keys (`review`: edits review, runs auto, packages/shell/git ask; `auto`: edits auto within declared scope, runs auto, packages/shell/git ask; `read-only`: edits, packages, shell, git denied, runs auto). Detailed keys still override. The settings dialog offers the three presets. Comment-marker locked regions are removed; protected globs remain. The expansion lives in `wb-policy`; `edits = "deny"` is the read-only edit gate; `PolicyView.preset` reports the preset the keys amount to and `session_set_policy` accepts `preset`.
 - Models must support native tool calling. The text-protocol tier is removed; a model that fails the tool-calling probe is rejected with a clear error.
@@ -279,6 +280,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 | `slide_duplicate` | `{ session, deck, slide_id }` | `Deck.SlideView` | |
 | `slide_move` | `{ session, deck, slide_id, after?, section? }` | `null` | |
 | `slide_lock` | `{ session, deck, slide_id, element_id?, locked }` | `null` | slide or element lock |
+| `slide_place_figure` | `{ session, deck, slide_id, run_id, artifact, placeholder? }` | `Deck.SlideView` | the user places a run's figure on a slide: the core function of the agent's `slide.place_figure` (artifact index lookup, figures only, image copied into `assets/` by content hash, image element with a `run_cite`), written at once like `slide_update`; the placeholder defaults to the layout's first free image placeholder |
 | `slide_preview_png` | `{ session, deck, slide_id, png_base64 }` | `null` | renderer-made preview thumbnail |
 | `chart_compute` | `{ session, deck, source, steps? }` | `Deck.ChartComputeResult` | |
 | `deck_code_read` | `{ session, deck, path }` | `Deck.FileContent` | Python files under `deck/` (code mode) |
@@ -303,5 +305,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 | `history_restore` | `{ session, checkpoint }` | `null` | restores the working tree (the replaced state is checkpointed first); open decks re-read and emit `deck_changed`, then `decks_changed` |
 | `history_revert_turn` | `{ session, turn }` | `CheckpointView` | `turn` is `<conversation>-<n>` |
 | `artifacts_list` | `{ session, run_id?, kind?, limit? }` | `ArtifactEntry[]` | what the session's runs produced, with `stale` when the tree changed since the run; slides cite runs from it |
+
+**Asset scope.** The shell enables Tauri's asset protocol with an empty static scope and adds, for each open session, each deck's `decks/<slug>/.present/cache/` (preview and fidelity thumbnails, layout thumbnails, PDF page images), `decks/<slug>/assets/` and `decks/<slug>/references/` (image references are their own source page) when the session is opened or created and when `decks_list` or `deck_create` runs. Slugs that are not plain folder names are skipped. The renderer loads these paths (relative to the deck folder, or absolute) with `convertFileSrc`; `slide_preview_png` still takes base64, and the CSP keeps only `asset:` / `http://asset.localhost` for images, no remote origin.
 
 Dropped with the deck shell: `project_*` (a deck belongs to a session), `analyst_scan` / `analyst_import` (slides cite runs from the artifact index instead), the snapshot history (`history_*` above is the checkpoint timeline), and the deck shell's own conversation, chat, model, skill, and audit commands (the one loop's commands in section 4 cover decks).

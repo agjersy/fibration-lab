@@ -55,7 +55,7 @@ export function OutlinePanel() {
                 const v = d.slides[id];
                 if (!v) return null;
                 const title = slideTitle(v.slide);
-                const locked = readOnly || !!v.slide.locked;
+                const locked = readOnly;
                 const cites = slideCites(v.slide);
                 const runs = slideRunCites(v.slide);
                 return (

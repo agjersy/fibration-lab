@@ -74,8 +74,8 @@ export function CanvasPanel() {
                 index={view.index}
                 width={width}
                 resolveAsset={resolve}
-                interactive={!codeMode && !slide.locked}
-                {...(codeMode || slide.locked ? {} : { onEditText })}
+                interactive={!codeMode}
+                {...(codeMode ? {} : { onEditText })}
                 onCite={(cite) => openCite(session, deck, cite)}
                 onRunCite={(cite) => focusRunCite(session, cite)}
                 stale={staleElements(d, slide.id)}
@@ -101,14 +101,14 @@ export function CanvasPanel() {
     bar = (
       <div className="canvas-bar">
         <span className="muted small">Layout</span>
-        <button type="button" disabled={codeMode || !!slide.locked} aria-haspopup="listbox" aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} data-testid="layout-button">
+        <button type="button" disabled={codeMode} aria-haspopup="listbox" aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)} data-testid="layout-button">
           {slide.layout} ▾
         </button>
         <button
           type="button"
           className={slide.locked ? "" : "ghost"}
           aria-pressed={!!slide.locked}
-          title={slide.locked ? "Locked: neither the agent nor an edit here changes this slide. Click to unlock." : "Lock this slide against changes"}
+          title={slide.locked ? "Locked: the agent may not change this slide. Click to unlock." : "Lock this slide against agent changes"}
           onClick={() => void setSlideLocked(session, deck, slide.id, !slide.locked)}
           data-testid="lock-toggle"
         >
