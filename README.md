@@ -15,7 +15,6 @@ Personal Present (the deck workbench) has been folded in: Personal Analyst is on
 | `present/crates/core`, `present/crates/protocol` | `analyst-deck` and `analyst-deck-protocol`: the deck library of the core (deck store, references, deck kernel client, deck tools, per-deck service) |
 | `python/kernel`, `present/python/kernel`, `present/python/sdk` | The analysis kernel, the deck kernel, and the deck build SDK |
 | `evals/`, `present/evals/` | Analysis and deck evaluation tasks, both run by `analyst eval run` |
-| `present/apps/desktop` | The old deck renderer, kept (mock backend only) as porting material for the deck UI |
 | `packages/wb-ui` | Shared UI package |
 
 One Cargo workspace and one pnpm workspace cover everything; `.github/workflows/ci.yml` runs both test suites on Linux and macOS. Windows is parked.
@@ -24,7 +23,7 @@ One Cargo workspace and one pnpm workspace cover everything; `.github/workflows/
 
 **Phase 0 (headless core) and phase 1 (desktop workbench) are built.** What exists:
 
-- Desktop app (Tauri 2, macOS and Linux): session tabs, project and scripts sidebar with run forms, library and runs views, CodeMirror editor with diagnostics and per-hunk proposal review, agent chat with tool, proposal, and run cards, figures panel with run history and comparison, equations panel, packages panel, terminal, run output and diagnostics docks, Zed keymap subset and command palette
+- Desktop app (Tauri 2, macOS and Linux), one window and one renderer for both workbenches: session tabs, project and scripts sidebar with run forms, library and runs views, CodeMirror editor with diagnostics and per-hunk proposal review, figures panel with run history and comparison (and "Place on slide"), equations panel, packages panel, terminal, run output and diagnostics docks; the deck panels (Decks view with a New deck dialog, slide rail, canvas with in-place editing, outline, references, sources, checks, notes, exports) in the same dock, so panels of both workbenches can sit side by side; one agent chat in all six modes with code diff cards and before/after slide cards; a slide figure's run citation opens its run in one click; Zed keymap subset and command palette
 
 - `analyst` CLI: `init`, `index`, `check`, `run`, `eq`, `env`, `target`, `chat` (both tool sets), `eval` (analysis and deck tasks), `key`, and `deck init|list|template inspect|refs|render|check|build|eject|export|history`
 - Rust core: review-gated edits and scope declaration with three policy presets (shared `wb-policy`), OpenAI-compatible and Anthropic streaming adapters with capability probing (shared `wb-providers`; native tool calling required), transcripts and compaction (shared `wb-transcript`), Agent Skills (shared `wb-skills`), kernel client over local stdio or SSH, repo sync and remote bootstrap, git checkpoints covering code and decks, one agent loop with the analysis and deck tool sets and modes (plan, build, run, outline, slides, polish) as policy profiles, decks under `decks/<slug>/` with a no-network deck kernel each, and an artifact index whose run citations the deck checker reports as `stale` when the code changed

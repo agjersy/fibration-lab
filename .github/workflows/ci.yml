@@ -71,17 +71,13 @@ jobs:
       - name: Shared UI package
         working-directory: packages/wb-ui
         run: pnpm typecheck && pnpm lint && pnpm test
-      - name: Analysis workbench renderer
+      - name: Renderer (both workbenches)
         working-directory: apps/desktop
         run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
-      - name: Deck renderer (porting material for the one app, mock backend)
-        working-directory: present/apps/desktop
-        run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
-      - name: Browser tests against the mock backends
+      - name: Browser tests against the mock backend
         run: |
           pnpm --dir apps/desktop exec playwright install --with-deps chromium
           pnpm --dir apps/desktop test:e2e -- --trace off
-          pnpm --dir present/apps/desktop test:e2e -- --trace off
 
   desktop:
     runs-on: ${{ matrix.os }}
