@@ -302,6 +302,18 @@ impl SessionRuntime {
         );
         let decks = DeckServices::new(&repo, &session.home, &dir);
         decks.set_events(events.clone());
+        // Decks check bound numbers against the named results this session's runs recorded.
+        {
+            let (runs, repo, artifacts) = (runs.clone(), repo.clone(), session.artifacts_dir());
+            decks.set_provenance(Arc::new(
+                super::provenance::RepoProvenance::new(&repo.clone()).with_results(
+                    move |run_id, name| {
+                        super::artifacts::named_result(&runs, &repo, &artifacts, run_id, name)
+                            .and_then(|r| serde_json::to_value(r).ok())
+                    },
+                ),
+            ));
+        }
         decks.set_options(DeckOptions {
             env_remove: opts.env_remove.clone(),
             ..opts.deck.clone()

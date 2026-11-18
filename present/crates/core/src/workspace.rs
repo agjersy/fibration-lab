@@ -223,6 +223,27 @@ impl Workspace {
                         ));
                     }
                 }
+                for (sub, run) in text_runs(item) {
+                    let rc = &run["run_cite"];
+                    let Some(run_tree) = rc["tree_hash"].as_str() else {
+                        continue;
+                    };
+                    let now = current.get_or_insert_with(|| prov.tree_identity());
+                    if now.as_deref().is_some_and(|n| n != run_tree) {
+                        let mut f = finding(
+                            format!(
+                                "the number {:?} is result `{}` of run {} of {}, and the project's code has changed since that run",
+                                run["t"].as_str().unwrap_or(""),
+                                rc["result_name"].as_str().unwrap_or("?"),
+                                rc["run_id"].as_str().unwrap_or("?"),
+                                rc["script"].as_str().unwrap_or("?")
+                            ),
+                            "refresh it to run the script again and update the number",
+                        );
+                        f["pointer"] = json!(format!("{pointer}{sub}"));
+                        out.push(f);
+                    }
+                }
                 let eq = &item["eq_cite"];
                 if let (Some(path), Some(hash)) = (eq["path"].as_str(), eq["source_hash"].as_str())
                 {
@@ -245,6 +266,37 @@ impl Workspace {
             }
         }
         out
+    }
+
+    /// `{"<run id>/<result name>": {name, value, unit?, uncertainty?} | null}` for every named
+    /// result a text run of the deck is bound to; `null` when the result is not available.
+    /// `None` without a provenance (nothing to compare against).
+    pub fn bound_results(&self) -> Option<Value> {
+        let mut map = serde_json::Map::new();
+        let prov = self.provenance()?;
+        let Ok((_, docs)) = self.deck().read_all() else {
+            return Some(Value::Object(map));
+        };
+        for slide in &docs {
+            let Ok(v) = serde_json::to_value(slide) else {
+                continue;
+            };
+            for (_, item) in slide_items(&v) {
+                for (_, run) in text_runs(item) {
+                    let rc = &run["run_cite"];
+                    let (Some(id), Some(name)) =
+                        (rc["run_id"].as_str(), rc["result_name"].as_str())
+                    else {
+                        continue;
+                    };
+                    let key = format!("{id}/{name}");
+                    if !map.contains_key(&key) {
+                        map.insert(key, prov.named_result(id, name).unwrap_or(Value::Null));
+                    }
+                }
+            }
+        }
+        Some(Value::Object(map))
     }
 
     pub async fn close(&self) {
@@ -505,6 +557,11 @@ impl Workspace {
         if let Some(r) = rules {
             params["rules"] = json!(r);
         }
+        // The recorded values of the named results that slide text is bound to, for the
+        // kernel's number check (`num.bound`).
+        if let Some(results) = self.bound_results() {
+            params["results"] = results;
+        }
         let mut diags = self
             .kernel
             .call_value("check.run", params)
@@ -629,4 +686,21 @@ pub fn slide_items(v: &Value) -> Vec<(String, &Value)> {
         .enumerate()
         .map(|(i, el)| (format!("/elements/{i}/content"), &el["content"]));
     placeholders.chain(elements).collect()
+}
+
+/// The text runs of an element (a text placeholder, or a free text or shape element), with
+/// their pointer below the element.
+pub fn text_runs(item: &Value) -> Vec<(String, &Value)> {
+    let mut out = Vec::new();
+    for (pi, p) in item["text"]["paragraphs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        for (ri, r) in p["runs"].as_array().into_iter().flatten().enumerate() {
+            out.push((format!("/text/paragraphs/{pi}/runs/{ri}"), r));
+        }
+    }
+    out
 }

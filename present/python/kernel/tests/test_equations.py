@@ -75,3 +75,31 @@ def test_the_outline_export_lists_the_equation(render, tmp_path):
     _, _, extras, _ = _slide_parts({"placeholders": {"body": eq("e-eq1", r"\frac{a}{b}")}})
     assert extras == [r"Equation: $\frac{a}{b}$ (decay in lib/model.py)"]
     assert Path(path).is_file()
+
+
+def bound(eid, text, run_id="r1", name="margin"):
+    return {"type": "text", "id": eid, "text": {"paragraphs": [{"runs": [
+        {"t": "Margin was "}, {"t": text, "run_cite": {"run_id": run_id, "result_name": name, "script": "scripts/m.py", "args": []}},
+    ]}]}}  # fmt: skip
+
+
+def test_a_bound_number_must_show_the_recorded_value(kernel_for, tmp_path):
+    slides = [
+        slide(1, "Title and Content", "Percent", placeholders={"body": bound("e-p", "18.3%")}),
+        slide(2, "Title and Content", "Rounded", placeholders={"body": bound("e-r", "0.18")}),
+        slide(3, "Title and Content", "Wrong", placeholders={"body": bound("e-w", "21%")}),
+        slide(4, "Title and Content", "Missing", placeholders={"body": bound("e-m", "5", name="gone")}),
+    ]
+    p = make_project(tmp_path / "p", "plain", slides, None)
+    k = kernel_for(p)
+    k.dispatcher.call("deck.render", {"out": "exports/deck.pptx", "snapshot_id": "h-1"})
+    results = {"r1/margin": {"name": "margin", "value": 0.18312}, "r1/gone": None}
+    diags = k.dispatcher.call("check.run", {"pptx": "exports/deck.pptx", "engine": False, "results": results})
+    found = {d["element_id"]: d["severity"] for d in diags if d["rule"] == "num.bound"}
+    assert found == {"e-w": "error", "e-m": "warn"}, diags
+    wrong = next(d for d in diags if d["rule"] == "num.bound" and d["element_id"] == "e-w")
+    assert wrong["pointer"] == "/placeholders/body/text/paragraphs/0/runs/1"
+    # A bound number counts as cited; without results (no session) nothing is compared.
+    assert not [d for d in diags if d["rule"] == "src.coverage"]
+    plain = k.dispatcher.call("check.run", {"pptx": "exports/deck.pptx", "engine": False})
+    assert not [d for d in plain if d["rule"] == "num.bound"]

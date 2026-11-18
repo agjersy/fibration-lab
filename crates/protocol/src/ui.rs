@@ -571,6 +571,10 @@ pub struct ArtifactEntry {
     pub size: u64,
     pub created_at: String,
     pub target: String,
+    /// The named results of a `results` artifact, when its file is on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub results: Option<Vec<crate::kernel::NamedResult>>,
 }
 
 /// One undo point of the session's repository (a git checkpoint): code and decks together.

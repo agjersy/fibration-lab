@@ -156,7 +156,7 @@ class Kernel:
             run_dir=run_dir,
             out_dir=out_dir,
             data_dirs=list(self.data_dirs),
-            support_dirs=[self.mpl_dir / "analyst_mpl"],
+            support_dirs=[self.mpl_dir / "analyst_mpl", self.mpl_dir / "analyst_results"],
             tooling_dir=tooling_dir(),
             cache_dirs=[self.runs.mpl_config_dir],
             derived_dir=derived if derived.is_dir() else None,

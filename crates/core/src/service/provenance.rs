@@ -218,9 +218,152 @@ pub async fn place_equation(
     Ok(super::artifacts::PlacedElement { slide: doc, hash })
 }
 
+/// A number as a slide shows it: `decimals` places when given, else four significant digits,
+/// without trailing zeros.
+pub fn format_value(value: f64, decimals: Option<usize>) -> String {
+    if let Some(d) = decimals {
+        return format!("{value:.*}", d.min(12));
+    }
+    if value == 0.0 || !value.is_finite() {
+        return format!("{value}");
+    }
+    let magnitude = value.abs().log10().floor() as i64;
+    let places = (3 - magnitude).clamp(0, 12) as usize;
+    let s = format!("{value:.places$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+/// Insert a number bound to a named result of a run into a text placeholder of a slide: a new
+/// paragraph `before` + the formatted value (and unit) + `after`, the number's text run carrying
+/// a result citation (run id, result name, script, arguments, tree identity) the checker
+/// verifies against the recorded value.
+#[allow(clippy::too_many_arguments)]
+pub fn bind_result(
+    runs: &super::runs::RunService,
+    session: &crate::session::Session,
+    repo: &Path,
+    svc: &analyst_deck::service::DeckService,
+    slide_id: &str,
+    placeholder: &str,
+    run_id: &str,
+    result_name: &str,
+    decimals: Option<usize>,
+    before: Option<&str>,
+    after: Option<&str>,
+) -> ServiceResult<super::artifacts::PlacedElement> {
+    use analyst_protocol::kernel::ArtifactKind;
+    let entry = super::artifacts::list(runs, session, repo, Some(run_id), Some(ArtifactKind::Results), Some(1))
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            ServiceError::not_found(format!(
+                "run `{run_id}` recorded no named results; the script records them with analyst_results.record(name, value, unit)"
+            ))
+        })?;
+    let result = entry
+        .results
+        .as_ref()
+        .and_then(|rs| rs.iter().find(|r| r.name == result_name))
+        .cloned()
+        .ok_or_else(|| {
+            ServiceError::not_found(format!(
+                "run `{run_id}` has no result `{result_name}` (results: {})",
+                entry
+                    .results
+                    .iter()
+                    .flatten()
+                    .map(|r| r.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+    let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
+        .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
+    let (slide, hash) = svc
+        .ws
+        .deck()
+        .read_slide(&id)
+        .map_err(|e| ServiceError::not_found(e.to_string()))?;
+    let mut doc =
+        serde_json::to_value(&slide).map_err(|e| ServiceError::internal(e.to_string()))?;
+    let mut number = format_value(result.value, decimals);
+    if let Some(u) = result.unit.as_deref().filter(|u| !u.is_empty()) {
+        number = if u == "%" {
+            format!("{number}%")
+        } else {
+            format!("{number} {u}")
+        };
+    }
+    let mut runs_json = Vec::new();
+    if let Some(b) = before.filter(|b| !b.is_empty()) {
+        runs_json.push(json!({"t": b}));
+    }
+    runs_json.push(json!({
+        "t": number,
+        "run_cite": {
+            "run_id": entry.run_id,
+            "result_name": result.name,
+            "script": entry.script,
+            "args": entry.args,
+            "tree_hash": entry.tree_hash,
+        },
+    }));
+    if let Some(a) = after.filter(|a| !a.is_empty()) {
+        runs_json.push(json!({"t": a}));
+    }
+    let paragraph = json!({"runs": runs_json});
+    let slot = &mut doc["placeholders"][placeholder];
+    match slot["type"].as_str() {
+        Some("text") => {
+            let paras = slot["text"]["paragraphs"]
+                .as_array_mut()
+                .ok_or_else(|| ServiceError::internal("a text element without paragraphs"))?;
+            // An empty placeholder text is replaced, not appended to.
+            let empty = paras.iter().all(|p| {
+                p["runs"]
+                    .as_array()
+                    .is_none_or(|rs| rs.iter().all(|r| r["t"].as_str().unwrap_or("").is_empty()))
+            });
+            if empty {
+                paras.clear();
+            }
+            paras.push(paragraph);
+        }
+        None | Some("empty") => {
+            let element_id = super::artifacts::element_id_for(&doc, placeholder, "e-num");
+            doc["placeholders"][placeholder] = json!({
+                "type": "text",
+                "id": element_id,
+                "text": {"paragraphs": [paragraph]},
+            });
+        }
+        Some(other) => {
+            return Err(ServiceError::invalid(format!(
+                "placeholder `{placeholder}` holds {other}, not text; a number goes into a text placeholder"
+            )))
+        }
+    }
+    Ok(super::artifacts::PlacedElement { slide: doc, hash })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbers_are_shown_at_a_sensible_precision() {
+        assert_eq!(format_value(1.8234, None), "1.823");
+        assert_eq!(format_value(0.18312, None), "0.1831");
+        assert_eq!(format_value(18234.7, None), "18235");
+        assert_eq!(format_value(2.5, None), "2.5");
+        assert_eq!(format_value(-0.000123456, None), "-0.0001235");
+        assert_eq!(format_value(0.0, None), "0");
+        assert_eq!(format_value(1.8234, Some(1)), "1.8");
+    }
 
     #[test]
     fn file_hashes_are_of_content_and_stay_inside_the_repo() {

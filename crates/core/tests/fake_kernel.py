@@ -47,6 +47,8 @@ def artifact_kind(path):
         return "table"
     if ext in ("npy", "npz"):
         return "array"
+    if path.rsplit("/", 1)[-1] == "results.json":
+        return "results"
     if ext == "json":
         return "json"
     if ext in ("txt", "md", "log"):

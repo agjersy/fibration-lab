@@ -1172,6 +1172,38 @@
       ],
       "type": "string"
     },
+    "ResultCite": {
+      "additionalProperties": false,
+      "description": "A citation of a named result of an analysis run (`analyst_results.record`): the run, the result's name, and what produced it. When `tree_hash` no longer matches the project's working tree, the checker reports the text as stale.",
+      "properties": {
+        "args": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "result_name": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "script": {
+          "description": "The script that was run, repo-relative.",
+          "type": "string"
+        },
+        "tree_hash": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result_name",
+        "run_id",
+        "script"
+      ],
+      "type": "object"
+    },
     "Run": {
       "additionalProperties": false,
       "properties": {
@@ -1193,6 +1225,14 @@
         },
         "link": {
           "type": "string"
+        },
+        "run_cite": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ResultCite"
+            }
+          ],
+          "description": "The number in this run is a named result of an analysis run: the checker verifies the displayed number against the recorded value."
         },
         "t": {
           "type": "string"

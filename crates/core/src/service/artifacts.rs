@@ -43,7 +43,45 @@ fn entry(
         size: a.size,
         created_at: a.created_at.clone(),
         target: run.target.clone(),
+        results: None,
     }
+}
+
+/// The named results in a run's `results.json`: the file in the repository (a local run, or
+/// a remote run's file pulled back), else the session's copy of what was pulled.
+pub fn read_results(
+    repo: &Path,
+    artifacts_dir: &Path,
+    run_id: &str,
+    path: &str,
+) -> Option<Vec<analyst_protocol::kernel::NamedResult>> {
+    let local = crate::util::resolve_in_repo(repo, path, true)
+        .ok()
+        .filter(|p| p.is_file());
+    let pulled = super::figures::safe_run_id(run_id)
+        .then(|| artifacts_dir.join(run_id).join(path))
+        .filter(|p| p.is_file());
+    let file = local.or(pulled)?;
+    let text = std::fs::read_to_string(file).ok()?;
+    let parsed: analyst_protocol::kernel::ResultsFile = serde_json::from_str(&text).ok()?;
+    Some(parsed.results)
+}
+
+/// One named result of one run, from the artifact index (`None` when the run recorded no
+/// such result or its file is not on this machine).
+pub fn named_result(
+    runs: &RunService,
+    repo: &Path,
+    artifacts_dir: &Path,
+    run_id: &str,
+    name: &str,
+) -> Option<analyst_protocol::kernel::NamedResult> {
+    runs.artifacts(run_id)
+        .into_iter()
+        .filter(|a| a.kind == ArtifactKind::Results)
+        .find_map(|a| read_results(repo, artifacts_dir, run_id, &a.path))?
+        .into_iter()
+        .find(|r| r.name == name)
 }
 
 /// The artifacts of the session's runs, newest run first. `run_id` and `kind` narrow the
@@ -74,7 +112,11 @@ pub fn list(
             if kind.is_some_and(|k| k != a.kind) {
                 continue;
             }
-            out.push(entry(&run, &a, current.as_deref()));
+            let mut e = entry(&run, &a, current.as_deref());
+            if a.kind == ArtifactKind::Results {
+                e.results = read_results(repo, &session.artifacts_dir(), &run.meta.run_id, &a.path);
+            }
+            out.push(e);
             if out.len() >= max {
                 return out;
             }

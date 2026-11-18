@@ -636,6 +636,28 @@ pub struct Run {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub cite: Option<Vec<Cite>>,
+    /// The number in this run is a named result of an analysis run: the checker verifies the
+    /// displayed number against the recorded value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_cite: Option<ResultCite>,
+}
+
+/// A citation of a named result of an analysis run (`analyst_results.record`): the run, the
+/// result's name, and what produced it. When `tree_hash` no longer matches the project's
+/// working tree, the checker reports the text as stale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ResultCite {
+    pub run_id: String,
+    pub result_name: String,
+    /// The script that was run, repo-relative.
+    pub script: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tree_hash: Option<String>,
 }
 
 impl Run {

@@ -79,6 +79,7 @@ export type { RefId } from "./RefId";
 export type { RefKind } from "./RefKind";
 export type { RefView } from "./RefView";
 export type { RequestId } from "./RequestId";
+export type { ResultCite } from "./ResultCite";
 export type { Run } from "./Run";
 export type { RunCite } from "./RunCite";
 export type { SandboxInfo } from "./SandboxInfo";

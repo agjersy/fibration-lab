@@ -97,7 +97,7 @@ export interface FigureSidecar {
 }
 
 export interface Artifact {
-  kind: "figure" | "table" | "array" | "json" | "text" | "file";
+  kind: "figure" | "table" | "array" | "json" | "text" | "file" | "results";
   path: string;
   size: number;
   created_at: string;
@@ -383,6 +383,16 @@ export interface ArtifactEntry {
   size: number;
   created_at: string;
   target: string;
+  /** The named results of a `results` artifact, when its file is on this machine. */
+  results?: NamedResult[];
+}
+
+/** One named numeric result of a run (`analyst_results.record`). */
+export interface NamedResult {
+  name: string;
+  value: number;
+  unit?: string;
+  uncertainty?: number;
 }
 
 /** One undo point of the session's repository: code and decks together. */

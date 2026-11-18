@@ -220,3 +220,6 @@
   border-color: var(--warning);
   background: var(--warning-soft);
 }
+.slide-preview .sp-bound {
+  border-bottom: 1px dotted currentColor;
+}

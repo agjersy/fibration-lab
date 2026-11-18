@@ -46,6 +46,7 @@ export type { Location } from "./Location";
 export type { Mode } from "./Mode";
 export type { ModelCapabilitiesView } from "./ModelCapabilitiesView";
 export type { ModelEntry } from "./ModelEntry";
+export type { NamedResult } from "./NamedResult";
 export type { OptionInfo } from "./OptionInfo";
 export type { OutEntry } from "./OutEntry";
 export type { OutListResult } from "./OutListResult";

@@ -54,6 +54,7 @@ pub fn mode_rules(mode: Mode) -> ModeRules {
             rules
                 .allow_tool(crate::tools::registry::PLACE_FIGURE)
                 .allow_tool(crate::tools::registry::PLACE_EQUATION)
+                .allow_tool(crate::tools::registry::INSERT_RESULT)
         }
         // Wording, layout choice, and order of existing slides: no new slides, no
         // deletions, no new claims (citations) or elements.

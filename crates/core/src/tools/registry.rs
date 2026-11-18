@@ -35,8 +35,11 @@ pub const PLACE_FIGURE: &str = "slide.place_figure";
 /// `slide.place_equation`: place the equation of a function on a slide, with its equation record.
 pub const PLACE_EQUATION: &str = "slide.place_equation";
 
+/// `slide.insert_result`: insert a number bound to a named result of a run into slide text.
+pub const INSERT_RESULT: &str = "slide.insert_result";
+
 /// The tools that place analysis results on slides (structured decks only).
-pub const PLACE_TOOLS: [&str; 2] = [PLACE_FIGURE, PLACE_EQUATION];
+pub const PLACE_TOOLS: [&str; 3] = [PLACE_FIGURE, PLACE_EQUATION, INSERT_RESULT];
 
 /// Which kinds of decks the project has; the deck tools offered follow from it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -111,6 +114,16 @@ fn all() -> &'static [ToolSpec] {
             parameters: obj(
                 json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "path": {"type": "string", "description": "The repo-relative source file."}, "function": {"type": "string", "description": "The function's name or qualified name."}, "placeholder": {"type": "string", "description": "The placeholder key to fill; by default the first empty non-title placeholder that takes text or an image."}}),
                 &["slide_id", "path", "function"],
+            ),
+        });
+        tools.push(ToolSpec {
+            deck: true,
+            name: INSERT_RESULT,
+            class: ToolClass::Edit,
+            description: "Propose adding a paragraph with a number bound to a named result of an analysis run (recorded by the script with analyst_results.record; artifacts_list shows them on the run's `results` artifact). The number's text carries a citation of the run and the result, so the checker verifies the displayed number against the recorded value and warns when the code has changed since.",
+            parameters: obj(
+                json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "placeholder": {"type": "string", "description": "The text placeholder key (default `body`)."}, "run_id": {"type": "string"}, "result_name": {"type": "string"}, "decimals": {"type": "integer", "minimum": 0, "maximum": 12, "description": "Decimal places; by default four significant digits."}, "before": {"type": "string", "description": "Text before the number in the paragraph."}, "after": {"type": "string", "description": "Text after the number."}}),
+                &["slide_id", "run_id", "result_name"],
             ),
         });
         tools

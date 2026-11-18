@@ -292,6 +292,33 @@ impl ToolContext {
         Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
     }
 
+    /// `slide.insert_result`: the paragraph with the bound number made by
+    /// [`crate::service::provenance::bind_result`], as the arguments of the equivalent
+    /// `slide.propose_update`.
+    async fn insert_result_args(&self, args: &Value) -> Result<Value, ToolError> {
+        let slug = self.deck_slug(args)?;
+        let slide_id = str_arg(args, "slide_id")?;
+        let svc = self.decks.open(&slug).await?;
+        let placed = crate::service::provenance::bind_result(
+            &self.runs,
+            &self.session,
+            &self.repo,
+            &svc,
+            slide_id,
+            args.get("placeholder")
+                .and_then(Value::as_str)
+                .unwrap_or("body"),
+            str_arg(args, "run_id")?,
+            str_arg(args, "result_name")?,
+            args.get("decimals")
+                .and_then(Value::as_u64)
+                .map(|d| d as usize),
+            args.get("before").and_then(Value::as_str),
+            args.get("after").and_then(Value::as_str),
+        )?;
+        Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
+    }
+
     /// Run the first half of a deck tool: read tools finish here, edit tools come back as a
     /// [`Change`] for the loop to gate. Starts the deck's kernel when needed.
     pub async fn deck_prepare(
@@ -301,6 +328,12 @@ impl ToolContext {
     ) -> Result<(Arc<DeckService>, Prepared), ToolError> {
         if name == crate::tools::registry::PLACE_FIGURE {
             let update = self.place_figure_args(args).await?;
+            return self
+                .deck_prepare_tool("slide.propose_update", &update)
+                .await;
+        }
+        if name == crate::tools::registry::INSERT_RESULT {
+            let update = self.insert_result_args(args).await?;
             return self
                 .deck_prepare_tool("slide.propose_update", &update)
                 .await;

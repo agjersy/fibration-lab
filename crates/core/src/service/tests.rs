@@ -2562,3 +2562,131 @@ async fn an_equation_travels_to_a_slide_with_its_record_and_goes_stale() {
         .any(|d| d["rule"] == "stale" && d["message"].as_str().unwrap().contains("double_exp")));
     fx.wb.shutdown().await;
 }
+
+/// Named results: a run's `results.json` is a `results` artifact whose values the artifact
+/// index exposes; a number bound to one on a slide is checked against the recorded value, and
+/// goes stale when the code changes.
+#[tokio::test]
+async fn a_bound_number_is_checked_against_the_runs_named_result() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    // What `analyst_results.record("margin", 0.18312)` writes.
+    let script = r#"import json, os
+out = os.environ["ANALYST_OUT_DIR"]
+os.makedirs(out, exist_ok=True)
+json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name": "tau", "value": 1.8234, "unit": "s"}]}, open(os.path.join(out, "results.json"), "w"))
+"#;
+    std::fs::write(fx.rt.repo.join("scripts/margin.py"), script).unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let mut rx = fx.rt.subscribe();
+    let run = fx
+        .rt
+        .run_start("scripts/margin.py", vec!["--q".into(), "3".into()])
+        .await
+        .unwrap();
+    let run_id = run.meta.run_id.clone();
+    next_matching(
+        &mut rx,
+        |e| matches!(e, SessionEvent::RunDone { run } if run.meta.run_id == run_id),
+    )
+    .await;
+    let listed = fx.rt.artifacts_list(
+        Some(&run_id),
+        Some(analyst_protocol::kernel::ArtifactKind::Results),
+        None,
+    );
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let results = listed[0].results.clone().unwrap();
+    assert_eq!(results[1].name, "tau");
+    assert_eq!(results[1].unit.as_deref(), Some("s"));
+
+    let deck = fx.rt.deck("q3").await.unwrap();
+    let slide = deck.slide_create(None, "Title and Content").await.unwrap();
+    let slide_id = slide.slide.id.to_string();
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-num",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.decks = fx.rt.decks.clone();
+    let missing = ctx
+        .dispatch(
+            "t0",
+            "slide.insert_result",
+            &json!({"slide_id": slide_id, "run_id": run_id, "result_name": "nope"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(missing.message.contains("tau"), "{}", missing.message);
+    ctx.dispatch(
+        "t1",
+        "slide.insert_result",
+        &json!({"slide_id": slide_id, "run_id": run_id, "result_name": "tau", "before": "The decay time is "}),
+    )
+    .await
+    .unwrap();
+    let path = fx
+        .rt
+        .repo
+        .join(crate::service::decks::slide_rel("q3", &slide_id));
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let runs = &doc["placeholders"]["body"]["text"]["paragraphs"][0]["runs"];
+    assert_eq!(runs[0]["t"], "The decay time is ");
+    assert_eq!(runs[1]["t"], "1.823 s");
+    let cite = &runs[1]["run_cite"];
+    assert_eq!(cite["run_id"], run_id.as_str());
+    assert_eq!(cite["result_name"], "tau");
+    assert_eq!(cite["script"], "scripts/margin.py");
+    assert_eq!(cite["args"], json!(["--q", "3"]));
+    assert!(cite["tree_hash"].is_string());
+
+    let bound = |diags: &[Value]| -> Vec<Value> {
+        diags
+            .iter()
+            .filter(|d| d["rule"] == "num.bound" || d["rule"] == "stale")
+            .cloned()
+            .collect()
+    };
+    let diags = deck.run_checks(None).await.unwrap();
+    assert!(bound(&diags).is_empty(), "{diags:?}");
+
+    // The user types another number: an error naming the recorded value.
+    let mut edited = doc.clone();
+    edited["placeholders"]["body"]["text"]["paragraphs"][0]["runs"][1]["t"] = json!("2.1 s");
+    let (_, hash) = deck
+        .ws
+        .deck()
+        .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+        .unwrap();
+    deck.slide_update(serde_json::from_value(edited).unwrap(), Some(&hash))
+        .unwrap();
+    let diags = deck.run_checks(None).await.unwrap();
+    let found = bound(&diags);
+    assert_eq!(found.len(), 1, "{diags:?}");
+    assert_eq!(found[0]["rule"], "num.bound");
+    assert_eq!(found[0]["severity"], "error");
+    assert!(found[0]["message"].as_str().unwrap().contains("1.8234"));
+
+    // The script changes: the bound number is stale too.
+    std::fs::write(
+        fx.rt.repo.join("scripts/margin.py"),
+        script.replace("1.8234", "1.9"),
+    )
+    .unwrap();
+    let diags = deck.run_checks(None).await.unwrap();
+    let stale: Vec<&Value> = diags.iter().filter(|d| d["rule"] == "stale").collect();
+    assert_eq!(stale.len(), 1, "{diags:?}");
+    assert_eq!(
+        stale[0]["pointer"],
+        "/placeholders/body/text/paragraphs/0/runs/1"
+    );
+    fx.wb.shutdown().await;
+}
