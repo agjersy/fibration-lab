@@ -285,3 +285,31 @@ describe("helpers", () => {
     expect(dropTarget(order, "b", "c", true)).toBe("a");
   });
 });
+
+describe("run citations on slide images", () => {
+  const cite = { run_id: "20261118-090000-abc123", artifact: "out/decay_sim/20261118-090000-abc123/figures/fit.png", script: "scripts/decay_sim.py", args: ["--tau", "1.8"] };
+  const placed = (): Slide => {
+    const site = demoSlides().find((s) => s.id === "s-site")!;
+    return { ...site, placeholders: { ...site.placeholders, body: { type: "image", id: "e-img1", asset: "assets/fit.png", alt: "fit", run_cite: cite } } };
+  };
+
+  it("shows a badge that opens the run, with its script and arguments", () => {
+    const clicked: string[] = [];
+    const el = render(<SlidePreview slide={placed()} template={TEMPLATE} width={640} resolveAsset={() => SITE_IMAGE_URL} onRunCite={(c, id) => clicked.push(`${c.run_id}:${id}`)} />);
+    const badge = el.querySelector<HTMLButtonElement>('[data-testid="run-cite-badge"]')!;
+    expect(badge.title).toContain("scripts/decay_sim.py --tau 1.8");
+    expect(badge.textContent).toBe("run");
+    act(() => badge.click());
+    expect(clicked).toEqual([`${cite.run_id}:e-img1`]);
+  });
+
+  it("marks a stale element (its run's code has changed)", () => {
+    const el = render(<SlidePreview slide={placed()} template={TEMPLATE} width={640} resolveAsset={() => SITE_IMAGE_URL} stale={new Set(["e-img1"])} />);
+    expect(el.querySelector('.sp-image[data-stale="true"]')).not.toBeNull();
+    const badge = el.querySelector<HTMLButtonElement>('[data-testid="run-cite-badge"]')!;
+    expect(badge.className).toContain("stale");
+    expect(badge.title).toContain("stale");
+    // Without a handler the badge is shown but inert (thumbnails).
+    expect(badge.disabled).toBe(true);
+  });
+});
