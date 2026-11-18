@@ -9,6 +9,7 @@ import { ChartView } from "./ChartView";
 import { DiagramView } from "./DiagramView";
 import { emuRect, ptToPx, scaleFor, slideHeight, slideSize } from "./geometry";
 import type { Rect } from "./geometry";
+import type { VerificationState } from "../../../ipc";
 import { canonicalText, domToText, mergeEdited, paragraphElement, restyleParagraph, shiftLevel, splitParagraph, textToHtml } from "./textModel";
 import type { TextStyleContext } from "./textModel";
 import { contrastOn, defaultAlign, fontStack, mix, resolveColor } from "./theme";
@@ -36,9 +37,19 @@ export interface SlidePreviewProps {
   stale?: ReadonlySet<string>;
   /** An equation was clicked (open it in the Equations panel at its function). */
   onEquation?: (cite: EqCite, elementId: string) => void;
+  /** Verification state of the slide's claims (elements that cite the analysis), by element id. */
+  verification?: ReadonlyMap<string, VerificationState>;
 }
 
 const Katex = lazy(() => import("../../panels/Katex"));
+
+const VERIFY_MARK: Record<VerificationState, string> = { unverified: "?", machine_checked: "⚙", human_verified: "✓", flagged: "⚑" };
+const VERIFY_TITLE: Record<VerificationState, string> = {
+  unverified: "Not verified by you yet",
+  machine_checked: "Checked by a tool or the agent, not by you",
+  human_verified: "Verified by you",
+  flagged: "Flagged",
+};
 
 const EMPTY_TEXT: Text = { paragraphs: [{ runs: [{ t: "" }] }] };
 const FREE_LEVELS = (theme: Theme): LevelStyle[] => [0, 1, 2, 3, 4].map((level) => ({ level, font: theme.fonts.minor, size_pt: Math.max(10, 18 - level * 2), bold: false, color: "dk1", bullet: level > 0, space_before_pt: 4, line_spacing: 1, mar_l: level * 342900 }));
@@ -65,7 +76,7 @@ function applyFit(box: HTMLElement | null, inner: HTMLElement | null, shrink: bo
 
 const NO_STALE: ReadonlySet<string> = new Set();
 
-export function SlidePreview({ slide, template, width, deck, index, resolveAsset, interactive = false, onEditText, onCite, onRunCite, stale = NO_STALE, onEquation }: SlidePreviewProps) {
+export function SlidePreview({ slide, template, width, deck, index, resolveAsset, interactive = false, onEditText, onCite, onRunCite, stale = NO_STALE, onEquation, verification }: SlidePreviewProps) {
   const size = slideSize(template, deck);
   const scale = scaleFor(size, width);
   const height = slideHeight(size, width);
@@ -114,6 +125,31 @@ export function SlidePreview({ slide, template, width, deck, index, resolveAsset
       {slide.elements.map((el) => (
         <FreeElementView key={el.id} element={el} shared={shared} />
       ))}
+      {verification && verification.size > 0 && layout
+        ? [...verification.entries()].map(([id, state]) => {
+            const key = Object.keys(slide.placeholders).find((k) => {
+              const c = slide.placeholders[k];
+              return c && c.type !== "empty" && c.id === id;
+            });
+            const ph = key ? layout.placeholders.find((p) => p.key === key) : undefined;
+            const free = slide.elements.find((e) => e.id === id);
+            const box = ph ? emuRect(ph, scale) : free ? emuRect(free, scale) : null;
+            if (!box) return null;
+            return (
+              <span
+                key={`v-${id}`}
+                className={`sp-verify ${state}`}
+                data-testid="slide-verify-badge"
+                data-element={id}
+                data-state={state}
+                title={VERIFY_TITLE[state]}
+                style={{ left: box.left + box.width, top: box.top, fontSize: Math.max(8, ptToPx(9, scale)) }}
+              >
+                {VERIFY_MARK[state]}
+              </span>
+            );
+          })
+        : null}
       {slide.kind === "generated" ? (
         <div className="sp-generated" style={{ fontSize: Math.max(8, ptToPx(10, scale)) }} title="Drawn by a script (generated slide)">
           generated

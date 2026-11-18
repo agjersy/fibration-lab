@@ -223,3 +223,27 @@
 .slide-preview .sp-bound {
   border-bottom: 1px dotted currentColor;
 }
+.slide-preview .sp-verify {
+  position: absolute;
+  transform: translate(-110%, 10%);
+  padding: 0 0.45em;
+  border-radius: 1em;
+  border: 1px solid rgba(27, 31, 36, 0.35);
+  background: rgba(255, 255, 255, 0.92);
+  color: #1b1f24;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  pointer-events: auto;
+  z-index: 2;
+}
+.slide-preview .sp-verify.human_verified {
+  border-color: var(--success);
+  color: var(--success);
+}
+.slide-preview .sp-verify.flagged {
+  border-color: var(--error);
+  color: var(--error);
+}
+.slide-preview .sp-verify.unverified {
+  border-color: var(--warning);
+}

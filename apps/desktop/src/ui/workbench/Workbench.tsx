@@ -12,6 +12,7 @@ import { TerminalPanel } from "../bottom/TerminalPanel";
 import { EditorPanel } from "../editor/EditorPanel";
 import { ProposalReviewPanel } from "../editor/ProposalReviewPanel";
 import { EquationsPanel } from "../panels/EquationsPanel";
+import { VerifyPanel } from "../panels/VerifyPanel";
 import { FiguresPanel } from "../panels/FiguresPanel";
 import { PackagesPanel } from "../panels/PackagesPanel";
 import { LibraryView } from "../sidebar/LibraryView";
@@ -57,6 +58,7 @@ const components: Record<string, PanelComponent> = {
   figures: guarded("Figures", FiguresPanel),
   equations: guarded("Equations", EquationsPanel),
   packages: guarded("Packages", PackagesPanel),
+  verify: guarded("Verify", VerifyPanel),
   // The deck workbench: the same dock, so panels of both can sit side by side.
   decks: guarded("Decks", DecksView),
   slides: guarded("Slides", SlidesPanel),
@@ -109,6 +111,7 @@ export function buildDefaultLayout(api: DockviewApi): void {
   api.addPanel({ id: "figures", component: "figures", tabComponent: "fixed", title: "Figures", position: { referenceGroup: GROUPS.panels } });
   api.addPanel({ id: "equations", component: "equations", tabComponent: "fixed", title: "Equations", position: { referenceGroup: GROUPS.panels }, inactive: true });
   api.addPanel({ id: "packages", component: "packages", tabComponent: "fixed", title: "Packages", position: { referenceGroup: GROUPS.panels }, inactive: true });
+  api.addPanel({ id: "verify", component: "verify", tabComponent: "closable", title: "Verify", position: { referenceGroup: GROUPS.panels }, inactive: true });
   sidebar.api.setSize({ width: 300 });
   chat.api.setSize({ width: 400 });
   bottom.api.setSize({ height: 220 });

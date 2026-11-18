@@ -73,6 +73,8 @@ export interface DeckAgentApi {
   firstSlide(session: SessionId): { deck: string; slide: Deck.Slide } | null;
   /** Writes an accepted slide proposal (`by: "agent"`, as the service reports it). */
   applySlide(session: SessionId, deck: string, slide: Deck.Slide): void;
+  /** Every slide of every deck of the session (for the verification queue). */
+  allSlides(session: SessionId): { deck: string; slide: Deck.Slide }[];
 }
 
 interface MockDeck {
@@ -604,6 +606,16 @@ export function makeDeckMock(env: DeckMockEnv): { handlers: DeckHandlers; agent:
       const d = deckOf(session, deck);
       d.slides.set(slide.id, { slide: structuredClone(slide), hash: hashOf(slide) });
       changed(session, d, [slide.id], [], "agent");
+    },
+    allSlides: (session) => {
+      const out: { deck: string; slide: Deck.Slide }[] = [];
+      for (const d of decks.get(session)?.values() ?? []) {
+        for (const id of order(d)) {
+          const entry = d.slides.get(id);
+          if (entry) out.push({ deck: d.summary.slug, slide: structuredClone(entry.slide) });
+        }
+      }
+      return out;
     },
   };
   return { handlers, agent };

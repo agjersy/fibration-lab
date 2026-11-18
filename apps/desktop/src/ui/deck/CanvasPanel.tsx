@@ -10,6 +10,7 @@ import { selectedView, staleElements } from "../../state/decks";
 import { useElementSize } from "../common/useElementSize";
 import { useDeckContext } from "./context";
 import { focusEquation, focusRunCite, openCite } from "./navigation";
+import { slideClaimStates, useVerificationList } from "../../state/verification";
 import { NoDeck } from "./NoDeck";
 import { slideSize } from "./slide/geometry";
 import { SlidePreview } from "./slide/SlidePreview";
@@ -33,6 +34,7 @@ export function CanvasPanel() {
   const view = selectedView(ctx?.d ?? null);
   const doc = ctx?.d.deck ?? null;
   const info = ctx?.d.info ?? null;
+  const verification = useVerificationList(ctx?.session ?? null);
 
   let stage: React.ReactNode = null;
   let bar: React.ReactNode = null;
@@ -80,6 +82,7 @@ export function CanvasPanel() {
                 onRunCite={(cite) => focusRunCite(session, cite)}
                 onEquation={(cite) => focusEquation(cite)}
                 stale={staleElements(d, slide.id)}
+                verification={slideClaimStates(verification, deck, slide.id)}
               />
             )}
           </div>

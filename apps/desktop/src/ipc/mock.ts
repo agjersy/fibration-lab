@@ -16,6 +16,7 @@ import { applyPolicyPatch } from "../state/policyPresets";
 import { slideTitle, withTitle } from "../deck/model";
 import { hashOf, makeDeckMock } from "./mock/decks";
 import type { DeckAgentApi } from "./mock/decks";
+import { makeVerificationMock } from "./mock/verification";
 import { unifiedDiff } from "./mock/diff";
 import { decayPng, residualsPng, simParamsFromArgs, type MockPng, type SimParams } from "./mock/figure";
 import { DOUBLE_EXP_SNIPPET, RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED, fixtureFiles } from "./mock/fixtures";
@@ -320,6 +321,15 @@ export class MockBackend implements Backend {
         eq.tier === "declared" ? { status: "agree", trials: 32, tol: 1e-6 } : { status: "unavailable", trials: 0, reason: eq.tier === "derived" ? "derived from the code itself" : "display-only LaTeX" };
       return { latex: eq.latex, tier: eq.tier, check, qualname: eq.qualname, path, source_hash: hashOf(content) };
     },
+  });
+  private readonly verificationMock = makeVerificationMock({
+    requireOpen: (session) => {
+      this.requireOpen(session);
+    },
+    files: (session) => this.requireOpen(session).files,
+    artifacts: (session) => this.artifacts(session),
+    slides: (session) => this.deckMock.agent.allSlides(session),
+    emit: (session, event) => this.emit(session, event),
   });
   private get deckAgent(): DeckAgentApi {
     return this.deckMock.agent;
@@ -1650,5 +1660,6 @@ export class MockBackend implements Backend {
 
     // Decks, history, and the artifact index (IPC.md section 9).
     ...this.deckMock.handlers,
+    ...this.verificationMock,
   };
 }

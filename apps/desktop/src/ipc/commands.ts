@@ -28,6 +28,9 @@ import type {
   ProviderKeyStatus,
   RunDetail,
   RunId,
+  VerificationView,
+  VerifyItem,
+  VerifyState,
   RunView,
   SearchHit,
   SessionId,
@@ -147,6 +150,9 @@ export interface Commands {
   history_revert_turn: { args: S & { turn: string }; result: CheckpointView };
   // ---- artifact index: what runs produced, for run citations on slides ----
   artifacts_list: { args: S & { run_id?: RunId; kind?: ArtifactKind; limit?: number }; result: ArtifactEntry[] };
+  verification_list: { args: S; result: VerificationView[] };
+  verification_set: { args: S & { item: VerifyItem; state: VerifyState; note?: string }; result: VerificationView };
+  deck_verification_gaps: { args: S & { deck: string }; result: VerificationView[] };
 }
 
 export type CommandName = keyof Commands;

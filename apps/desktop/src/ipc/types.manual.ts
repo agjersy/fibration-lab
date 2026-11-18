@@ -395,6 +395,46 @@ export interface NamedResult {
   uncertainty?: number;
 }
 
+/** Something a person can verify (docs/IPC.md section 10). */
+export type VerifyItem =
+  | { kind: "equation"; path: string; qualname: string }
+  | { kind: "figure"; run_id: RunId; artifact: string }
+  | { kind: "result"; run_id: RunId; name: string }
+  | { kind: "slide_claim"; deck: string; slide_id: string; element_id: string }
+  | { kind: "code_hunk"; proposal_id: string };
+
+export type VerifyState = "machine_checked" | "human_verified" | "flagged";
+export type VerificationState = "unverified" | VerifyState;
+export type Verifier = "user" | "agent";
+
+export interface LedgerEntry {
+  item: VerifyItem;
+  key: string;
+  hash: string;
+  state: VerifyState;
+  by: Verifier;
+  at: string;
+  note?: string;
+}
+
+export interface SlideUse {
+  deck: string;
+  slide_id: string;
+  element_id: string;
+}
+
+export interface VerificationView {
+  key: string;
+  item: VerifyItem;
+  label: string;
+  state: VerificationState;
+  /** It had an entry for content it no longer has. */
+  stale: boolean;
+  hash: string | null;
+  entry: LedgerEntry | null;
+  on_slides: SlideUse[];
+}
+
 /** One undo point of the session's repository: code and decks together. */
 export interface CheckpointView {
   id: string;
@@ -479,6 +519,7 @@ export type SessionEvent =
   /** An event of one deck; `event` is a `DeckEvent` of `./generated/deck`. */
   | { type: "deck"; deck: string; event: unknown }
   | { type: "decks_changed"; decks: DeckSummary[] }
+  | { type: "verification_changed"; key: string }
   | { type: "diagnostics"; paths: string[]; diagnostics: Diagnostic[] }
   | { type: "files_changed"; paths: string[] }
   | { type: "index_changed" }

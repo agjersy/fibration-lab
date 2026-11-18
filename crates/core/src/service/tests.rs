@@ -2548,12 +2548,38 @@ async fn an_equation_travels_to_a_slide_with_its_record_and_goes_stale() {
         vec![(second_id.clone(), "info".into())]
     );
 
+    // Before an export: the deck rests on three slide claims and the equations they cite.
+    use analyst_protocol::ui::{VerificationState, VerifyItem, VerifyState};
+    let gaps = fx.rt.deck_verification_gaps("q3").unwrap();
+    let claims = gaps
+        .iter()
+        .filter(|g| matches!(g.item, VerifyItem::SlideClaim { .. }))
+        .count();
+    assert_eq!(claims, 3, "{gaps:?}");
+    assert!(gaps.iter().any(|g| g.item
+        == VerifyItem::Equation {
+            path: "lib/model.py".into(),
+            qualname: "double_exp".into()
+        }));
+    for g in &gaps {
+        fx.rt
+            .verification_set(&g.item, VerifyState::HumanVerified, None)
+            .unwrap();
+    }
+    assert!(fx.rt.deck_verification_gaps("q3").unwrap().is_empty());
+
     // The source changes: every equation from it is stale.
     std::fs::write(
         fx.rt.repo.join("lib/model.py"),
         source.replace("A\n", "B\n"),
     )
     .unwrap();
+    // ... and what was verified about it no longer counts.
+    let gaps = fx.rt.deck_verification_gaps("q3").unwrap();
+    assert!(gaps.len() >= 4, "{gaps:?}");
+    assert!(gaps
+        .iter()
+        .all(|g| g.state == VerificationState::Unverified && g.stale));
     let diags = deck.run_checks(None).await.unwrap();
     let stale = of(&diags, "stale");
     assert_eq!(stale.len(), 3, "{diags:?}");

@@ -93,6 +93,8 @@ export const DECK_PANELS = {
   checks: { title: "Checks", group: GROUPS.bottom },
   notes: { title: "Notes", group: GROUPS.bottom },
   exports: { title: "Exports", group: GROUPS.bottom },
+  // The verification queue: added on demand like the deck panels (layouts saved before it).
+  verify: { title: "Verify", group: GROUPS.panels },
 } as const;
 
 export type DeckPanel = keyof typeof DECK_PANELS;
