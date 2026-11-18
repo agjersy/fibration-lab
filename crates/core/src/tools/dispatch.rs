@@ -543,6 +543,51 @@ impl ToolContext {
                 let p: OutReadParams = serde_json::from_value(args.clone()).map_err(bad_args)?;
                 Ok(serde_json::to_value(self.kernel()?.out_read(p).await?)?)
             }
+            "verify.list" => {
+                let scope = crate::service::verification::Scope {
+                    repo: &self.repo,
+                    runs: &self.runs,
+                    session: &self.session,
+                };
+                let only = args
+                    .get("unverified_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let items: Vec<_> = crate::service::verification::list(&scope)
+                    .into_iter()
+                    .filter(|v| {
+                        !only || v.state == analyst_protocol::ui::VerificationState::Unverified
+                    })
+                    .take(200)
+                    .collect();
+                Ok(json!({"items": items}))
+            }
+            "verify.record" => {
+                let item: analyst_protocol::ui::VerifyItem =
+                    serde_json::from_value(args.get("item").cloned().unwrap_or(Value::Null))
+                        .map_err(bad_args)?;
+                let state: analyst_protocol::ui::VerifyState =
+                    serde_json::from_value(args.get("state").cloned().unwrap_or(Value::Null))
+                        .map_err(bad_args)?;
+                let scope = crate::service::verification::Scope {
+                    repo: &self.repo,
+                    runs: &self.runs,
+                    session: &self.session,
+                };
+                let view = crate::service::verification::set(
+                    &scope,
+                    &item,
+                    state,
+                    analyst_protocol::ui::Verifier::Agent,
+                    args.get("note").and_then(Value::as_str),
+                )?;
+                self.runs
+                    .events()
+                    .emit(analyst_protocol::ui::SessionEvent::VerificationChanged {
+                        key: view.key.clone(),
+                    });
+                Ok(serde_json::to_value(view)?)
+            }
             "eq.extract" => {
                 let p: EqExtractParams = serde_json::from_value(args.clone()).map_err(bad_args)?;
                 Ok(serde_json::to_value(self.kernel()?.eq_extract(p).await?)?)

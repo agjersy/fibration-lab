@@ -1761,6 +1761,61 @@ impl SessionRuntime {
             .map_err(ServiceError::from)
     }
 
+    // ---- verification ledger ----
+
+    /// The verification queue of the project (`.analyst/verification.jsonl` against the items'
+    /// content now). Reads files only.
+    pub fn verification_list(&self) -> Vec<analyst_protocol::ui::VerificationView> {
+        let session = self.session_snapshot();
+        super::verification::list(&super::verification::Scope {
+            repo: &self.repo,
+            runs: &self.runs,
+            session: &session,
+        })
+    }
+
+    /// The user records a verification state for an item's current content.
+    pub fn verification_set(
+        &self,
+        item: &analyst_protocol::ui::VerifyItem,
+        state: analyst_protocol::ui::VerifyState,
+        note: Option<&str>,
+    ) -> ServiceResult<analyst_protocol::ui::VerificationView> {
+        let session = self.session_snapshot();
+        let view = super::verification::set(
+            &super::verification::Scope {
+                repo: &self.repo,
+                runs: &self.runs,
+                session: &session,
+            },
+            item,
+            state,
+            analyst_protocol::ui::Verifier::User,
+            note,
+        )?;
+        self.emit(SessionEvent::VerificationChanged {
+            key: view.key.clone(),
+        });
+        Ok(view)
+    }
+
+    /// What a deck depends on that is not human-verified (asked before an export).
+    pub fn deck_verification_gaps(
+        &self,
+        deck: &str,
+    ) -> ServiceResult<Vec<analyst_protocol::ui::VerificationView>> {
+        super::decks::valid_slug(deck).map_err(ServiceError::invalid)?;
+        let session = self.session_snapshot();
+        Ok(super::verification::deck_gaps(
+            &super::verification::Scope {
+                repo: &self.repo,
+                runs: &self.runs,
+                session: &session,
+            },
+            deck,
+        ))
+    }
+
     // ---- artifact index ----
 
     /// What the session's runs produced, by run id and path (figures, tables, files).

@@ -175,6 +175,9 @@ pub const COMMANDS: &[&str] = &[
     "history_restore",
     "history_revert_turn",
     "artifacts_list",
+    "verification_list",
+    "verification_set",
+    "deck_verification_gaps",
 ];
 
 /// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see
@@ -370,6 +373,9 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             history_restore,
             history_revert_turn,
             artifacts_list,
+            verification_list,
+            verification_set,
+            deck_verification_gaps,
         ])
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("building the Tauri app: {e}"))?
@@ -483,6 +489,9 @@ mod tests {
         "history_restore",
         "history_revert_turn",
         "artifacts_list",
+        "verification_list",
+        "verification_set",
+        "deck_verification_gaps",
     ];
 
     #[test]

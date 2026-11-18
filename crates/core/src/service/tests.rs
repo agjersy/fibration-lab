@@ -2690,3 +2690,118 @@ json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name
     );
     fx.wb.shutdown().await;
 }
+
+/// The verification ledger: the user verifies an item for its current content; a change to the
+/// content resets it to unverified (stale); the agent can record machine_checked but never
+/// human verification; every change is an event and a line in `.analyst/verification.jsonl`.
+#[tokio::test]
+async fn the_verification_ledger_resets_when_content_changes() {
+    use analyst_protocol::ui::{VerificationState, VerifyItem, VerifyState};
+    let fx = fixture().await;
+    std::fs::create_dir_all(fx.rt.repo.join("lib")).unwrap();
+    std::fs::write(fx.rt.repo.join("lib/model.py"), "def f(x):\n    return x\n").unwrap();
+    let item = VerifyItem::Equation {
+        path: "lib/model.py".into(),
+        qualname: "f".into(),
+    };
+    let mut rx = fx.rt.subscribe();
+    let v = fx
+        .rt
+        .verification_set(&item, VerifyState::HumanVerified, Some("checked by hand"))
+        .unwrap();
+    assert_eq!(v.state, VerificationState::HumanVerified);
+    assert_eq!(v.key, "equation:lib/model.py#f");
+    assert_eq!(
+        v.entry.as_ref().unwrap().note.as_deref(),
+        Some("checked by hand")
+    );
+    next_matching(&mut rx, |e| {
+        matches!(e, SessionEvent::VerificationChanged { key } if key == "equation:lib/model.py#f")
+    })
+    .await;
+    let ledger = std::fs::read_to_string(fx.rt.repo.join(".analyst/verification.jsonl")).unwrap();
+    assert_eq!(ledger.lines().count(), 1);
+    assert!(ledger.contains("\"human_verified\"") && ledger.contains("\"by\":\"user\""));
+    let listed = fx.rt.verification_list();
+    let found = listed.iter().find(|x| x.item == item).unwrap();
+    assert_eq!(found.state, VerificationState::HumanVerified);
+    assert!(!found.stale);
+
+    // The code changes: the verification no longer applies.
+    std::fs::write(
+        fx.rt.repo.join("lib/model.py"),
+        "def f(x):\n    return 2 * x\n",
+    )
+    .unwrap();
+    let found = fx
+        .rt
+        .verification_list()
+        .into_iter()
+        .find(|x| x.item == item)
+        .unwrap();
+    assert_eq!(found.state, VerificationState::Unverified);
+    assert!(found.stale && found.entry.is_none());
+
+    // The agent: machine_checked yes, human_verified never.
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-verify",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    let denied = ctx
+        .dispatch(
+            "t1",
+            "verify.record",
+            &json!({"item": {"kind": "equation", "path": "lib/model.py", "qualname": "f"}, "state": "human_verified"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        denied.message.contains("only the user"),
+        "{}",
+        denied.message
+    );
+    let scope = crate::service::verification::Scope {
+        repo: &fx.rt.repo,
+        runs: &fx.rt.runs,
+        session: &fx.rt.session_snapshot(),
+    };
+    let err = crate::service::verification::set(
+        &scope,
+        &item,
+        VerifyState::HumanVerified,
+        analyst_protocol::ui::Verifier::Agent,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(err.code, IpcErrorCode::PolicyDenied);
+    let checked = ctx
+        .dispatch(
+            "t2",
+            "verify.record",
+            &json!({"item": {"kind": "equation", "path": "lib/model.py", "qualname": "f"}, "state": "machine_checked", "note": "eq_check agrees"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(checked["state"], "machine_checked");
+    assert_eq!(checked["entry"]["by"], "agent");
+    let listed = ctx.dispatch("t3", "verify.list", &json!({})).await.unwrap();
+    assert_eq!(listed["items"][0]["key"], "equation:lib/model.py#f");
+    // A file that is gone cannot be verified.
+    let gone = fx
+        .rt
+        .verification_set(
+            &VerifyItem::Equation {
+                path: "lib/none.py".into(),
+                qualname: "g".into(),
+            },
+            VerifyState::HumanVerified,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(gone.code, IpcErrorCode::NotFound);
+    fx.wb.close_session(&fx.session).await.unwrap();
+}

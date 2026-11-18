@@ -17,6 +17,7 @@ pub mod runs;
 pub mod runtime;
 pub mod tasks;
 pub mod terminal;
+pub mod verification;
 
 pub use agent_runner::{ConversationRuntime, UiApprover};
 pub use decks::{DeckOptions, DeckServices};

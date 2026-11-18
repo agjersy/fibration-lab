@@ -1398,6 +1398,45 @@ pub async fn artifacts_list(
     Ok(rt_of(&state, &session)?.artifacts_list(run_id.as_deref(), kind, limit))
 }
 
+// ---- verification ledger (docs/IPC.md section 10) ----
+
+/// The verification queue: every item (equations, figures, named results, slide claims,
+/// accepted code changes) with its state for its content now.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn verification_list(
+    state: State<'_, AppState>,
+    session: String,
+) -> R<Vec<VerificationView>> {
+    Ok(rt_of(&state, &session)?.verification_list())
+}
+
+/// The user records a verification state (`human_verified`, `flagged` with a note, or
+/// `machine_checked`) for an item's current content.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn verification_set(
+    app_state: State<'_, AppState>,
+    session: String,
+    item: VerifyItem,
+    state: VerifyState,
+    note: Option<String>,
+) -> R<VerificationView> {
+    rt_of(&app_state, &session)?
+        .verification_set(&item, state, note.as_deref())
+        .map_err(Into::into)
+}
+
+/// The items a deck depends on that are not human-verified, asked before an export.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_verification_gaps(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<VerificationView>> {
+    rt_of(&state, &session)?
+        .deck_verification_gaps(&deck)
+        .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{deck_asset_dirs, figure_asset_dirs};
