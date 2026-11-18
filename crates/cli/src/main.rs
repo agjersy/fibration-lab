@@ -1,4 +1,7 @@
-//! `analyst`: the phase 0 headless harness for Personal Analyst.
+//! `analyst`: the command line of Personal Analyst: analysis (scripts, runs, checks), decks
+//! (`analyst deck ...`), the one agent loop (`analyst chat`), and evaluations of both.
+
+mod deck;
 
 use analyst_core::agent::{Agent, AgentConfig, ApprovalRequest, Approver, AutoApprover};
 use analyst_core::config::{self, ModelSpec};
@@ -118,6 +121,9 @@ enum Command {
         #[command(subcommand)]
         cmd: KeyCmd,
     },
+    /// Decks of the repository (`decks/<slug>/`): create, references, render, check, export,
+    /// code mode, and the undo timeline.
+    Deck(deck::DeckArgs),
 }
 
 #[derive(Subcommand)]
@@ -151,6 +157,7 @@ struct ChatArgs {
     /// `provider/model` (default from config).
     #[arg(short, long)]
     model: Option<String>,
+    /// plan, build, run (analysis) or outline, slides, polish (decks); build covers both.
     #[arg(long, default_value = "build")]
     mode: String,
     /// edits=auto, runs=auto and approve every remaining question.
@@ -163,23 +170,55 @@ struct ChatArgs {
     /// Re-run the capability probe.
     #[arg(long)]
     reprobe: bool,
+    /// Rendering engine for deck kernels: auto, powerpoint, libreoffice, none.
+    #[arg(
+        long,
+        default_value = "auto",
+        value_parser = ["auto", "powerpoint", "libreoffice", "none"]
+    )]
+    engine: String,
     message: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum EvalCmd {
+    /// Run analysis tasks and deck tasks (a deck task's fixture names a template in a
+    /// `TEMPLATE` file).
     Run {
-        #[arg(long)]
-        model: String,
+        /// `provider/model` (default from config).
+        #[arg(long, short)]
+        model: Option<String>,
         #[arg(long, default_value = "evals/tasks")]
         tasks: PathBuf,
         #[arg(long)]
         task: Option<String>,
+        /// edits=auto, runs=auto for analysis tasks (deck tasks always apply edits inside
+        /// the declared scope).
         #[arg(long)]
         auto: bool,
         #[arg(long, default_value = "evals/results")]
         results: PathBuf,
+        /// Templates of deck tasks (default: `<tasks>/../templates`).
+        #[arg(long)]
+        templates: Option<PathBuf>,
+        /// Rendering engine for deck tasks: auto, powerpoint, libreoffice, none.
+        #[arg(
+            long,
+            default_value = "auto",
+            value_parser = ["auto", "powerpoint", "libreoffice", "none"]
+        )]
+        engine: String,
     },
+}
+
+struct EvalOpts {
+    model: Option<String>,
+    tasks: PathBuf,
+    task: Option<String>,
+    auto: bool,
+    results: PathBuf,
+    templates: Option<PathBuf>,
+    engine: String,
 }
 
 struct App {
@@ -196,6 +235,7 @@ impl App {
         std::fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
         let repo = cli.repo.clone().unwrap_or(std::env::current_dir()?);
         let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
+        migrate_legacy_home(&home);
         // The network gate records every decision in `<home>/egress.jsonl`; loading the
         // config registers the destinations it names (providers, package index, SSH targets).
         wb_net::init(&home);
@@ -380,6 +420,22 @@ impl App {
     }
 }
 
+/// First start: bring the deck workbench's old home (`~/.present`) over once.
+fn migrate_legacy_home(home: &std::path::Path) {
+    match analyst_core::migrate::migrate_legacy_home(home) {
+        Ok(Some(r)) => eprintln!(
+            "migrated {} into {}: {} provider(s), {} file(s), {} key(s) (the old folder is left as it was)",
+            r.from.display(),
+            home.display(),
+            r.providers.len(),
+            r.files.len(),
+            r.keys.len()
+        ),
+        Ok(None) => {}
+        Err(e) => eprintln!("warning: migrating ~/.present failed: {e:#}"),
+    }
+}
+
 struct InteractiveApprover;
 
 #[async_trait]
@@ -440,6 +496,7 @@ fn cmd_init(home: Option<PathBuf>, path: Option<PathBuf>) -> Result<()> {
     let root = path.unwrap_or(std::env::current_dir()?);
     // `uv venv` and `uv sync` install from the configured package index, through the gate.
     let home = home.unwrap_or_else(config::analyst_home);
+    migrate_legacy_home(&home);
     wb_net::init(&home);
     config::load_global(&home)?;
     let report = analyst_core::init::init_repo(&root, &analyst_core::init::InitOptions::default())?;
@@ -942,6 +999,19 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
     let mut ctx = ToolContext::new(&app.repo, &app.home, session, &conv_id, project.clone());
     ctx.set_kernel(kernel.clone());
     ctx.set_target(target.clone(), app.control_dir());
+    // Deck tools start a deck's kernel (no network) on first use.
+    ctx.decks.set_options(app.deck_options(&args.engine));
+    let decks_found = ctx.decks.list();
+    if !decks_found.is_empty() {
+        println!(
+            "decks: {}",
+            decks_found
+                .iter()
+                .map(|d| d.slug.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     ctx.stream_run_output(Arc::new(|stream, chunk| {
         if stream == "stdout" {
             print!("{chunk}");
@@ -977,15 +1047,17 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
     }));
     agent.on_event = Some(event_printer());
 
+    let mut turns = 0u32;
     if let Some(m) = args.message {
-        if run_one(&mut agent, &m).await {
+        turns += 1;
+        if run_one(&mut agent, &m, &format!("{conv_id}-{turns}")).await {
             if let Some(k) = kernel {
                 let _ = k.shutdown().await;
             }
             std::process::exit(130);
         }
     } else {
-        println!("interactive; /mode plan|build|run, /quit");
+        println!("interactive; /mode plan|build|run|outline|slides|polish, /quit");
         loop {
             print!("\n{}> ", agent.config.mode);
             let _ = std::io::stdout().flush();
@@ -1017,7 +1089,8 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
                 continue;
             }
             // Ctrl-C during a turn cancels the turn and its run, and returns to the prompt.
-            run_one(&mut agent, line).await;
+            turns += 1;
+            run_one(&mut agent, line, &format!("{conv_id}-{turns}")).await;
         }
     }
     if let Some(k) = kernel {
@@ -1028,7 +1101,7 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
 
 /// Run one turn. Returns true when it was interrupted by Ctrl-C: the turn is dropped, any run
 /// it started is cancelled on the target, and the agent is left ready for the next message.
-async fn run_one(agent: &mut Agent, text: &str) -> bool {
+async fn run_one(agent: &mut Agent, text: &str, turn: &str) -> bool {
     let outcome = tokio::select! {
         r = agent.run_turn(text) => Some(r),
         _ = tokio::signal::ctrl_c() => None,
@@ -1045,7 +1118,7 @@ async fn run_one(agent: &mut Agent, text: &str) -> bool {
         Ok(s) => {
             println!();
             println!(
-                "── turn: {} step(s), {} tool call(s) ({} error(s)), tokens {}/{}",
+                "── turn {turn}: {} step(s), {} tool call(s) ({} error(s)), tokens {}/{}",
                 s.steps, s.tool_calls, s.tool_errors, s.input_tokens, s.output_tokens
             );
             if !s.files_changed.is_empty() {
@@ -1066,17 +1139,47 @@ async fn run_one(agent: &mut Agent, text: &str) -> bool {
     false
 }
 
-async fn cmd_eval(
-    app: &App,
-    model: String,
-    tasks: PathBuf,
-    task: Option<String>,
-    auto: bool,
-    results: PathBuf,
-) -> Result<i32> {
-    let loaded = analyst_core::evals::load_tasks(&tasks, task.as_deref())?;
-    let (client, caps, model_name) = app.model(Some(&model), false).await?;
-    app.ensure_local_tooling().await;
+async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
+    use analyst_core::evals::deck as deck_evals;
+    // Analysis tasks and deck tasks can share a folder; a filter must match one of them.
+    let analysis = match analyst_core::evals::load_tasks(&o.tasks, o.task.as_deref()) {
+        Ok(t) => t,
+        Err(_) if o.task.is_some() => vec![],
+        Err(e) => return Err(e),
+    };
+    let decks = match deck_evals::load_tasks(&o.tasks, o.task.as_deref()) {
+        Ok(t) => t,
+        Err(_) if o.task.is_some() => vec![],
+        Err(e) => return Err(e),
+    };
+    if analysis.is_empty() && decks.is_empty() {
+        return Err(anyhow!(
+            "no task{} under {}",
+            o.task
+                .as_deref()
+                .map(|t| format!(" named `{t}`"))
+                .unwrap_or_default(),
+            o.tasks.display()
+        ));
+    }
+    let (client, caps, model_name) = app.model(o.model.as_deref(), false).await?;
+    let mut out = Vec::new();
+    let report = |r: &analyst_protocol::evals::TaskResult| {
+        println!(
+            "  {} ({}/{} checks, {} steps, {:.0}s)",
+            if r.passed { "PASS" } else { "FAIL" },
+            r.checks.iter().filter(|c| c.passed).count(),
+            r.checks.len(),
+            r.steps,
+            r.wall_s
+        );
+        for c in r.checks.iter().filter(|c| !c.passed) {
+            println!("      FAIL {:<18} {}", c.kind, c.detail);
+        }
+    };
+    if !analysis.is_empty() {
+        app.ensure_local_tooling().await;
+    }
     let launcher = vec![
         resolve_tooling_python_in(&app.global, &app.home),
         "-m".into(),
@@ -1089,24 +1192,26 @@ async fn cmd_eval(
         caps,
         kernel_launcher: Some(launcher),
         session_python: None,
-        auto,
+        auto: o.auto,
     };
-    let mut out = Vec::new();
-    for t in &loaded {
+    for t in &analysis {
         println!("task {} ...", t.file.task.name);
         let r = analyst_core::evals::run_task(&env, t).await?;
-        println!(
-            "  {} ({}/{} checks, {} steps, {:.0}s)",
-            if r.passed { "PASS" } else { "FAIL" },
-            r.checks.iter().filter(|c| c.passed).count(),
-            r.checks.len(),
-            r.steps,
-            r.wall_s
-        );
+        report(&r);
+        out.push(r);
+    }
+    let templates = o
+        .templates
+        .clone()
+        .unwrap_or_else(|| o.tasks.join("..").join("templates"));
+    for t in &decks {
+        println!("task {} (deck) ...", t.file.task.name);
+        let r = deck_evals::run_task(&env, t, &templates, &app.deck_options(&o.engine)).await;
+        report(&r);
         out.push(r);
     }
     let sc = analyst_core::evals::scorecard(&model_name, out);
-    let path = analyst_core::evals::write_scorecard(&results, &sc)?;
+    let path = analyst_core::evals::write_scorecard(&o.results, &sc)?;
     println!();
     print!("{}", analyst_core::evals::markdown_table(&sc));
     println!("scorecard: {}", path.display());
@@ -1200,10 +1305,27 @@ async fn run(cli: Cli) -> Result<i32> {
                     task,
                     auto,
                     results,
+                    templates,
+                    engine,
                 },
-        } => cmd_eval(&app, model, tasks, task, auto, results).await,
+        } => {
+            cmd_eval(
+                &app,
+                EvalOpts {
+                    model,
+                    tasks,
+                    task,
+                    auto,
+                    results,
+                    templates,
+                    engine,
+                },
+            )
+            .await
+        }
         Command::Kernel { target } => cmd_kernel(&app, target).await,
         Command::Key { cmd } => cmd_key(&app, cmd).map(|_| 0),
+        Command::Deck(args) => deck::run(&app, args).await,
     }
 }
 
@@ -1240,5 +1362,49 @@ mod tests {
         ));
         // The key itself is never accepted as an argument.
         assert!(Cli::try_parse_from(["analyst", "key", "set", "anthropic", "sk-123"]).is_err());
+    }
+
+    #[test]
+    fn deck_commands_parse() {
+        for argv in [
+            vec!["analyst", "deck", "list"],
+            vec![
+                "analyst",
+                "deck",
+                "init",
+                "q3",
+                "--template",
+                "t.potx",
+                "--title",
+                "Q3",
+            ],
+            vec![
+                "analyst",
+                "deck",
+                "template",
+                "inspect",
+                "t.potx",
+                "--catalog",
+            ],
+            vec![
+                "analyst", "deck", "--deck", "q3", "refs", "add", "a.xlsx", "b.pdf",
+            ],
+            vec![
+                "analyst", "deck", "refs", "search", "revenue", "--k", "3", "--deck", "q3",
+            ],
+            vec!["analyst", "deck", "render", "--out", "exports/x.pptx"],
+            vec!["analyst", "deck", "check", "--engine-check", "--json"],
+            vec!["analyst", "deck", "--engine", "none", "build"],
+            vec!["analyst", "deck", "eject"],
+            vec!["analyst", "deck", "export", "--format", "pdf"],
+            vec!["analyst", "deck", "history", "list", "--limit", "5"],
+            vec!["analyst", "deck", "history", "restore", "abc"],
+            vec!["analyst", "deck", "history", "revert-turn", "c-1"],
+            vec!["analyst", "eval", "run", "--tasks", "present/evals/tasks"],
+            vec!["analyst", "chat", "--mode", "slides", "hello"],
+        ] {
+            assert!(Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
+        }
+        assert!(Cli::try_parse_from(["analyst", "deck", "--engine", "keynote", "build"]).is_err());
     }
 }

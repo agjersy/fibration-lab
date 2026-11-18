@@ -856,39 +856,46 @@ impl DeckService {
 
     pub fn export_run(self: &Arc<Self>, format: String) -> String {
         self.spawn_task(&format!("Exporting {format}"), move |rt| async move {
-            // The export is tied to an exact state: the checkpoint taken just before it.
-            let checkpoint = rt
-                .host
-                .checkpoint(&format!("export {format}"))
-                .map_err(internal)?;
-            let exported = rt
-                .ws
-                .export(&format, None, &checkpoint)
-                .await
-                .map_err(|e| {
-                    let text = format!("{e:#}");
-                    if text.contains("engine") {
-                        err(IpcErrorCode::EngineUnavailable, text)
-                    } else {
-                        IpcError::internal(text)
-                    }
-                })?;
-            let view = ExportView {
-                id: crate::util::new_id("x", 10),
-                format: exported.format,
-                preset: None,
-                path: exported.path.clone(),
-                checkpoint,
-                created_at: now_iso(),
-                errors: exported.errors as u32,
-                warnings: exported.warnings as u32,
-                engine: exported.engine,
-            };
-            rt.lock().exports.insert(0, view.clone());
-            rt.save_state();
-            rt.emit(DeckEvent::ExportDone { export: view });
-            Ok(Some(exported.path))
+            Ok(Some(rt.export(&format).await?.path))
         })
+    }
+
+    /// Export the deck now (the command line waits for it; the UI uses [`Self::export_run`]).
+    /// The export is tied to an exact state: the checkpoint taken just before it.
+    pub async fn export(self: &Arc<Self>, format: &str) -> R<ExportView> {
+        let checkpoint = self
+            .host
+            .checkpoint(&format!("export {format}"))
+            .map_err(internal)?;
+        let exported = self
+            .ws
+            .export(format, None, &checkpoint)
+            .await
+            .map_err(|e| {
+                let text = format!("{e:#}");
+                if text.contains("engine") {
+                    err(IpcErrorCode::EngineUnavailable, text)
+                } else {
+                    IpcError::internal(text)
+                }
+            })?;
+        let view = ExportView {
+            id: crate::util::new_id("x", 10),
+            format: exported.format,
+            preset: None,
+            path: exported.path,
+            checkpoint,
+            created_at: now_iso(),
+            errors: exported.errors as u32,
+            warnings: exported.warnings as u32,
+            engine: exported.engine,
+        };
+        self.lock().exports.insert(0, view.clone());
+        self.save_state();
+        self.emit(DeckEvent::ExportDone {
+            export: view.clone(),
+        });
+        Ok(view)
     }
 
     pub fn export_path(&self, export_id: &str) -> R<PathBuf> {

@@ -4,7 +4,8 @@
 Adapted from Personal Analyst evals/fake_model_server.py at commit f229e4d. It speaks the wire
 format of PROTOCOL.md section 6.1 and nothing else. Responses are chosen from the conversation
 so far (which tools were already called and what they returned), so each scripted evaluation
-task plays out deterministically: `spreadsheet-to-charts` and `fix-checker-failures`.
+task plays out deterministically: `spreadsheet-to-charts` and `fix-checker-failures`, through
+the one agent loop of `analyst` (its `declare_scope` tool covers slides).
 
 Usage:  python3 evals/fake_model_server.py [--port 8765]
 Config: [[providers]] name="fake" kind="openai-compatible" base_url="http://127.0.0.1:8765/v1"
@@ -128,8 +129,8 @@ def decide(messages: list[dict]) -> tuple[str | None, tuple[str, dict] | None]:
         listing = tool_result(messages, next(i for n, _, i in calls if n == "refs_list"))
         refs = listing.get("references") or [{}]
         cite = f"{refs[0].get('cite_prefix', 'ref:r-missing@000000000000#')}Sales!A1:E129"
-        if "scope_declare" not in names:
-            return None, ("scope_declare", {"slide_ids": [], "new_slides": 5, "plan": "A title slide and four chart slides computed from the Sales sheet."})
+        if "declare_scope" not in names:
+            return None, ("declare_scope", {"slides": [], "new_slides": 5, "plan": "A title slide and four chart slides computed from the Sales sheet."})
         slides = spreadsheet_slides(cite)
         made = names.count("slide_propose_create")
         if made < len(slides):
@@ -138,8 +139,8 @@ def decide(messages: list[dict]) -> tuple[str | None, tuple[str, dict] | None]:
     if "deck checker reports problems" in task:  # fix-checker-failures
         if "check_run" not in names:
             return None, ("check_run", {})
-        if "scope_declare" not in names:
-            return None, ("scope_declare", {"slide_ids": [s for s, _ in FIXES], "new_slides": 0, "plan": "Shorten the overflowing slide, describe the image, and use a readable theme color."})
+        if "declare_scope" not in names:
+            return None, ("declare_scope", {"slides": [s for s, _ in FIXES], "new_slides": 0, "plan": "Shorten the overflowing slide, describe the image, and use a readable theme color."})
         done = names.count("slide_propose_update")
         if done < len(FIXES):
             slide_id, change = FIXES[done]

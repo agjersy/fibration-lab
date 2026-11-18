@@ -25,3 +25,6 @@ tracing-subscriber.workspace = true
 futures.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
+analyst-deck = { path = "../../present/crates/core" }
+analyst-deck-protocol = { path = "../../present/crates/protocol" }
+tempfile.workspace = true

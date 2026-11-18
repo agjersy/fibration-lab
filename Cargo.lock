@@ -49,6 +49,8 @@ name = "analyst-cli"
 version = "0.0.1"
 dependencies = [
  "analyst-core",
+ "analyst-deck",
+ "analyst-deck-protocol",
  "analyst-protocol",
  "anyhow",
  "async-trait",
@@ -57,6 +59,7 @@ dependencies = [
  "futures",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "toml 0.8.23",
  "tracing",
