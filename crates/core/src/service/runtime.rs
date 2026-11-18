@@ -16,9 +16,7 @@ pub use super::runs::{
 use super::runs::{RunRecord, RunService, RunShared, RunSource};
 use super::tasks::{TaskLogger, TaskRegistry};
 use crate::config;
-use crate::kernel::{
-    resolve_tooling_python_in, KernelArgs, KernelClient, KernelTransport, LocalStdio, SshStdio,
-};
+use crate::kernel::{resolve_tooling_python_in, KernelClient, KernelTransport};
 use crate::session::Session;
 use crate::target::{self, Target};
 use crate::util::{normalize_rel_path, now_rfc3339, resolve_in_repo};
@@ -500,15 +498,7 @@ impl SessionRuntime {
     }
 
     pub fn session_python(&self) -> String {
-        if let Some(p) = &self.opts.session_python {
-            return p.clone();
-        }
-        let venv = self.repo.join(".venv/bin/python");
-        if venv.is_file() {
-            venv.to_string_lossy().to_string()
-        } else {
-            "python3".to_string()
-        }
+        crate::app::session_python(&self.repo, self.opts.session_python.as_deref())
     }
 
     pub fn kernel_state(&self) -> KernelState {
@@ -710,48 +700,21 @@ impl SessionRuntime {
     fn transport(&self, remote_no_network: bool) -> Box<dyn KernelTransport> {
         let project = self.project();
         let target = self.target();
-        let eff = config::effective_project(&project, target.name());
-        match &target {
-            Target::Local => {
-                let runs = self.home.join("runs");
-                let _ = std::fs::create_dir_all(&runs);
-                let args = KernelArgs {
-                    python: self.session_python(),
-                    root: self.repo.to_string_lossy().to_string(),
-                    runs_dir: runs.to_string_lossy().to_string(),
-                    out_dir: Some(eff.out_dir),
-                    sandbox: Some(self.opts.sandbox.clone().unwrap_or_else(|| "auto".into())),
-                    data_dirs: vec![],
-                };
-                let t = match &self.opts.kernel_launcher {
-                    Some(l) => LocalStdio::with_launcher(l.clone(), args),
-                    None => LocalStdio::new(self.tooling_python(), args),
-                };
-                // The kernel and the scripts it runs never see provider API keys (U11).
-                Box::new(t.without_env(self.opts.env_remove.clone()))
-            }
-            Target::Ssh { host, sandbox, .. } => {
-                let mirror = target.mirror_dir(&self.repo).unwrap_or_default();
-                Box::new(SshStdio {
-                    host: host.clone(),
-                    control_dir: self.opts.control_dir.clone(),
-                    remote_launcher: vec![
-                        "~/.analyst/tooling/.venv/bin/python".into(),
-                        "-m".into(),
-                        "analyst_kernel".into(),
-                    ],
-                    args: KernelArgs {
-                        python: format!("{mirror}/.venv/bin/python"),
-                        root: mirror,
-                        runs_dir: "~/.analyst/runs".into(),
-                        out_dir: Some(eff.out_dir),
-                        sandbox: Some(self.opts.sandbox.clone().unwrap_or_else(|| sandbox.clone())),
-                        data_dirs: target.data_dirs().to_vec(),
-                    },
-                    no_network: remote_no_network,
-                })
-            }
-        }
+        crate::app::kernel_transport(crate::app::KernelSpec {
+            home: &self.home,
+            repo: &self.repo,
+            project: &project,
+            target: &target,
+            sandbox: self.opts.sandbox.as_deref(),
+            session_python: self.session_python(),
+            local: match &self.opts.kernel_launcher {
+                Some(l) => crate::app::LocalKernel::Launcher(l.clone()),
+                None => crate::app::LocalKernel::Tooling(self.tooling_python()),
+            },
+            env_remove: self.opts.env_remove.clone(),
+            control_dir: self.opts.control_dir.clone(),
+            remote_no_network,
+        })
     }
 
     /// The connected kernel client, if any.

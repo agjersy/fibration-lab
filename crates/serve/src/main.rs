@@ -2,11 +2,9 @@
 //! end-to-end tests. Prints `analyst-serve: listening on ws://<addr>/?token=<token>` on stdout,
 //! then serves until interrupted. See docs/DEVELOPMENT.md.
 
-use analyst_core::service::{Workbench, WorkbenchOptions};
 use clap::Parser;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -49,13 +47,9 @@ async fn main() -> anyhow::Result<()> {
     let listener = analyst_serve::bind(args.bind).await?;
     let addr = listener.local_addr()?;
 
-    let mut opts = WorkbenchOptions::new(analyst_core::config::analyst_home());
-    if let Ok(s) = std::env::var("ANALYST_SANDBOX") {
-        if !s.is_empty() {
-            opts.sandbox = Some(s);
-        }
-    }
-    let workbench = Arc::new(Workbench::new(opts).map_err(|e| anyhow::anyhow!("{e}"))?);
+    // The start-up shared with the desktop shell and the CLI: home, migration, network gate,
+    // configuration; `ANALYST_SANDBOX` overrides the kernel sandbox kind.
+    let workbench = analyst_core::app::App::start_from_env()?.workbench()?;
     if let Some(task) = workbench.prepare_tooling() {
         tracing::info!("preparing the tooling environment ({task})");
     }

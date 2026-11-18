@@ -595,7 +595,9 @@ The earlier front matter keys keep working inside `SKILL.md`: `triggers` (words 
 
 Configuration layering, lowest to highest precedence: built-in defaults, `~/.analyst/config.toml`, `<repo>/.analyst/project.toml`, per-target overrides inside it, session overrides from the UI.
 
-**Migration from `~/.present`.** On first start the CLI and the desktop shell merge an existing `~/.present` into the analyst home once: its `[[providers]]` join `config.toml` (names that already exist are skipped; `key = "env:VAR"` becomes `api_key_env = "VAR"`), `skills/` and `templates/` are copied without overwriting, keys from its `.env` that are not set in `~/.analyst/.env` are copied, and the marker `.present-migrated` makes it run once. `~/.present` is never changed or deleted. `PRESENT_HOME` is no longer read (`crates/core/src/migrate.rs`).
+**Start-up.** The desktop shell, the development bridge, and the CLI start through one function, `analyst_core::app::App::start(home, options)` (`crates/core/src/app.rs`): it creates the home, runs the migration below, points the network gate's ledger at `<home>/egress.jsonl`, and loads `config.toml`. The shell and the bridge then build the workbench from it (`App::workbench`); the CLI, which drives one kernel and one model without a workbench, takes its kernel (`App::kernel`, the same `kernel_transport` the session runtime uses), tooling bootstrap, and model client (`App::model`) from it.
+
+**Migration from `~/.present`.** On first start the CLI, the desktop shell, and the development bridge merge an existing `~/.present` into the analyst home once: its `[[providers]]` join `config.toml` (names that already exist are skipped; `key = "env:VAR"` becomes `api_key_env = "VAR"`), `skills/` and `templates/` are copied without overwriting, keys from its `.env` that are not set in `~/.analyst/.env` are copied, and the marker `.present-migrated` makes it run once. `~/.present` is never changed or deleted. `PRESENT_HOME` is no longer read (`crates/core/src/migrate.rs`).
 
 ## 6. User interface
 

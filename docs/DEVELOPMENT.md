@@ -15,7 +15,8 @@ crates/core/           sessions, agent loop, tools, kernel client, targets, sync
                        thin adapters (model_client.rs, tools/gate.rs, session.rs, skills.rs)
 crates/evals/          analyst-evals: the analysis and deck evaluation harnesses (used by the CLI only)
 crates/serve/          analyst-serve: development bridge, the real core over a loopback WebSocket (never shipped)
-crates/cli/            the `analyst` binary (analysis commands, `deck ...`, `chat`, `eval`)
+crates/cli/            the `analyst` binary (analysis commands, `deck ...`, `chat`, `eval`); its start-up is
+                       `analyst_core::app::App::start`, shared with the shell and analyst-serve
 present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
 present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and deck UI types
 python/kernel/         analyst_kernel (per-target kernel, its REPL process and its equation worker) and
