@@ -102,11 +102,10 @@ class Kernel:
             out_dir_name=self.out_dir_name,
             data_dirs=self.data_dirs,
         )
-        self._eq = None
-        self._eq_lock = threading.Lock()
         self._closed = False
-        self._snippets = None
-        self._snippets_lock = threading.Lock()
+        # One long-lived helper process: the exec.snippet REPL and the equation analysis.
+        self._helper = None
+        self._helper_lock = threading.Lock()
         self.dispatcher = Dispatcher()
         self._register()
 
@@ -197,30 +196,46 @@ class Kernel:
     def close(self) -> None:
         """Stop helpers. A running snippet or equation analysis is killed, not waited for."""
         self._closed = True
-        with self._snippets_lock:
-            snippets, self._snippets = self._snippets, None
-        if snippets is not None:
-            snippets.shutdown()
-        with self._eq_lock:
-            eq, self._eq = self._eq, None
-        if eq is not None:
-            eq.close()
+        with self._helper_lock:
+            helper, self._helper = self._helper, None
+        if helper is not None:
+            helper.close()
         self.runs.shutdown()
 
-    def _eq_worker(self):
-        from .equations import EqWorker
+    def _helper_process(self):
+        """The helper (created on first use, started by its first request or the prewarm), or
+        None once the kernel is closing."""
+        from .helper import Helper, equation_dirs
 
-        with self._eq_lock:
-            if self._eq is None:
-                self._eq = EqWorker()
-            return self._eq
+        with self._helper_lock:  # close() sets _closed before it takes this lock
+            if self._closed:
+                return None
+            if self._helper is None:
+
+                def spec() -> SandboxSpec:
+                    s = self._tool_spec("helper")
+                    # The equation analysis imports eqcore and SymPy from the tooling environment.
+                    s.support_dirs = [*s.support_dirs, *equation_dirs()]
+                    return s
+
+                self._helper = Helper(self.python, self.root, self.sandbox, spec, self._tool_env("helper"))
+            return self._helper
+
+    def _equation_helper(self):
+        from .helper import Helper
+
+        helper = self._helper_process()
+        if helper is None:  # closing: a closed client answers "kernel is shutting down"
+            helper = Helper()
+            helper.close()
+        return helper
 
     def _prewarm_equations(self) -> None:
-        """Start the equation worker (the SymPy import) in the background, once.
+        """Start the helper and its SymPy import in the background, once.
 
-        Called from ``kernel.hello``; returns at once. The first ``eq.extract`` then finds a
-        worker that is ready, or one that is already part-way through starting, instead of
-        paying the whole import itself. Nothing else waits on it.
+        Called from ``kernel.hello``; returns at once. The first ``eq.extract`` (or snippet)
+        then finds a helper that is ready, or one that is part-way through, instead of paying
+        the whole start itself. Nothing else waits on it.
         """
         if not self.prewarm or self._prewarmed or self._closed:
             return
@@ -228,19 +243,13 @@ class Kernel:
 
         def warm() -> None:
             try:
-                from .equations import EqWorker
-
-                with self._eq_lock:  # close() sets _closed before it takes this lock
-                    if self._closed:
-                        return
-                    if self._eq is None:
-                        self._eq = EqWorker()
-                    worker = self._eq
-                worker.prewarm()
+                helper = self._helper_process()
+                if helper is not None:
+                    helper.prewarm()
             except Exception:
-                log.debug("equation worker prewarm failed", exc_info=True)
+                log.debug("helper prewarm failed", exc_info=True)
 
-        threading.Thread(target=warm, name="eq-prewarm", daemon=True).start()
+        threading.Thread(target=warm, name="helper-prewarm", daemon=True).start()
 
     # ---- environment -------------------------------------------------------------------
     def m_env_info(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -316,25 +325,14 @@ class Kernel:
 
     # ---- snippets ---------------------------------------------------------------------
     def m_exec_snippet(self, params: dict[str, Any]) -> dict[str, Any]:
-        from .snippet import SnippetRunner
-
         code = _opt(params, "code", (str,))
         if code is None:
             raise invalid_params("code is required")
         timeout_s = _opt(params, "timeout_s", (int, float))
-        with self._snippets_lock:
-            if self._closed:
-                return {"ok": False, "stdout": "", "stderr": "REPL unavailable: the kernel is shutting down", "value_repr": None}
-            if self._snippets is None:
-                self._snippets = SnippetRunner(
-                    self.python,
-                    self.root,
-                    self.sandbox,
-                    lambda: self._tool_spec("repl"),
-                    self._tool_env("repl"),
-                )
-            runner = self._snippets
-        return runner.run(code, timeout_s)
+        helper = self._helper_process()
+        if helper is None:
+            return {"ok": False, "stdout": "", "stderr": "REPL unavailable: the kernel is shutting down", "value_repr": None}
+        return helper.run(code, timeout_s)
 
     # ---- outputs ------------------------------------------------------------------------
     def m_out_list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -356,7 +354,7 @@ class Kernel:
 
         return {
             "equations": eq_extract(
-                self.root, _opt(params, "path", (str,), ""), _opt(params, "function", (str,)), self._eq_worker()
+                self.root, _opt(params, "path", (str,), ""), _opt(params, "function", (str,)), self._equation_helper()
             )
         }
 
@@ -377,7 +375,7 @@ class Kernel:
             _opt(params, "trials", (int,)),
             _opt(params, "tol", (int, float)),
             ranges,
-            self._eq_worker(),
+            self._equation_helper(),
         )
 
     # ---- contract and lint -----------------------------------------------------------------

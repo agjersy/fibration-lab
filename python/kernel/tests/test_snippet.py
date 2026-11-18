@@ -67,3 +67,20 @@ def test_snippet_limits_from_project_config(repo, tmp_path):
 def test_snippet_params(kernel):
     with pytest.raises(RpcError):
         kernel.call("exec.snippet", {})
+
+
+def test_snippets_and_equations_share_one_helper_and_a_timeout_restarts_it(kernel):
+    """The REPL and the equation analysis are one process; killing it on a budget overrun
+    restarts both: the REPL state is gone, and equations are served by the new process."""
+    kernel.call("exec.snippet", {"code": "z = 5"})
+    pid = kernel._helper._proc.pid
+    eqs = kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
+    assert eqs and kernel._helper._proc.pid == pid
+    assert kernel.call("exec.snippet", {"code": "z"})["value_repr"] == "5"
+    with pytest.raises(RpcError) as exc:
+        kernel.call("exec.snippet", {"code": "import time; time.sleep(30)", "timeout_s": 0.5})
+    assert exc.value.code == TIMEOUT
+    again = kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
+    assert [e["status"] for e in again] == [e["status"] for e in eqs]
+    assert kernel._helper._proc.pid != pid
+    assert kernel.call("exec.snippet", {"code": "'z' in dir()"})["value_repr"] == "False"
