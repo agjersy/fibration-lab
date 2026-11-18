@@ -1131,6 +1131,23 @@ impl SessionRuntime {
             .ok_or_else(|| anyhow::anyhow!("building the kernel wheel produced no file"))
     }
 
+    /// What the egress guard does for an install line when it knows the directory, done
+    /// here because task commands are spawned without telling it: refuse a project that
+    /// names its own package sources, and report a missing interpreter with the version to
+    /// install instead of starting `uv`.
+    async fn check_install(&self, line: &[String]) -> anyhow::Result<()> {
+        if !line.iter().any(|a| a == crate::egress::INDEX_FLAG) {
+            return Ok(());
+        }
+        let repo = self.repo.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::egress::check_project_sources(&repo)?;
+            crate::egress::require_python(&repo, None)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("install check failed: {e}"))?
+    }
+
     /// The shared "prepare target" step for remote targets: tooling bootstrap, mirror sync,
     /// and the session environment (`uv sync` in the mirror). Runs before the first kernel
     /// start after create, open, and target changes (R3).
@@ -1586,14 +1603,10 @@ impl SessionRuntime {
             Some(h) => Some(h),
             None => {
                 let repo = self.repo.clone();
-                tokio::task::spawn_blocking(move || {
-                    target::sync::file_list(&repo)
-                        .ok()
-                        .map(|l| target::sync::tree_hash(&l))
-                })
-                .await
-                .ok()
-                .flatten()
+                tokio::task::spawn_blocking(move || target::sync::tree_id(&repo).ok())
+                    .await
+                    .ok()
+                    .flatten()
             }
         };
         let eff = config::effective_project(&self.project(), self.target().name());
@@ -1972,6 +1985,7 @@ impl SessionRuntime {
                                 line
                             }
                         };
+                        rt.check_install(&line).await?;
                         logger.stream_command(&line, Some(&rt.repo)).await
                     }
                     Target::Ssh { host, .. } => {
@@ -1991,6 +2005,7 @@ impl SessionRuntime {
                             };
                             // Resolving needs the index even when nothing is installed here.
                             let line = crate::egress::uv_install(&uv, &[sub], &rest);
+                            rt.check_install(&line).await?;
                             logger.stream_command(&line, Some(&rt.repo)).await?;
                             // 2. Push them, 3. bring the remote environment in line.
                             logger.log("syncing the repository mirror");
@@ -2081,6 +2096,7 @@ impl SessionRuntime {
                         &["sync"],
                         &[],
                     );
+                    rt.check_install(&line).await?;
                     logger.stream_command(&line, Some(&rt.repo)).await?;
                 }
                 rt.ensure_kernel()

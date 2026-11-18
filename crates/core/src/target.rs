@@ -1,6 +1,6 @@
 //! Execution targets (ARCHITECTURE 5.5, PROTOCOL 7 and 9): the `Target` enum, local and
-//! remote bootstrap, and repo sync (file list, tree hash, rsync or tar push, deletion of
-//! extraneous mirror files, pull of rendered artifacts).
+//! remote bootstrap, and repo sync (a git push of the working tree to a bare repository on
+//! the host, a detached checkout as the mirror, and the pull of rendered artifacts).
 
 use crate::util::{sh_quote, sh_quote_path};
 use analyst_protocol::config::{TargetConfig, TargetKind};
@@ -41,7 +41,7 @@ pub enum Launcher {
     Scheduler,
 }
 
-/// Reject host strings that ssh, rsync, or scp would parse as something else: empty, starting
+/// Reject host strings that ssh, scp, or git would parse as something else: empty, starting
 /// with `-` (an option), or containing whitespace or control characters.
 pub fn validate_host(host: &str) -> Result<()> {
     if host.is_empty() {
@@ -127,7 +127,7 @@ impl Target {
     /// Mirror directory on the host:
     /// `<remote_root>/<repo name>-<8 hex of the SHA-256 of the local repo path>`, so two repos
     /// with the same directory name never share a mirror. Characters of the repo name outside
-    /// `[A-Za-z0-9._-]` become `_`, which keeps the path safe for rsync and remote shells.
+    /// `[A-Za-z0-9._-]` become `_`, which keeps the path safe for remote shells.
     pub fn mirror_dir(&self, repo: &Path) -> Option<String> {
         match self {
             Target::Local => None,
@@ -147,34 +147,41 @@ impl Target {
                     })
                     .collect();
                 let hash = crate::util::sha256_hex(canon.to_string_lossy().as_bytes());
-                Some(format!(
+                let mirror = format!(
                     "{}/{}-{}",
                     remote_root.trim_end_matches('/'),
                     base.trim_start_matches('.'),
                     &hash[..8]
-                ))
+                );
+                // An install that runs in the mirror is checked against this project.
+                crate::egress::note_mirror(&mirror, repo);
+                Some(mirror)
             }
         }
     }
 }
 
-/// A `tokio` command for a command line; a bare program name is resolved through
-/// [`crate::util::resolve_tool`] so tools are found even when the app was not started from a
-/// shell, and children inherit the widened `PATH`.
+/// A `tokio` command for a command line that will run in `cwd`; a bare program name is
+/// resolved through [`crate::util::resolve_tool`] so tools are found even when the app was
+/// not started from a shell, and children inherit the widened `PATH`.
 ///
 /// Every command line this module runs is built here, so this is where the network gate is
-/// consulted ([`crate::egress::guard`]): `ssh`, `scp`, and `rsync` only reach configured SSH
-/// targets, and `uv` runs offline unless the line installs from the configured package index.
-fn command_for(line: &[String]) -> Result<tokio::process::Command> {
+/// consulted ([`crate::egress::guard_in`]): `ssh`, `scp`, and the git push only reach
+/// configured SSH targets, and `uv` runs offline unless the line installs from the
+/// configured package index into a project that names no other source.
+fn command_for(line: &[String], cwd: Option<&Path>) -> Result<tokio::process::Command> {
     let (program, args) = line
         .split_first()
         .ok_or_else(|| anyhow!("empty command line"))?;
-    let guard = crate::egress::guard(line)?;
+    let guard = crate::egress::guard_in(line, cwd)?;
     let mut cmd = tokio::process::Command::new(crate::util::resolve_tool(program));
     cmd.args(args)
         .env("PATH", crate::util::tool_path_env())
         .kill_on_drop(true);
     guard.apply_tokio(&mut cmd);
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
     Ok(cmd)
 }
 
@@ -182,11 +189,21 @@ fn check_status(line: &[String], out: &std::process::Output) -> Result<()> {
     if out.status.success() {
         return Ok(());
     }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // `uv` without an interpreter to use: say which one to install, and where.
+    let machine = match line.iter().position(|a| a == "--") {
+        Some(i) if line[0] == "ssh" => line.get(i + 1).cloned(),
+        _ => Some("this machine".to_string()),
+    };
+    if let Some(message) = machine.and_then(|m| crate::egress::explain_missing_python(&stderr, &m))
+    {
+        return Err(anyhow!(message));
+    }
     Err(anyhow!(
         "`{}` failed ({}): {}",
         line.join(" "),
         out.status,
-        String::from_utf8_lossy(&out.stderr).trim()
+        stderr.trim()
     ))
 }
 
@@ -203,7 +220,7 @@ pub async fn run_command_stdin(
     input: Option<Vec<u8>>,
 ) -> Result<std::process::Output> {
     use tokio::io::AsyncWriteExt;
-    let mut cmd = command_for(line)?;
+    let mut cmd = command_for(line, cwd)?;
     cmd.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -211,9 +228,6 @@ pub async fn run_command_stdin(
     })
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    if let Some(d) = cwd {
-        cmd.current_dir(d);
-    }
     let mut child = cmd
         .spawn()
         .with_context(|| format!("running `{}`", line.join(" ")))?;
@@ -235,17 +249,8 @@ pub async fn run_command_stdin(
     Ok(out)
 }
 
-/// Pipe `producer`'s stdout into `consumer`'s stdin (both run with `cwd`). Used for the tar
-/// push and pull pipes.
-pub async fn pipe_commands(
-    producer: &[String],
-    consumer: &[String],
-    cwd: Option<&Path>,
-) -> Result<()> {
-    pipe_commands_with_input(None, producer, consumer, cwd).await
-}
-
-/// [`pipe_commands`] with bytes fed to the producer's stdin.
+/// Pipe `producer`'s stdout into `consumer`'s stdin (both run with `cwd`), with bytes fed to
+/// the producer's stdin. Used to bring rendered artifacts back from a host.
 pub async fn pipe_commands_with_input(
     input: Option<Vec<u8>>,
     producer: &[String],
@@ -253,7 +258,7 @@ pub async fn pipe_commands_with_input(
     cwd: Option<&Path>,
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
-    let mut prod = command_for(producer)?;
+    let mut prod = command_for(producer, cwd)?;
     prod.stdin(if input.is_some() {
         Stdio::piped()
     } else {
@@ -261,9 +266,6 @@ pub async fn pipe_commands_with_input(
     })
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    if let Some(d) = cwd {
-        prod.current_dir(d);
-    }
     let mut prod = prod
         .spawn()
         .with_context(|| format!("spawning `{}`", producer.join(" ")))?;
@@ -278,13 +280,10 @@ pub async fn pipe_commands_with_input(
         })),
         _ => None,
     };
-    let mut cons = command_for(consumer)?;
+    let mut cons = command_for(consumer, cwd)?;
     cons.stdin(Stdio::from(stdout.into_owned_fd()?))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(d) = cwd {
-        cons.current_dir(d);
-    }
     let cons = cons
         .spawn()
         .with_context(|| format!("spawning `{}`", consumer.join(" ")))?;
@@ -297,10 +296,12 @@ pub async fn pipe_commands_with_input(
     Ok(())
 }
 
-/// `ssh <opts> -- <host> <remote command>` as a command line.
+/// `ssh <opts> -- <host> <remote command>` as a command line. The remote command is run
+/// with [`crate::egress::remote_env_prefix`] in front, so no `uv` it starts can download a
+/// Python interpreter.
 pub fn ssh_command(host: &str, control_dir: Option<&Path>, remote: &str) -> Vec<String> {
     let mut v = crate::kernel::transport::ssh_prefix(host, control_dir);
-    v.push(remote.to_string());
+    v.push(format!("{}{remote}", crate::egress::remote_env_prefix()));
     v
 }
 
@@ -313,356 +314,224 @@ pub async fn run_ssh(host: &str, control_dir: Option<&Path>, remote: &str) -> Re
 
 pub mod sync {
     //! Repo sync: local canonical, remote mirror (PROTOCOL 7 and 9).
+    //!
+    //! The mirror is kept by git. The working tree is written to a tree object with the
+    //! checkpoint machinery ([`crate::checkpoint`]), wrapped in a parentless commit, and
+    //! pushed over SSH to `refs/analyst/sync` in a bare repository next to the mirror
+    //! (`<mirror>.git`). The mirror directory is a detached checkout of that commit. The
+    //! tree id is the sync identity: when the host has it checked out, nothing is sent.
 
     use super::*;
     use analyst_protocol::kernel::Artifact;
-    use sha2::{Digest, Sha256};
 
+    /// One file of the synced tree. Kept for callers that still derive the tree identity
+    /// from a file list ([`file_list`] then [`tree_hash`]); new code calls [`tree_id`].
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct FileEntry {
         pub path: String,
         pub blob: String,
+        /// Id of the tree this entry was listed from.
+        pub tree: String,
     }
 
-    fn git_z(repo: &Path, args: &[&str]) -> Result<Vec<Vec<u8>>> {
-        let out = crate::checkpoint::git_command(repo, args)
-            .output()
-            .with_context(|| format!("running git {}", args.join(" ")))?;
-        if !out.status.success() {
-            return Err(anyhow!(
-                "git {} failed: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+    /// The id git gives the tree with no entries.
+    const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+    /// Directories at the top of the mirror that belong to the host and are never part of
+    /// the pushed tree, so a checkout neither writes nor deletes anything in them: the
+    /// project's output directory, the session environment, and the app's own state.
+    pub fn host_owned_dirs(out_dir: &str) -> Vec<String> {
+        let mut dirs = vec![".venv".to_string(), ".analyst".to_string()];
+        if let Ok(out) = crate::util::normalize_rel_path(out_dir) {
+            if !out.is_empty() && !dirs.contains(&out) {
+                dirs.insert(0, out);
+            }
         }
+        dirs
+    }
+
+    fn out_dir_for(repo: &Path, target_name: &str) -> String {
+        let project = crate::config::load_project(repo).unwrap_or_default();
+        crate::config::effective_project(&project, target_name).out_dir
+    }
+
+    /// The tree a mirror of `repo` holds: the checkpoint tree (tracked and untracked files,
+    /// not ignored, without data directories and large files) minus the repo's `.env` (keys
+    /// for the app, which never leave this machine) and the [`host_owned_dirs`].
+    pub fn snapshot(repo: &Path, out_dir: &str) -> Result<crate::checkpoint::Snapshot> {
+        let mut drop = host_owned_dirs(out_dir);
+        let mut exclude = crate::checkpoint::excluded_dirs(repo);
+        exclude.extend(drop.iter().cloned());
+        drop.push(wb_net::secrets::ENV_FILE.to_string());
+        crate::checkpoint::worktree_tree_without(repo, &exclude, &drop)
+    }
+
+    /// The id of the tree a mirror of `repo` would hold now: the identity recorded with a
+    /// run, on local and remote targets alike.
+    pub fn tree_id(repo: &Path) -> Result<String> {
+        Ok(snapshot(repo, &out_dir_for(repo, "local"))?.tree)
+    }
+
+    fn tree_paths(repo: &Path, tree: &str) -> Result<Vec<(String, String)>> {
+        // "<mode> <type> <sha>\t<path>" records, NUL-separated.
+        let out = crate::checkpoint::git(repo, &["ls-tree", "-r", "-z", tree], None)?;
         Ok(out
-            .stdout
-            .split(|b| *b == 0)
-            .filter(|p| !p.is_empty())
-            .map(|p| p.to_vec())
+            .split('\0')
+            .filter_map(|rec| rec.split_once('\t'))
+            .map(|(meta, path)| {
+                (
+                    path.to_string(),
+                    meta.rsplit(' ').next().unwrap_or("").to_string(),
+                )
+            })
             .collect())
     }
 
-    /// Hash working-tree files with `git hash-object --stdin-paths`. Stdin is written from a
-    /// second thread while stdout is read, so the pipes can never both fill (B1).
-    fn hash_paths(repo: &Path, paths: &[String]) -> Result<Vec<String>> {
-        use std::io::Write;
-        if paths.is_empty() {
-            return Ok(vec![]);
-        }
-        let mut child = crate::checkpoint::git_command(repo, &["hash-object", "--stdin-paths"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("running git hash-object")?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("git hash-object stdin not captured"))?;
-        let input: Vec<u8> = paths
-            .iter()
-            .flat_map(|p| format!("{p}\n").into_bytes())
-            .collect();
-        let writer = std::thread::spawn(move || {
-            let r = stdin.write_all(&input);
-            drop(stdin);
-            r
-        });
-        let out = child.wait_with_output()?;
-        let wrote = writer.join();
-        if !out.status.success() {
-            return Err(anyhow!(
-                "git hash-object failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        if !matches!(wrote, Ok(Ok(()))) {
-            return Err(anyhow!("writing paths to git hash-object failed"));
-        }
-        let shas: Vec<String> = String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .collect();
-        if shas.len() != paths.len() {
-            return Err(anyhow!(
-                "git hash-object returned {} hashes for {} paths",
-                shas.len(),
-                paths.len()
-            ));
-        }
-        Ok(shas)
-    }
-
-    /// Every file the mirror should hold, with the blob sha of its working-tree content:
-    /// tracked files from `git ls-files -s -z` (index shas, no hashing), with modified and
-    /// untracked files hashed from disk, and deleted files left out. Sorted by path.
+    /// Every file of the synced tree. See [`FileEntry`].
     pub fn file_list(repo: &Path) -> Result<Vec<FileEntry>> {
-        use std::collections::{BTreeMap, BTreeSet};
-        let mut blobs: BTreeMap<String, String> = BTreeMap::new();
-        for rec in git_z(repo, &["ls-files", "-s", "-z"])? {
-            // "<mode> <sha> <stage>\t<path>"
-            let rec = String::from_utf8_lossy(&rec).to_string();
-            let Some((meta, path)) = rec.split_once('\t') else {
-                continue;
-            };
-            let mut it = meta.split(' ');
-            let mode = it.next().unwrap_or("");
-            let sha = it.next().unwrap_or("");
-            if mode == "160000" {
-                continue; // submodule link
-            }
-            blobs.insert(path.to_string(), sha.to_string());
-        }
-        let lossy = |v: Vec<Vec<u8>>| -> Vec<String> {
-            v.into_iter()
-                .map(|p| String::from_utf8_lossy(&p).to_string())
-                .collect()
-        };
-        let deleted: BTreeSet<String> = lossy(git_z(repo, &["ls-files", "-d", "-z"])?)
+        let tree = tree_id(repo)?;
+        Ok(tree_paths(repo, &tree)?
             .into_iter()
-            .collect();
-        let modified = lossy(git_z(repo, &["ls-files", "-m", "-z"])?);
-        let untracked = lossy(git_z(
-            repo,
-            &["ls-files", "--others", "--exclude-standard", "-z"],
-        )?);
-        for d in &deleted {
-            blobs.remove(d);
-        }
-        let mut to_hash: BTreeSet<String> = BTreeSet::new();
-        for p in modified.into_iter().chain(untracked) {
-            if deleted.contains(&p) {
-                continue;
-            }
-            if p.contains('\n') || !repo.join(&p).is_file() {
-                // Unhashable name, a directory (nested repository), or a broken link.
-                blobs.remove(&p);
-                continue;
-            }
-            to_hash.insert(p);
-        }
-        let to_hash: Vec<String> = to_hash.into_iter().collect();
-        for (p, sha) in to_hash.iter().zip(hash_paths(repo, &to_hash)?) {
-            blobs.insert(p.clone(), sha);
-        }
-        // A repo's `.env` holds keys for the app, not for code: it never leaves this machine.
-        blobs.remove(wb_net::secrets::ENV_FILE);
-        Ok(blobs
-            .into_iter()
-            .filter(|(p, _)| repo.join(p).is_file())
-            .map(|(path, blob)| FileEntry { path, blob })
+            .map(|(path, blob)| FileEntry {
+                path,
+                blob,
+                tree: tree.clone(),
+            })
             .collect())
     }
 
-    /// SHA-256 over sorted `(path, blob sha)` pairs, as `"<path>\0<sha>\n"` records.
+    /// The tree id a [`file_list`] was read from. See [`FileEntry`].
     pub fn tree_hash(entries: &[FileEntry]) -> String {
-        let mut sorted: Vec<&FileEntry> = entries.iter().collect();
-        sorted.sort_by(|a, b| a.path.cmp(&b.path));
-        let mut h = Sha256::new();
-        for e in sorted {
-            h.update(e.path.as_bytes());
-            h.update([0u8]);
-            h.update(e.blob.as_bytes());
-            h.update(b"\n");
-        }
-        hex::encode(h.finalize())
+        entries
+            .first()
+            .map(|e| e.tree.clone())
+            .unwrap_or_else(|| EMPTY_TREE.to_string())
     }
 
-    /// Write a NUL-separated file list (consumed by `rsync --from0` and `tar --null -T`).
-    pub fn write_list_file(entries: &[FileEntry], path: &Path) -> Result<()> {
-        let mut buf = Vec::new();
-        for e in entries {
-            buf.extend_from_slice(e.path.as_bytes());
-            buf.push(0);
-        }
-        std::fs::write(path, buf).with_context(|| format!("writing {}", path.display()))
+    /// Path of the bare repository that backs a mirror.
+    pub fn bare_repo(mirror: &str) -> String {
+        format!("{}.git", mirror.trim_end_matches('/'))
     }
 
-    /// The ssh client rsync should use, as one `-e` string (same options as every other ssh
-    /// call: multiplexing, batch mode, connect timeout, keepalives).
-    pub fn rsync_rsh(control_dir: Option<&Path>) -> String {
-        let mut parts = vec!["ssh".to_string()];
-        parts.extend(
-            crate::kernel::transport::ssh_options(control_dir)
-                .iter()
-                .map(|o| sh_quote(o)),
-        );
-        parts.join(" ")
-    }
+    const NO_GIT: &str = "analyst-no-git";
 
-    /// Whether a remote path can be handed to rsync as `host:path` without quoting issues on
-    /// any rsync version (old versions pass it through the remote shell, new ones do not).
-    pub fn rsync_safe_path(path: &str) -> bool {
-        !path.is_empty()
-            && !path.starts_with('-')
-            && path
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_./~+,@%=".contains(c))
-    }
-
-    /// `rsync -az --from0 --files-from=<list> [-e <ssh>] ./ <dest>/`. `--delete` is not used:
-    /// with `--files-from` it removes nothing; [`finalize_script`] does the deletion.
-    pub fn rsync_args(list_file: &Path, rsh: Option<&str>, dest: &str) -> Vec<String> {
-        let mut v = vec![
-            "rsync".to_string(),
-            "-az".to_string(),
-            "--from0".to_string(),
-            format!("--files-from={}", list_file.display()),
-        ];
-        if let Some(rsh) = rsh {
-            v.push("-e".into());
-            v.push(rsh.to_string());
-        }
-        v.push("./".into());
-        v.push(format!("{}/", dest.trim_end_matches('/')));
-        v
-    }
-
-    /// The rsync push to `<host>:<mirror>/`.
-    pub fn rsync_command(
-        host: &str,
-        mirror: &str,
-        list_file: &Path,
-        control_dir: Option<&Path>,
-    ) -> Vec<String> {
-        // rsync resolves relative remote paths against the home directory, which avoids
-        // relying on tilde expansion (not done by rsync versions that escape arguments).
-        let remote = match mirror.strip_prefix("~/") {
-            Some(rest) => rest.to_string(),
-            None => mirror.to_string(),
-        };
-        rsync_args(
-            list_file,
-            Some(&rsync_rsh(control_dir)),
-            &format!("{host}:{remote}"),
-        )
-    }
-
-    /// Local half of the tar push: `tar -cf - --null -T <list>` (run in the repo).
-    pub fn tar_create_command(list_file: &Path) -> Vec<String> {
-        vec![
-            "tar".into(),
-            "-cf".into(),
-            "-".into(),
-            "--null".into(),
-            "-T".into(),
-            list_file.display().to_string(),
-        ]
-    }
-
-    /// Remote half of the tar push: `mkdir -p <mirror> && tar -xf - -C <mirror>`.
-    pub fn tar_extract_remote(mirror: &str) -> String {
-        let m = sh_quote_path(mirror);
-        format!("mkdir -p {m} && tar -xf - -C {m}")
-    }
-
-    /// `ssh <host> '<tar_extract_remote>'` for the tar push consumer.
-    pub fn tar_push_ssh_command(
-        host: &str,
-        mirror: &str,
-        control_dir: Option<&Path>,
-    ) -> Vec<String> {
-        ssh_command(host, control_dir, &tar_extract_remote(mirror))
-    }
-
-    /// Consumer of a pull: `tar -xf - -C <local root>`.
-    pub fn tar_extract_local_command(local_root: &Path) -> Vec<String> {
-        vec![
-            "tar".into(),
-            "-xf".into(),
-            "-".into(),
-            "-C".into(),
-            local_root.display().to_string(),
-        ]
-    }
-
-    /// Path of the mirror's recorded tree hash, relative to the mirror.
-    pub const TREE_HASH_FILE: &str = ".analyst/.tree-hash";
-
-    /// Remote command run before a push: create the mirror, invalidate its recorded hash (so
-    /// an interrupted push never looks complete), and report whether rsync exists.
+    /// Remote command run before a push. It creates the mirror directory and, beside it, a
+    /// bare repository without hooks, then prints `analyst-repo <absolute path>` and
+    /// `analyst-tree <id>`: the tree the mirror is a checkout of, empty when there is none
+    /// (or when the mirror directory was missing). Prints `analyst-no-git` when the host has
+    /// no git.
     pub fn prepare_script(mirror: &str) -> String {
         let m = sh_quote_path(mirror);
+        let b = sh_quote_path(&bare_repo(mirror));
+        let env = crate::egress::REMOTE_GIT_ENV;
         format!(
-            "mkdir -p {m}/.analyst && rm -f {m}/{TREE_HASH_FILE}; command -v rsync >/dev/null 2>&1 && echo yes || echo no"
+            "set -e; command -v git >/dev/null 2>&1 || {{ echo {NO_GIT}; exit 0; }}; \
+had=; [ -d {m} ] && had=1; mkdir -p {m}; \
+[ -d {b}/objects ] || {env} git init -q --bare --template= {b}; \
+b=$(cd {b} && pwd); echo \"analyst-repo $b\"; t=; \
+[ -z \"$had\" ] || t=$({env} git --git-dir=\"$b\" rev-parse -q --verify 'HEAD^{{tree}}' 2>/dev/null || true); \
+echo \"analyst-tree $t\""
         )
     }
 
-    /// Remote command that prints the mirror's recorded tree hash (empty when absent).
-    pub fn read_hash_script(mirror: &str) -> String {
-        format!(
-            "cat {}/{TREE_HASH_FILE} 2>/dev/null || true",
-            sh_quote_path(mirror)
-        )
+    /// What [`prepare_script`] reported.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RemoteState {
+        /// Absolute path of the bare repository on the host.
+        pub repo: String,
+        /// Tree the mirror is a checkout of, if any.
+        pub tree: Option<String>,
     }
 
-    /// Remote command run after a push. It reads the newline-separated file list on stdin,
-    /// deletes every file on the mirror that is not in it (except under `out_dir`, `.venv/`,
-    /// `.analyst/`, and `__pycache__/`), removes directories left empty, and records the tree
-    /// hash. With `delete` false only the hash is recorded.
-    pub fn finalize_script(mirror: &str, out_dir: &str, tree_hash: &str, delete: bool) -> String {
-        let m = sh_quote_path(mirror);
-        let out = out_dir.trim_matches('/');
-        let out_children = sh_quote(&format!("./{out}/*"));
-        let out_self = sh_quote(&format!("./{out}"));
-        let record = format!("printf '%s\\n' {} > {TREE_HASH_FILE}", sh_quote(tree_hash));
-        if !delete {
-            return format!("set -e; mkdir -p {m}/.analyst; cd {m}; cat > /dev/null; {record}");
+    pub fn parse_prepare(output: &str, host: &str) -> Result<RemoteState> {
+        let field = |name: &str| {
+            output
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(name))
+                .map(|v| v.trim().to_string())
+        };
+        if output.lines().any(|l| l.trim() == NO_GIT) {
+            return Err(anyhow!(
+                "`git` was not found on {host}. The repository mirror is kept with git: install git on {host} and try again"
+            ));
         }
+        let repo = field("analyst-repo")
+            .filter(|r| r.starts_with('/'))
+            .ok_or_else(|| {
+                anyhow!(
+                    "unexpected answer from {host} while preparing the mirror: `{}`",
+                    output.trim()
+                )
+            })?;
+        Ok(RemoteState {
+            repo,
+            tree: field("analyst-tree").filter(|t| !t.is_empty()),
+        })
+    }
+
+    /// Remote command run after a push: make the mirror a detached checkout of `commit`.
+    /// Files that left the tree are deleted, changed files are rewritten, and everything
+    /// the tree never held (the output directory, `.venv/`, `.analyst/`, caches) is left
+    /// alone. No hook, filter, or configuration of the host's user runs.
+    pub fn checkout_script(mirror: &str, commit: &str) -> String {
+        let m = sh_quote_path(mirror);
+        let b = sh_quote_path(&bare_repo(mirror));
         format!(
-            "set -e; mkdir -p {m}/.analyst; cd {m}; cat > .analyst/.sync-list; \
-find . \\( -type f -o -type l \\) ! -path {out_children} ! -path './.venv/*' ! -path './.analyst/*' ! -path '*/__pycache__/*' | sed 's|^\\./||' | LC_ALL=C sort > .analyst/.sync-have; \
-LC_ALL=C sort .analyst/.sync-list > .analyst/.sync-want; \
-LC_ALL=C comm -23 .analyst/.sync-have .analyst/.sync-want | while IFS= read -r f; do rm -f -- \"$f\"; done; \
-find . -mindepth 1 -depth -type d -empty ! -path {out_self} ! -path {out_children} ! -path './.venv' ! -path './.venv/*' ! -path './.analyst' ! -path './.analyst/*' -exec rmdir {{}} \\; 2>/dev/null || true; \
-rm -f .analyst/.sync-list .analyst/.sync-have .analyst/.sync-want; {record}"
+            "set -e; b=$(cd {b} && pwd); m=$(cd {m} && pwd); \
+{env} git -c core.hooksPath=/dev/null -c core.fsmonitor= -c advice.detachedHead=false \
+--git-dir=\"$b\" --work-tree=\"$m\" checkout -q -f --detach {commit}",
+            env = crate::egress::REMOTE_GIT_ENV,
+            commit = sh_quote(commit),
         )
     }
 
-    /// Remote half of a pull: reads NUL-separated mirror-relative paths on stdin and writes a
-    /// tar stream of those that exist.
-    pub fn pull_remote_script(mirror: &str) -> String {
-        format!(
-            "cd {} && xargs -0 sh -c 'for f in \"$@\"; do if [ -f \"$f\" ]; then printf \"%s\\0\" \"$f\"; fi; done' sh | tar -cf - --null -T -",
-            sh_quote_path(mirror)
-        )
+    /// A scratch bare repository that borrows `repo`'s objects. The push runs from it, so
+    /// nothing in the project's own `.git/config` (remotes, URL rewrites, helpers) applies.
+    pub fn scratch_repo(repo: &Path) -> Result<tempfile::TempDir> {
+        let objects = crate::checkpoint::git(repo, &["rev-parse", "--git-path", "objects"], None)?;
+        let objects = std::path::absolute(repo.join(objects.trim()))
+            .with_context(|| format!("locating the object store of {}", repo.display()))?;
+        let dir = tempfile::Builder::new()
+            .prefix("analyst-sync-")
+            .tempdir()
+            .context("creating a scratch repository for the push")?;
+        crate::checkpoint::git(
+            dir.path(),
+            &["init", "-q", "--bare", "--template=", "."],
+            None,
+        )?;
+        let info = dir.path().join("objects").join("info");
+        std::fs::create_dir_all(&info)?;
+        std::fs::write(info.join("alternates"), format!("{}\n", objects.display()))?;
+        Ok(dir)
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Method {
-        Rsync,
-        Tar,
+        /// The tree was pushed with git and checked out on the host.
+        Git,
+        /// The host already had this tree checked out.
         Skipped,
     }
 
     #[derive(Debug, Clone)]
     pub struct SyncReport {
+        /// Id of the synced git tree.
         pub tree_hash: String,
         pub files: usize,
         pub method: Method,
         pub warning: Option<String>,
     }
 
-    /// Whether `rsync` is installed locally.
-    pub fn local_has_rsync() -> bool {
-        crate::util::find_tool("rsync").is_some()
-    }
-
-    fn out_dir_for(repo: &Path, target: &Target) -> String {
-        let project = crate::config::load_project(repo).unwrap_or_default();
-        crate::config::effective_project(&project, target.name()).out_dir
-    }
-
-    /// Push the local repo to the mirror and delete mirror files that are no longer in the
-    /// list. The push is skipped only when the mirror's own recorded tree hash
-    /// (`<mirror>/.analyst/.tree-hash`) equals the current one; `last_hash` merely saves the
-    /// round trip when the local tree is known to have changed.
+    /// Bring the mirror of `repo` on `target` in line with the working tree. Nothing is sent
+    /// when the mirror is already a checkout of the current tree, unless `force` is set.
+    /// `last_hash` is accepted for callers that track the last synced tree; the host is
+    /// always asked, since only it knows what the mirror holds.
     pub async fn push(
         repo: &Path,
         target: &Target,
         control_dir: Option<&Path>,
-        last_hash: Option<&str>,
+        _last_hash: Option<&str>,
         force: bool,
     ) -> Result<SyncReport> {
         let (host, mirror) = match target {
@@ -675,70 +544,77 @@ rm -f .analyst/.sync-list .analyst/.sync-have .analyst/.sync-want; {record}"
             Target::Local => return Err(anyhow!("the local target has no mirror to sync")),
         };
         validate_host(host)?;
+        let out_dir = out_dir_for(repo, target.name());
         let repo_owned = repo.to_path_buf();
-        let entries = tokio::task::spawn_blocking(move || file_list(&repo_owned))
-            .await
-            .map_err(|e| anyhow!("file list task failed: {e}"))??;
-        let hash = tree_hash(&entries);
-        let locally_unchanged = last_hash.is_none() || last_hash == Some(hash.as_str());
-        if !force && locally_unchanged {
-            let remote = run_ssh(host, control_dir, &read_hash_script(&mirror)).await?;
-            if remote.trim() == hash {
-                return Ok(SyncReport {
-                    tree_hash: hash,
-                    files: entries.len(),
-                    method: Method::Skipped,
-                    warning: None,
-                });
-            }
-        }
-        let list = tempfile::NamedTempFile::new().context("creating the sync list file")?;
-        write_list_file(&entries, list.path())?;
-        let remote_has_rsync = run_ssh(host, control_dir, &prepare_script(&mirror))
-            .await?
-            .trim()
-            .ends_with("yes");
-        let method = if local_has_rsync() && remote_has_rsync && rsync_safe_path(&mirror) {
-            run_command(
-                &rsync_command(host, &mirror, list.path(), control_dir),
-                Some(repo),
-            )
-            .await?;
-            Method::Rsync
-        } else {
-            pipe_commands(
-                &tar_create_command(list.path()),
-                &tar_push_ssh_command(host, &mirror, control_dir),
-                Some(repo),
-            )
-            .await?;
-            Method::Tar
-        };
-        // Deleting needs a newline-separated list; refuse to delete on an empty or
-        // unrepresentable one rather than risk wiping the mirror.
-        let deletable = !entries.is_empty() && entries.iter().all(|e| !e.path.contains('\n'));
-        let mut list_text = String::new();
-        for e in &entries {
-            list_text.push_str(&e.path);
-            list_text.push('\n');
-        }
-        let script = finalize_script(&mirror, &out_dir_for(repo, target), &hash, deletable);
-        run_command_stdin(
-            &ssh_command(host, control_dir, &script),
-            None,
-            Some(list_text.into_bytes()),
-        )
-        .await
-        .context("removing extraneous files from the mirror")?;
-        Ok(SyncReport {
-            tree_hash: hash,
-            files: entries.len(),
-            method,
-            warning: (!deletable).then(|| {
-                "files deleted locally were not removed from the mirror (empty or unusual file list)"
-                    .to_string()
-            }),
+        let (snap, commit, files) = tokio::task::spawn_blocking(move || -> Result<_> {
+            let snap = snapshot(&repo_owned, &out_dir)?;
+            let commit =
+                crate::checkpoint::commit_tree_detached(&repo_owned, &snap.tree, "analyst sync")?;
+            let files = tree_paths(&repo_owned, &snap.tree)?.len();
+            Ok((snap, commit, files))
         })
+        .await
+        .map_err(|e| anyhow!("snapshot task failed: {e}"))??;
+        let state = parse_prepare(
+            &run_ssh(host, control_dir, &prepare_script(&mirror)).await?,
+            host,
+        )?;
+        if !force && state.tree.as_deref() == Some(snap.tree.as_str()) {
+            return Ok(SyncReport {
+                tree_hash: snap.tree,
+                files,
+                method: Method::Skipped,
+                warning: None,
+            });
+        }
+        let scratch = {
+            let repo = repo.to_path_buf();
+            tokio::task::spawn_blocking(move || scratch_repo(&repo))
+                .await
+                .map_err(|e| anyhow!("scratch repository task failed: {e}"))??
+        };
+        let line =
+            crate::egress::git_push(scratch.path(), host, &state.repo, &commit, control_dir)?;
+        run_command(&line, Some(scratch.path()))
+            .await
+            .with_context(|| format!("pushing the working tree to {host}"))?;
+        run_ssh(host, control_dir, &checkout_script(&mirror, &commit))
+            .await
+            .with_context(|| format!("checking out the mirror on {host}"))?;
+        let warning = (!snap.skipped_large.is_empty()).then(|| {
+            format!(
+                "{} file(s) larger than {} MB were not sent to the mirror in their current state (first: {})",
+                snap.skipped_large.len(),
+                crate::checkpoint::MAX_CHECKPOINT_FILE_BYTES / (1024 * 1024),
+                snap.skipped_large[0]
+            )
+        });
+        Ok(SyncReport {
+            tree_hash: snap.tree,
+            files,
+            method: Method::Git,
+            warning,
+        })
+    }
+
+    /// Remote half of a pull: reads NUL-separated mirror-relative paths on stdin and writes a
+    /// tar stream of those that exist.
+    pub fn pull_remote_script(mirror: &str) -> String {
+        format!(
+            "cd {} && xargs -0 sh -c 'for f in \"$@\"; do if [ -f \"$f\" ]; then printf \"%s\\0\" \"$f\"; fi; done' sh | tar -cf - --null -T -",
+            sh_quote_path(mirror)
+        )
+    }
+
+    /// Consumer of a pull: `tar -xf - -C <local root>`.
+    pub fn tar_extract_local_command(local_root: &Path) -> Vec<String> {
+        vec![
+            "tar".into(),
+            "-xf".into(),
+            "-".into(),
+            "-C".into(),
+            local_root.display().to_string(),
+        ]
     }
 
     /// Mirror-relative paths worth pulling for one run: every artifact with `rendered: true`,
@@ -769,8 +645,7 @@ rm -f .analyst/.sync-list .analyst/.sync-have .analyst/.sync-want; {record}"
     }
 
     /// Pull exactly `rel_paths` (mirror-relative; missing ones are skipped) from the mirror
-    /// into `local_root`, preserving relative paths, with one tar pipe. Replaces the old
-    /// whole-directory `pull_run`.
+    /// into `local_root`, preserving relative paths, with one tar stream over ssh.
     pub async fn pull_rendered(
         host: &str,
         mirror: &str,
@@ -998,9 +873,39 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         Ok(())
     }
 
-    /// The remote command sequence, run after `uv` is in place ([`ensure_remote_uv`]) and
-    /// the kernel wheel has been copied to `wheel_remote` (a path on the host). `index_flag`
-    /// is the authorized `--default-index '<url>'` from [`crate::egress::remote_index_flag`].
+    const PYTHON_FOUND: &str = "analyst-python-found";
+
+    /// Remote command that reports whether the host has the interpreter the tooling needs.
+    /// `uv` looks at what is installed there and downloads nothing.
+    pub fn python_probe_command(python_version: &str) -> String {
+        format!(
+            "~/.analyst/bin/uv python find {} >/dev/null 2>&1 && echo {PYTHON_FOUND} || echo analyst-python-missing",
+            sh_quote(python_version)
+        )
+    }
+
+    /// The error for a host without the target's Python version: it names the version and
+    /// says to install it there.
+    pub fn check_python_probe(
+        output: &str,
+        python_version: &str,
+        target_name: &str,
+        host: &str,
+    ) -> Result<()> {
+        if output.lines().any(|l| l.trim() == PYTHON_FOUND) {
+            return Ok(());
+        }
+        Err(anyhow!(
+            "{}. Target `{target_name}` asks for it with `python = \"{python_version}\"` in config.toml; another version that is installed on {host} can be named there instead",
+            crate::egress::python_missing(python_version, host)
+        ))
+    }
+
+    /// The remote command sequence, run after `uv` is in place ([`ensure_remote_uv`]), the
+    /// host's Python has been found ([`python_probe_command`]), and the kernel wheel has
+    /// been copied to `wheel_remote` (a path on the host). `index_flag` is the authorized
+    /// `--default-index '<url>'` from [`crate::egress::remote_index_flag`]. Python itself is
+    /// never installed by this sequence.
     pub fn commands(
         python_version: &str,
         wheel_remote: &str,
@@ -1010,7 +915,6 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         vec![
             "mkdir -p ~/.analyst/bin ~/.analyst/tooling".to_string(),
             "test -x ~/.analyst/bin/uv".to_string(),
-            format!("~/.analyst/bin/uv python install {}", sh_quote(python_version)),
             format!(
                 "test -x ~/.analyst/tooling/.venv/bin/python || ~/.analyst/bin/uv venv {index_flag} --python {} ~/.analyst/tooling/.venv",
                 sh_quote(python_version)
@@ -1038,11 +942,16 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
 
     /// Session venv setup in the mirror: `uv sync` when a pyproject exists, else venv +
     /// requirements. Installs come from the configured index only (`index_flag`, see
-    /// [`commands`]).
+    /// [`commands`]). It first asks `uv` for an installed interpreter the project can use;
+    /// without one it stops, showing which version `uv` looked for and that it has to be
+    /// installed on the host.
     pub fn session_env_command(mirror: &str, index_flag: &str) -> String {
         let m = sh_quote_path(mirror);
+        let hint = sh_quote(
+            "The app never downloads Python interpreters. Install the Python version named above on this host yourself (its package manager is the usual way), then try again.",
+        );
         format!(
-            "cd {m} && if [ -f pyproject.toml ]; then ~/.analyst/bin/uv sync {index_flag}; else ~/.analyst/bin/uv venv {index_flag} && (test -f requirements.txt && ~/.analyst/bin/uv pip install {index_flag} -r requirements.txt || true); fi"
+            "cd {m} && {{ ~/.analyst/bin/uv python find >/dev/null || {{ echo {hint} >&2; exit 1; }}; }} && if [ -f pyproject.toml ]; then ~/.analyst/bin/uv sync {index_flag}; else ~/.analyst/bin/uv venv {index_flag} && (test -f requirements.txt && ~/.analyst/bin/uv pip install {index_flag} -r requirements.txt || true); fi"
         )
     }
 
@@ -1082,8 +991,10 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         control_dir: Option<&Path>,
         wheel: Option<&Path>,
     ) -> Result<Outcome> {
-        let (host, python) = match target {
-            Target::Ssh { host, python, .. } => (host.as_str(), python.as_str()),
+        let (name, host, python) = match target {
+            Target::Ssh {
+                name, host, python, ..
+            } => (name.as_str(), host.as_str(), python.as_str()),
             Target::Local => return Err(anyhow!("the local target needs no bootstrap")),
         };
         let want = tooling_version();
@@ -1097,6 +1008,12 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
             )
         })?;
         ensure_remote_uv(target, control_dir).await?;
+        check_python_probe(
+            &run_ssh(host, control_dir, &python_probe_command(python)).await?,
+            python,
+            name,
+            host,
+        )?;
         let index_flag = crate::egress::remote_index_flag("tooling bootstrap (remote)")?;
         let scp = scp_wheel_command(host, wheel, control_dir);
         run_command(&scp, None).await?;
@@ -1157,6 +1074,22 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         let venv = tooling.join(".venv");
         std::fs::create_dir_all(&tooling)
             .with_context(|| format!("creating {}", tooling.display()))?;
+        // The kernel says which Python it needs; uv must find one that is installed.
+        let python = kernel_requires_python(kernel_source_dir);
+        {
+            let (dir, request) = (tooling.clone(), python.clone());
+            tokio::task::spawn_blocking(move || {
+                crate::egress::require_python(&dir, request.as_deref())
+            })
+            .await
+            .map_err(|e| anyhow!("interpreter check failed: {e}"))?
+            .context("setting up the tooling environment")?;
+        }
+        let mut venv_args = vec!["-q".to_string()];
+        if let Some(request) = &python {
+            venv_args.extend(["--python".to_string(), request.clone()]);
+        }
+        venv_args.push(venv.to_string_lossy().to_string());
         let _ = std::fs::remove_file(tooling.join("VERSION"));
         if venv.exists() {
             // Start clean: uv versions differ on whether an existing venv is replaced.
@@ -1166,11 +1099,7 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         // Both steps may fetch from the package index (the kernel's dependencies), so both
         // name the configured index and are authorized by the gate when spawned.
         run_command(
-            &crate::egress::uv_install(
-                &uv,
-                &["venv"],
-                &["-q".to_string(), venv.to_string_lossy().to_string()],
-            ),
+            &crate::egress::uv_install(&uv, &["venv"], &venv_args),
             Some(&tooling),
         )
         .await
@@ -1194,6 +1123,18 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         std::fs::write(tooling.join("VERSION"), format!("{want}\n"))
             .with_context(|| format!("writing {}", tooling.join("VERSION").display()))?;
         Ok(Outcome::Installed(want.to_string()))
+    }
+
+    /// `requires-python` of the kernel source (a directory with a `pyproject.toml`), e.g.
+    /// `>=3.11`; `None` for a wheel or when the file does not say.
+    pub fn kernel_requires_python(kernel_source_dir: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(kernel_source_dir.join("pyproject.toml")).ok()?;
+        let doc: toml::Value = toml::from_str(&text).ok()?;
+        doc.get("project")?
+            .get("requires-python")?
+            .as_str()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     fn search_starts() -> Vec<PathBuf> {
@@ -1283,37 +1224,80 @@ mod tests {
         }
     }
 
-    #[test]
-    fn file_list_and_tree_hash() {
-        let repo = temp_repo();
-        let list = file_list(repo.path()).unwrap();
-        let paths: Vec<&str> = list.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(paths, vec![".gitignore", "scripts/a.py", "untracked.md"]);
-        assert!(list.iter().all(|e| e.blob.len() >= 40));
-        let h1 = tree_hash(&list);
-        assert_eq!(h1.len(), 64);
-        // A modified tracked file is hashed from the working tree, not the index.
-        std::fs::write(repo.path().join("scripts/a.py"), "print(2)\n").unwrap();
-        let l2 = file_list(repo.path()).unwrap();
-        let h2 = tree_hash(&l2);
-        assert_ne!(h1, h2);
-        let direct =
-            crate::checkpoint::git(repo.path(), &["hash-object", "scripts/a.py"], None).unwrap();
-        assert_eq!(l2[1].blob, direct.trim());
-        // A deleted tracked file leaves the list.
-        std::fs::remove_file(repo.path().join("scripts/a.py")).unwrap();
-        let l3 = file_list(repo.path()).unwrap();
-        assert!(l3.iter().all(|e| e.path != "scripts/a.py"));
-        // Order independence.
-        let mut rev = list.clone();
-        rev.reverse();
-        assert_eq!(tree_hash(&rev), h1);
+    fn tree_files(repo: &Path, tree: &str) -> Vec<String> {
+        crate::checkpoint::git(repo, &["ls-tree", "-r", "--name-only", tree], None)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
-    /// B1: with a few thousand paths the old implementation filled both pipes of
-    /// `git hash-object` and hung forever.
+    /// The synced tree is the working tree as git sees it, minus `.env` and the directories
+    /// the host owns, whether or not those are tracked or ignored.
     #[test]
-    fn file_list_does_not_deadlock_on_large_repos() {
+    fn snapshot_leaves_out_env_and_host_owned_directories() {
+        let repo = temp_repo();
+        let root = repo.path();
+        for (p, text) in [
+            (".env", "ANTHROPIC_API_KEY=sk-secret\n"),
+            ("results/kept-on-host.txt", "x"),
+            (".analyst/session.json", "{}"),
+            (".venv/pyvenv.cfg", "venv"),
+            ("sub/.env", "nested files are ordinary files\n"),
+        ] {
+            std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
+            std::fs::write(root.join(p), text).unwrap();
+        }
+        // Tracked, committed, and not ignored: still never part of the pushed tree.
+        git(root, &["add", "-f", ".env", "results", ".analyst", ".venv"]);
+        git(root, &["commit", "-q", "-m", "tracked by mistake"]);
+        let snap = snapshot(root, "results").unwrap();
+        assert_eq!(
+            tree_files(root, &snap.tree),
+            vec![".gitignore", "scripts/a.py", "sub/.env", "untracked.md"]
+        );
+        assert!(snap.skipped_large.is_empty());
+        // The user's index and branch are untouched.
+        let status = crate::checkpoint::git(root, &["status", "--porcelain"], None).unwrap();
+        assert_eq!(status.trim(), "?? sub/\n?? untracked.md");
+        let refs = crate::checkpoint::git(root, &["for-each-ref"], None).unwrap();
+        assert_eq!(refs.lines().count(), 1, "{refs}");
+
+        // Identity: stable while nothing changes, different after an edit or a deletion.
+        let id = tree_id(root).unwrap();
+        assert_eq!(id.len(), 40);
+        assert_eq!(tree_id(root).unwrap(), id);
+        let list = file_list(root).unwrap();
+        assert_eq!(
+            tree_hash(&list),
+            id,
+            "the list-based identity is the tree id"
+        );
+        assert!(list.iter().all(|e| e.path != ".env"));
+        std::fs::write(root.join("scripts/a.py"), "print(2)\n").unwrap();
+        let edited = tree_id(root).unwrap();
+        assert_ne!(edited, id);
+        std::fs::remove_file(root.join("scripts/a.py")).unwrap();
+        let deleted = snapshot(root, "out").unwrap();
+        assert!(!tree_files(root, &deleted.tree).contains(&"scripts/a.py".to_string()));
+        // The sync commit has no parent and depends on the tree alone.
+        let c1 = crate::checkpoint::commit_tree_detached(root, &id, "analyst sync").unwrap();
+        let c2 = crate::checkpoint::commit_tree_detached(root, &id, "analyst sync").unwrap();
+        assert_eq!(c1, c2);
+        let parents = crate::checkpoint::git(root, &["rev-list", "--parents", "-1", &c1], None);
+        assert_eq!(parents.unwrap().trim(), c1);
+        // An empty repository has the empty tree.
+        let empty = tempfile::tempdir().unwrap();
+        git(empty.path(), &["init", "-q"]);
+        assert_eq!(tree_hash(&file_list(empty.path()).unwrap()), EMPTY_TREE_ID);
+        assert_eq!(tree_id(empty.path()).unwrap(), EMPTY_TREE_ID);
+    }
+
+    const EMPTY_TREE_ID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+    /// B1: a few thousand changed paths must not fill a pipe and hang.
+    #[test]
+    fn snapshot_does_not_deadlock_on_large_repos() {
         let repo = temp_repo();
         let dir = repo
             .path()
@@ -1329,52 +1313,196 @@ mod tests {
         });
         let n = rx
             .recv_timeout(std::time::Duration::from_secs(60))
-            .expect("file_list hung")
+            .expect("the snapshot hung")
             .unwrap();
         assert_eq!(n, 6003);
     }
 
     #[test]
     fn command_lines() {
-        let list = PathBuf::from("/tmp/list");
-        let ctl = PathBuf::from("/home/u/.analyst/ssh");
-        let r = rsync_command("lab", "~/analyst/repo", &list, None);
         assert_eq!(
-            r[..4],
-            ["rsync", "-az", "--from0", "--files-from=/tmp/list"]
+            bare_repo("~/analyst/repo-1a2b3c4d"),
+            "~/analyst/repo-1a2b3c4d.git"
         );
-        assert!(!r.contains(&"--delete".to_string()));
-        assert_eq!(r[4], "-e");
-        assert!(r[5].starts_with("ssh -o BatchMode=yes -o ConnectTimeout=10"));
-        assert_eq!(r[6..], ["./", "lab:analyst/repo/"]);
-        let r = rsync_command("lab", "/srv/a/repo", &list, Some(&ctl));
-        assert!(r[5].contains("ControlPath=/home/u/.analyst/ssh/%C"));
-        assert!(r[5].contains("ServerAliveInterval=15"));
-        assert_eq!(r.last().unwrap(), "lab:/srv/a/repo/");
-        assert!(rsync_safe_path("~/analyst/repo-1a2b3c4d"));
-        assert!(!rsync_safe_path("~/my analyst/repo"));
-        assert!(!rsync_safe_path("-x"));
-        assert_eq!(
-            tar_create_command(&list),
-            vec!["tar", "-cf", "-", "--null", "-T", "/tmp/list"]
+        let prepare = prepare_script("~/analyst/my repo");
+        assert!(
+            prepare.starts_with("set -e; command -v git >/dev/null 2>&1 || { echo analyst-no-git;")
         );
-        let push = tar_push_ssh_command("lab", "~/analyst/my repo", None);
-        assert_eq!(push[0], "ssh");
-        assert_eq!(push[push.len() - 3..push.len() - 1], ["--", "lab"]);
+        assert!(
+            prepare.contains("mkdir -p ~/'analyst/my repo';"),
+            "{prepare}"
+        );
+        assert!(
+            prepare.contains(
+                "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git init -q --bare --template= ~/'analyst/my repo.git'"
+            ),
+            "{prepare}"
+        );
+        let checkout = checkout_script("~/a/r", "abc123");
+        assert!(
+            checkout.contains("-c core.hooksPath=/dev/null"),
+            "{checkout}"
+        );
+        assert!(checkout.contains("GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "));
+        assert!(
+            checkout.ends_with("checkout -q -f --detach abc123"),
+            "{checkout}"
+        );
+        // What the host answers.
+        let state =
+            parse_prepare("analyst-repo /home/u/analyst/r.git\nanalyst-tree \n", "lab").unwrap();
+        assert_eq!(state.repo, "/home/u/analyst/r.git");
+        assert_eq!(state.tree, None);
+        let state = parse_prepare("motd\nanalyst-repo /r.git\nanalyst-tree abc\n", "lab").unwrap();
+        assert_eq!(state.tree.as_deref(), Some("abc"));
+        let err = parse_prepare("analyst-no-git\n", "lab-gpu")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`git` was not found on lab-gpu") && err.contains("install git"),
+            "{err}"
+        );
+        assert!(parse_prepare("bash: weird", "lab").is_err());
+        // Every remote command starts by forbidding Python downloads.
+        let ssh = ssh_command("lab", None, "true");
         assert_eq!(
-            push.last().unwrap(),
-            "mkdir -p ~/'analyst/my repo' && tar -xf - -C ~/'analyst/my repo'"
+            ssh.last().unwrap(),
+            "export UV_PYTHON_DOWNLOADS=never; true"
         );
         assert_eq!(
             tar_extract_local_command(Path::new("/repo")),
             vec!["tar", "-xf", "-", "-C", "/repo"]
         );
         assert!(pull_remote_script("~/a/my repo").starts_with("cd ~/'a/my repo' && xargs -0"));
+    }
+
+    /// Populate a stand-in mirror with files the host owns.
+    fn seed_mirror(mirror: &Path) {
+        for (p, text) in [
+            ("out/fit/r1/run.json", "{}"),
+            (".venv/pyvenv.cfg", "venv"),
+            (".analyst/env.sh", "env"),
+            ("scripts/__pycache__/a.cpython-312.pyc", "pyc"),
+        ] {
+            let f = mirror.join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, text).unwrap();
+        }
+    }
+
+    /// One sync with the host's half run by a local shell and the push going to a local
+    /// path: the same scripts, tree, and commit as over SSH. Returns the method used.
+    async fn sync_locally(repo: &Path, mirror: &Path) -> Method {
+        let m = mirror.display().to_string();
+        let snap = snapshot(repo, "out").unwrap();
+        let commit =
+            crate::checkpoint::commit_tree_detached(repo, &snap.tree, "analyst sync").unwrap();
+        let out = run_command(&sh(prepare_script(&m)), None).await.unwrap();
+        let state = parse_prepare(&String::from_utf8_lossy(&out.stdout), "here").unwrap();
+        if state.tree.as_deref() == Some(snap.tree.as_str()) {
+            return Method::Skipped;
+        }
+        let scratch = scratch_repo(repo).unwrap();
+        crate::checkpoint::git(
+            scratch.path(),
+            &[
+                "push",
+                "-q",
+                "--force",
+                &state.repo,
+                &format!("{commit}:{}", crate::egress::SYNC_REF),
+            ],
+            None,
+        )
+        .unwrap();
+        run_command(&sh(checkout_script(&m, &commit)), None)
+            .await
+            .unwrap();
+        Method::Git
+    }
+
+    /// R1 and the sync contract, without a network: first sync, no-op resync, deletion,
+    /// host-owned directories untouched, `.env` never sent.
+    #[tokio::test]
+    async fn mirror_is_a_checkout_of_the_pushed_tree() {
+        let repo = temp_repo();
+        let root = repo.path();
+        std::fs::write(root.join(".env"), "KEY=sk-secret-value\n").unwrap();
+        std::fs::write(root.join("scripts/old.py"), "print('old')\n").unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        // A mirror path with a space exercises the quoting of every remote script.
+        let mirror = dest.path().join("my mirror");
+        seed_mirror(&mirror);
+        assert_eq!(sync_locally(root, &mirror).await, Method::Git);
         assert_eq!(
-            read_hash_script("~/a/r"),
-            "cat ~/a/r/.analyst/.tree-hash 2>/dev/null || true"
+            std::fs::read_to_string(mirror.join("scripts/a.py")).unwrap(),
+            "print(1)\n"
         );
-        assert!(prepare_script("~/a/r").starts_with("mkdir -p ~/a/r/.analyst && rm -f"));
+        assert!(mirror.join("untracked.md").is_file());
+        assert!(mirror.join("scripts/old.py").is_file());
+        assert!(
+            !mirror.join("out/ignored.txt").exists(),
+            "ignored files stay"
+        );
+        assert!(
+            !mirror.join(".git").exists(),
+            "the mirror is a plain directory"
+        );
+        let bare = dest.path().join("my mirror.git");
+        assert!(bare.join("objects").is_dir());
+        assert!(
+            !bare.join("hooks").exists(),
+            "the bare repository has no hooks"
+        );
+        // `.env` is neither in the mirror nor anywhere in the host's object store.
+        assert!(!mirror.join(".env").exists());
+        let objects = crate::checkpoint::git(
+            &bare,
+            &["cat-file", "--batch-all-objects", "--batch-check"],
+            None,
+        )
+        .unwrap();
+        let env_blob = crate::checkpoint::git(root, &["hash-object", ".env"], None).unwrap();
+        assert!(!objects.contains(env_blob.trim()), "{objects}");
+        // Only refs/analyst/sync exists on the host.
+        let refs = crate::checkpoint::git(&bare, &["for-each-ref", "--format=%(refname)"], None);
+        assert_eq!(refs.unwrap().trim(), crate::egress::SYNC_REF);
+
+        // Nothing changed: nothing is sent.
+        assert_eq!(sync_locally(root, &mirror).await, Method::Skipped);
+
+        // An edit and a deletion arrive; what the host owns is untouched.
+        std::fs::remove_file(root.join("scripts/old.py")).unwrap();
+        std::fs::write(root.join("scripts/a.py"), "print(2)\n").unwrap();
+        std::fs::create_dir_all(root.join("analysis/old")).unwrap();
+        std::fs::write(root.join("analysis/old/mod.py"), "x = 1\n").unwrap();
+        assert_eq!(sync_locally(root, &mirror).await, Method::Git);
+        std::fs::remove_dir_all(root.join("analysis")).unwrap();
+        assert_eq!(sync_locally(root, &mirror).await, Method::Git);
+        assert_eq!(
+            std::fs::read_to_string(mirror.join("scripts/a.py")).unwrap(),
+            "print(2)\n"
+        );
+        assert!(!mirror.join("scripts/old.py").exists(), "deleted locally");
+        assert!(
+            !mirror.join("analysis").exists(),
+            "emptied dirs are removed"
+        );
+        assert!(mirror.join("out/fit/r1/run.json").is_file(), "out_dir kept");
+        assert!(mirror.join(".venv/pyvenv.cfg").is_file(), ".venv kept");
+        assert!(mirror.join(".analyst/env.sh").is_file(), ".analyst kept");
+        assert!(mirror
+            .join("scripts/__pycache__/a.cpython-312.pyc")
+            .is_file());
+        assert!(!mirror.join(".env").exists());
+        // The user's repository gained no ref and its index is as it was.
+        let refs = crate::checkpoint::git(root, &["for-each-ref"], None).unwrap();
+        assert_eq!(refs.lines().count(), 1, "{refs}");
+
+        // A mirror directory that was removed on the host is restored, not skipped.
+        std::fs::remove_dir_all(&mirror).unwrap();
+        assert_eq!(sync_locally(root, &mirror).await, Method::Git);
+        assert!(mirror.join("scripts/a.py").is_file());
     }
 
     /// R6: every ssh call carries timeouts and keepalives, `--` precedes the host, and hosts
@@ -1390,7 +1518,10 @@ mod tests {
         ] {
             assert!(line.iter().any(|a| a == opt), "{opt} missing in {line:?}");
         }
-        assert_eq!(line[line.len() - 3..], ["--", "lab", "true"]);
+        assert_eq!(
+            line[line.len() - 3..],
+            ["--", "lab", "export UV_PYTHON_DOWNLOADS=never; true"]
+        );
         assert!(validate_host("lab-gpu").is_ok());
         assert!(validate_host("user@host.example").is_ok());
         for bad in ["-oProxyCommand=evil", "", "a b", "a\nb"] {
@@ -1508,14 +1639,18 @@ mod tests {
         // uv is provided before the script runs; the script only checks it and never
         // downloads an installer.
         assert_eq!(cmds[1], "test -x ~/.analyst/bin/uv");
-        assert_eq!(cmds[2], "~/.analyst/bin/uv python install 3.12");
-        assert!(cmds[3].contains(
+        // The host's own Python is used; the sequence never installs one.
+        assert!(
+            cmds.iter().all(|c| !c.contains("python install")),
+            "{cmds:?}"
+        );
+        assert!(cmds[2].contains(
             "uv venv --default-index 'https://pypi.org/simple' --python 3.12 ~/.analyst/tooling/.venv"
         ));
-        assert!(cmds[4].starts_with(
+        assert!(cmds[3].starts_with(
             "~/.analyst/bin/uv pip install --default-index 'https://pypi.org/simple' --python ~/.analyst/tooling/.venv/bin/python ~/.analyst/tooling/analyst_kernel"
         ));
-        assert_eq!(cmds[5], "printf '%s\\n' 0.0.1 > ~/.analyst/tooling/VERSION");
+        assert_eq!(cmds[4], "printf '%s\\n' 0.0.1 > ~/.analyst/tooling/VERSION");
         let script = bootstrap::script("3.12", "w", "v", flag);
         assert!(script.starts_with("set -e; mkdir -p"));
         for text in [script.as_str(), &bootstrap::uv_probe_command()] {
@@ -1525,8 +1660,30 @@ mod tests {
             );
             assert_eq!(text.matches("https://").count(), text.matches(flag).count());
         }
+        // Without the target's Python the bootstrap stops with a message that names the
+        // version and where to install it.
+        assert_eq!(
+            bootstrap::python_probe_command("3.12"),
+            "~/.analyst/bin/uv python find 3.12 >/dev/null 2>&1 && echo analyst-python-found || echo analyst-python-missing"
+        );
+        bootstrap::check_python_probe("analyst-python-found\n", "3.12", "lab", "lab-gpu").unwrap();
+        let err =
+            bootstrap::check_python_probe("analyst-python-missing\n", "3.12", "lab", "lab-gpu")
+                .unwrap_err()
+                .to_string();
+        assert!(
+            err.contains("no Python 3.12 interpreter was found on lab-gpu")
+                && err.contains("never downloads")
+                && err.contains("Install Python 3.12 on lab-gpu")
+                && err.contains("python = \"3.12\""),
+            "{err}"
+        );
         let env = bootstrap::session_env_command("~/analyst/repo", flag);
         assert!(env.starts_with("cd ~/analyst/repo && "));
+        assert!(
+            env.contains("~/.analyst/bin/uv python find >/dev/null || {"),
+            "{env}"
+        );
         assert!(env.contains(&format!("uv sync {flag};")), "{env}");
         assert!(env.contains(&format!("uv pip install {flag} -r")), "{env}");
         assert!(bootstrap::session_env_command("~/analyst/my repo", flag)
@@ -1542,120 +1699,6 @@ mod tests {
             bootstrap::version_check_command(),
             "cat ~/.analyst/tooling/VERSION 2>/dev/null || true"
         );
-    }
-
-    /// Populate a stand-in mirror with files that must go and files that must stay.
-    fn seed_mirror(mirror: &Path) {
-        for (p, text) in [
-            ("scripts/deleted_locally.py", "ghost"),
-            ("analysis/old/mod.py", "ghost"),
-            ("out/fit/r1/run.json", "{}"),
-            (".venv/pyvenv.cfg", "venv"),
-            (".analyst/env.sh", "env"),
-            ("scripts/__pycache__/a.cpython-312.pyc", "pyc"),
-        ] {
-            let f = mirror.join(p);
-            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
-            std::fs::write(f, text).unwrap();
-        }
-    }
-
-    async fn finalize_locally(repo: &Path, mirror: &Path, entries: &[FileEntry]) {
-        let list: String = entries.iter().map(|e| format!("{}\n", e.path)).collect();
-        let script = finalize_script(&mirror.display().to_string(), "out", "HASH123", true);
-        run_command_stdin(&sh(script), Some(repo), Some(list.into_bytes()))
-            .await
-            .unwrap();
-    }
-
-    fn assert_mirror_clean(mirror: &Path) {
-        assert_eq!(
-            std::fs::read_to_string(mirror.join("scripts/a.py")).unwrap(),
-            "print(1)\n"
-        );
-        assert!(mirror.join("untracked.md").is_file());
-        assert!(
-            !mirror.join("scripts/deleted_locally.py").exists(),
-            "extraneous file must be deleted"
-        );
-        assert!(
-            !mirror.join("analysis").exists(),
-            "emptied dirs are removed"
-        );
-        assert!(mirror.join("out/fit/r1/run.json").is_file(), "out_dir kept");
-        assert!(mirror.join(".venv/pyvenv.cfg").is_file(), ".venv kept");
-        assert!(mirror.join(".analyst/env.sh").is_file(), ".analyst kept");
-        assert!(mirror
-            .join("scripts/__pycache__/a.cpython-312.pyc")
-            .is_file());
-        assert!(
-            !mirror.join("out/ignored.txt").exists(),
-            "ignored files are not synced"
-        );
-        assert_eq!(
-            std::fs::read_to_string(mirror.join(TREE_HASH_FILE)).unwrap(),
-            "HASH123\n"
-        );
-        assert!(!mirror.join(".analyst/.sync-list").exists());
-    }
-
-    /// R1: `rsync --delete --files-from` deletes nothing; the finalize step must.
-    #[tokio::test]
-    async fn rsync_push_then_finalize_deletes_extraneous_files() {
-        if !local_has_rsync() {
-            return;
-        }
-        let repo = temp_repo();
-        let entries = file_list(repo.path()).unwrap();
-        let list = repo.path().join(".list");
-        write_list_file(&entries, &list).unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        let mirror = dest.path().join("mirror");
-        seed_mirror(&mirror);
-        run_command(
-            &rsync_args(&list, None, &mirror.display().to_string()),
-            Some(repo.path()),
-        )
-        .await
-        .unwrap();
-        assert!(
-            mirror.join("scripts/deleted_locally.py").exists(),
-            "rsync alone leaves the ghost file"
-        );
-        finalize_locally(repo.path(), &mirror, &entries).await;
-        assert_mirror_clean(&mirror);
-    }
-
-    #[tokio::test]
-    async fn tar_push_then_finalize_deletes_extraneous_files() {
-        let repo = temp_repo();
-        let entries = file_list(repo.path()).unwrap();
-        let list = repo.path().join(".list");
-        write_list_file(&entries, &list).unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        // A mirror path with a space exercises the quoting of every remote script.
-        let mirror = dest.path().join("my mirror");
-        seed_mirror(&mirror);
-        // Same remote half as the ssh pipe, but run by a local shell.
-        pipe_commands(
-            &tar_create_command(&list),
-            &sh(tar_extract_remote(&mirror.display().to_string())),
-            Some(repo.path()),
-        )
-        .await
-        .unwrap();
-        finalize_locally(repo.path(), &mirror, &entries).await;
-        assert_mirror_clean(&mirror);
-        // The recorded hash is readable with the same script the skip check uses.
-        let out = run_command(&sh(read_hash_script(&mirror.display().to_string())), None)
-            .await
-            .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "HASH123");
-        // Preparing a push invalidates it.
-        run_command(&sh(prepare_script(&mirror.display().to_string())), None)
-            .await
-            .unwrap();
-        assert!(!mirror.join(TREE_HASH_FILE).exists());
     }
 
     /// G8: only the named rendered files come back, not the run directory.
@@ -1751,7 +1794,6 @@ mod tests {
             .mirror_dir(Path::new("/home/u/my repo"))
             .unwrap();
         assert!(spaced.starts_with("~/analyst/my_repo-"), "{spaced}");
-        assert!(rsync_safe_path(&spaced));
         assert_eq!(t.host(), Some("lab-gpu"));
         assert!(t.is_remote());
         assert_eq!(Target::Local.mirror_dir(Path::new("/x")), None);

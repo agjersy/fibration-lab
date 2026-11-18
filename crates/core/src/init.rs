@@ -116,11 +116,17 @@ pub fn init_repo(root: &Path, opts: &InitOptions) -> Result<InitReport> {
     }
     if opts.run_uv {
         if has_uv() {
-            for sub in ["venv", "sync"] {
+            // uv uses a Python that is installed; without one, say which to install.
+            let python = crate::egress::require_python(&root, None);
+            if let Err(e) = &python {
+                report.log.push(format!("uv venv -q -> not run: {e}"));
+            }
+            for sub in ["venv", "sync"].into_iter().filter(|_| python.is_ok()) {
                 // Both may fetch from the package index: they name the configured one and
-                // the gate authorizes it (and records it) before uv starts.
+                // the gate authorizes it (and records it) before uv starts, after reading
+                // the project for package sources of its own.
                 let line = crate::egress::uv_install("uv", &[sub], &["-q"]);
-                let guard = match crate::egress::guard(&line) {
+                let guard = match crate::egress::guard_in(&line, Some(&root)) {
                     Ok(g) => g,
                     Err(e) => {
                         report.log.push(format!("uv {sub} -q -> not run: {e}"));
