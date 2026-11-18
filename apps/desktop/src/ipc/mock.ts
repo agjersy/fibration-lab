@@ -13,6 +13,7 @@
 import type { Backend } from "./backend";
 import type { Commands } from "./commands";
 import { applyPolicyPatch } from "../state/policyPresets";
+import { makeDeckHandlers } from "./mock/decks";
 import { unifiedDiff } from "./mock/diff";
 import { decayPng, residualsPng, simParamsFromArgs, type MockPng, type SimParams } from "./mock/figure";
 import { DOUBLE_EXP_SNIPPET, RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED, fixtureFiles } from "./mock/fixtures";
@@ -1536,5 +1537,15 @@ export class MockBackend implements Backend {
 
     // No native picker without Tauri; the dialog falls back to a typed path.
     dialog_pick_directory: () => null,
+
+    // Decks, history, and the artifact index (IPC.md section 9).
+    ...makeDeckHandlers({
+      requireOpen: (session) => {
+        this.requireOpen(session);
+      },
+      emit: (session, event) => this.emit(session, event),
+      nextId: () => ++this.seq,
+      later: (ms) => this.stream(ms),
+    }),
   };
 }

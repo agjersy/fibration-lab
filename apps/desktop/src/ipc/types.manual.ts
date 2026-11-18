@@ -9,7 +9,7 @@ export type TerminalId = string;
 export type ProposalId = string;
 export type TaskId = string;
 export type TurnId = string;
-/** Permission profiles over the one agent loop (IPC.md section 8): analysis modes and deck modes. */
+/** Permission profiles over the one agent loop (IPC.md section 9): analysis modes and deck modes. */
 export type Mode = "plan" | "build" | "run" | "outline" | "slides" | "polish";
 /** What a proposal changes; the `slide-*`, `outline`, `code-edit`, and `mode-switch` kinds are deck changes. */
 export type ProposalKind =
@@ -421,7 +421,17 @@ export type Attachment =
   | { kind: "figure"; path: string };
 
 export interface IpcError {
-  code: "not_found" | "conflict" | "policy_denied" | "kernel_offline" | "target_offline" | "invalid" | "io" | "internal";
+  code:
+    | "not_found"
+    | "conflict"
+    | "policy_denied"
+    | "kernel_offline"
+    | "target_offline"
+    | "engine_unavailable"
+    | "sandbox_unavailable"
+    | "invalid"
+    | "io"
+    | "internal";
   message: string;
   detail?: unknown;
 }
