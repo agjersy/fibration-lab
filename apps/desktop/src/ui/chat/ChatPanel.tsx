@@ -2,7 +2,7 @@ import { memo, useEffect, useRef } from "react";
 import { backend } from "../../ipc";
 import type { ConversationId, Mode, SessionId } from "../../ipc";
 import { newConversation, selectConversation } from "../../state/actions";
-import { useChat, useConversationItems } from "../../state/chat";
+import { useChat, useConversationItems, useProposal } from "../../state/chat";
 import type { ChatItem } from "../../state/chat";
 import { loadTranscript } from "../../state/loaders";
 import { useActiveSession, useSessionInfo, useSessions } from "../../state/sessions";
@@ -10,12 +10,33 @@ import { notifyError } from "../../state/ui";
 import { MessageText, StreamingMessage } from "./MessageText";
 import { ChatInput } from "./ChatInput";
 import { ErrorCard, ProposalCard, RunCard, SummaryCard, ToolCard } from "./cards";
+import { DeckToolCard, SlideProposalCard, deckToolKind, isDeckProposal } from "./deckCards";
 
-const MODES: { value: Mode; label: string; hint: string }[] = [
+/** Code diffs and slide proposals side by side in one conversation. */
+function ProposalRow({ proposalId }: { proposalId: string }) {
+  const record = useProposal(proposalId);
+  if (record && isDeckProposal(record.proposal.kind, record.proposal.deck)) return <SlideProposalCard proposalId={proposalId} />;
+  return <ProposalCard proposalId={proposalId} />;
+}
+
+/** One control loop for both workbenches: the analysis modes and the deck modes. */
+export const MODES: { value: Mode; label: string; hint: string }[] = [
   { value: "plan", label: "Plan", hint: "Read-only: the agent proposes a plan" },
-  { value: "build", label: "Build", hint: "Edits are proposed for review" },
-  { value: "run", label: "Run", hint: "Runs existing scripts; no edits" },
+  { value: "build", label: "Build", hint: "Code and slide edits are proposed for review" },
+  { value: "run", label: "Run only", hint: "Runs existing scripts; no edits" },
+  { value: "outline", label: "Outline", hint: "The agent proposes the deck's storyline" },
+  { value: "slides", label: "Slides", hint: "The agent proposes slides, shown as before/after cards" },
+  { value: "polish", label: "Polish", hint: "The agent tightens existing slides and fixes checker findings" },
 ];
+
+const EMPTY_TEXT: Record<Mode, string> = {
+  plan: "Ask for a plan. Nothing is changed in plan mode.",
+  build: "Ask for an analysis. Edits are proposed as diffs for review.",
+  run: "Run mode: ask for sweeps and comparisons using existing scripts.",
+  outline: "Outline mode: ask for a storyline for a deck.",
+  slides: "Slides mode: ask for slides; each is proposed as a before/after card.",
+  polish: "Polish mode: ask to tighten slides and fix what the checker reports.",
+};
 
 const UserMessage = memo(function UserMessage({ item }: { item: Extract<ChatItem, { kind: "user" }> }) {
   return (
@@ -38,9 +59,9 @@ const ChatItemRow = memo(function ChatItemRow({ item, session, conversation }: {
     case "assistant":
       return item.streaming ? <StreamingMessage conversation={conversation} id={item.id} fallback={item.text} /> : <MessageText text={item.text} />;
     case "tool":
-      return <ToolCard item={item} />;
+      return deckToolKind(item.name) ? <DeckToolCard item={item} /> : <ToolCard item={item} />;
     case "proposal":
-      return <ProposalCard proposalId={item.proposal_id} />;
+      return <ProposalRow proposalId={item.proposal_id} />;
     case "run":
       return <RunCard session={session} run_id={item.run_id} />;
     case "summary":
@@ -138,7 +159,7 @@ export function ChatPanel() {
       <MessageList
         session={session}
         conversation={conversationId}
-        emptyText={summary?.mode === "run" ? "Run mode: ask for sweeps and comparisons using existing scripts." : "Ask for an analysis. Edits are proposed as diffs for review."}
+        emptyText={EMPTY_TEXT[summary?.mode ?? "build"]}
       />
       <div className="row small muted" style={{ padding: "2px 10px" }} title={usage ? `${usage.context_used} of ${usage.context_window} context tokens` : "no usage yet"}>
         <div className="usage" aria-label="Context usage">
