@@ -302,6 +302,10 @@ pub struct SessionInfo {
     pub python_abs: Option<String>,
     pub conversations: Vec<ConversationSummary>,
     pub active_conversation: ConversationId,
+    /// The deck last opened in this session (`deck_open`); the renderer reopens it with the
+    /// session, or shows the Decks list when it no longer exists.
+    #[serde(default)]
+    pub active_deck: Option<String>,
     pub target_kind: TargetKind,
     pub target_host: Option<String>,
     /// Proposals still awaiting a decision, so a reloaded renderer can show them again.
@@ -786,6 +790,17 @@ pub enum SessionEvent {
         deck: String,
         #[ts(type = "unknown")]
         event: Value,
+    },
+    /// An accepted refresh from analysis could not be written: the slide changed after the
+    /// refresh was proposed (or the refreshed document was refused). The slide is untouched and
+    /// the proposal resolves as rejected; the renderer shows an error card that offers to
+    /// refresh again.
+    RefreshFailed {
+        conversation: ConversationId,
+        proposal_id: ProposalId,
+        deck: String,
+        slide_id: String,
+        message: String,
     },
     /// A deck was created (or removed) in the session's repository.
     DecksChanged {

@@ -4,7 +4,7 @@
 
 pub mod commands;
 
-use analyst_core::service::{Workbench, WorkbenchOptions};
+use analyst_core::service::Workbench;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -22,6 +22,8 @@ pub struct AppState {
     pub subscriptions: Mutex<HashMap<String, Subscription>>,
     /// Folders already added to the asset protocol scope (deck caches, assets, references).
     pub asset_dirs: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// Per open session, the task that widens the asset scope when its decks change.
+    pub asset_watchers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl AppState {
@@ -30,6 +32,7 @@ impl AppState {
             workbench,
             subscriptions: Mutex::new(HashMap::new()),
             asset_dirs: Mutex::new(Default::default()),
+            asset_watchers: Mutex::new(HashMap::new()),
         }
     }
 
@@ -50,31 +53,11 @@ impl AppState {
     }
 }
 
-/// Build the workbench from `$ANALYST_HOME` (default `~/.analyst`) and the environment:
-/// `ANALYST_SANDBOX` overrides the kernel sandbox kind.
+/// Build the workbench from `$ANALYST_HOME` (default `~/.analyst`) and the environment
+/// (`ANALYST_SANDBOX` overrides the kernel sandbox kind), through the start-up shared with the
+/// CLI and the development bridge (`analyst_core::app::App::start`).
 pub fn workbench_from_env() -> anyhow::Result<Arc<Workbench>> {
-    let home = analyst_core::config::analyst_home();
-    // First start: bring the deck workbench's old home (`~/.present`) over once.
-    match analyst_core::migrate::migrate_legacy_home(&home) {
-        Ok(Some(r)) => tracing::info!(
-            "migrated {} into {}: {} provider(s), {} file(s), {} key(s)",
-            r.from.display(),
-            home.display(),
-            r.providers.len(),
-            r.files.len(),
-            r.keys.len()
-        ),
-        Ok(None) => {}
-        Err(e) => tracing::warn!("migrating ~/.present failed: {e:#}"),
-    }
-    let mut opts = WorkbenchOptions::new(home);
-    if let Ok(s) = std::env::var("ANALYST_SANDBOX") {
-        if !s.is_empty() {
-            opts.sandbox = Some(s);
-        }
-    }
-    let wb = Workbench::new(opts).map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(Arc::new(wb))
+    analyst_core::app::App::start_from_env()?.workbench()
 }
 
 /// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see

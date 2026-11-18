@@ -8,6 +8,7 @@ import { flushRunOutput, useRuns } from "./runs";
 import { useSessions } from "./sessions";
 import { useTasks } from "./tasks";
 import { attachTerminalSink, deliverTerminalData, useTerminals } from "./terminals";
+import { useUi } from "./ui";
 
 const S = "s1";
 const C = "s1-c1";
@@ -40,6 +41,7 @@ function info(): SessionInfo {
     python_abs: null,
     conversations: [{ id: C, title: "c", model: null, mode: "build", created_at: "", turns: 0, busy: false }],
     active_conversation: C,
+    active_deck: null,
     target_kind: "local",
     target_host: null,
     pending_proposals: [],
@@ -193,5 +195,12 @@ describe("applyEvent", () => {
     const events: SessionEvent[] = [{ type: "turn_error", conversation: C, turn: "t", message: "boom" }];
     for (const e of events) applyEvent(S, e);
     expect(useChat.getState().conversations[C]!.items.at(-1)).toMatchObject({ kind: "error", message: "boom" });
+  });
+
+  it("shows a refresh whose write failed as an error card with the offer to refresh again", () => {
+    const message = "Slide s-1 of q3 changed after the refresh was proposed, so the refresh was not applied. Refresh again to propose it against the current slide.";
+    applyEvent(S, { type: "refresh_failed", conversation: C, proposal_id: "refresh-s-1", deck: "q3", slide_id: "s-1", message });
+    expect(useChat.getState().conversations[C]!.items.at(-1)).toMatchObject({ kind: "refresh_failed", deck: "q3", slide_id: "s-1", message });
+    expect(useUi.getState().toasts.at(-1)).toMatchObject({ kind: "error", text: message });
   });
 });

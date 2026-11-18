@@ -152,7 +152,7 @@ impl App {
     pub fn deck_options(&self, engine: &str) -> DeckOptions {
         DeckOptions {
             engine: engine.to_string(),
-            env_remove: analyst_core::service::terminal::key_env_names(&self.global),
+            env_remove: analyst_core::service::terminal::key_env_names(&self.core.global),
             ..DeckOptions::default()
         }
     }
@@ -160,7 +160,7 @@ impl App {
     fn deck_session(&self) -> Result<analyst_core::session::Session> {
         self.session(
             &Target::Local,
-            self.global.defaults.model.as_deref().unwrap_or("-"),
+            self.core.global.defaults.model.as_deref().unwrap_or("-"),
         )
     }
 }
@@ -168,15 +168,16 @@ impl App {
 /// The deck's service; the caller shuts the services down when done.
 async fn open(app: &App, args: &DeckArgs) -> Result<(Arc<DeckServices>, Arc<DeckService>)> {
     let session = app.deck_session()?;
-    let services = DeckServices::new(&app.repo, &app.home, &session.dir);
+    let services = DeckServices::new(&app.repo, &app.core.home, &session.dir);
     services.set_options(app.deck_options(&args.engine));
     let svc = services
         .resolve(args.deck.as_deref())
         .await
         .map_err(|e| anyhow!("{}", e.message))?;
-    let repo = app.repo.clone();
+    // Bound numbers are checked against the named results the project's runs recorded, read
+    // from the run records on disk, so the command line and the desktop agree.
     svc.ws.set_provenance(Arc::new(
-        analyst_core::service::provenance::RepoProvenance::new(&repo),
+        analyst_core::service::provenance::RepoProvenance::for_project(&app.core.home, &app.repo),
     ));
     Ok((services, svc))
 }
@@ -253,7 +254,7 @@ async fn template_inspect(
     let project =
         analyst_deck::project::Project::create(&root, "inspect", &file, DeckMode::Structured)?;
     let mut options =
-        analyst_deck::workspace::OpenOptions::new(&app.home, &tmp.path().join("index.sqlite"));
+        analyst_deck::workspace::OpenOptions::new(&app.core.home, &tmp.path().join("index.sqlite"));
     options.engine = "none".into();
     options.env_remove = app.deck_options(&args.engine).env_remove;
     let ws = analyst_deck::workspace::Workspace::open(&project.root, &options).await?;

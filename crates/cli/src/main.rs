@@ -4,16 +4,14 @@
 mod deck;
 
 use analyst_core::agent::{Agent, AgentConfig, ApprovalRequest, Approver, AutoApprover};
-use analyst_core::config::{self, ModelSpec};
-use analyst_core::kernel::{
-    resolve_tooling_python_in, KernelArgs, KernelClient, KernelTransport, LocalStdio, SshStdio,
-};
-use analyst_core::model_client;
+use analyst_core::app::{App as CoreApp, StartOptions};
+use analyst_core::config;
+use analyst_core::kernel::{resolve_tooling_python_in, KernelClient};
 use analyst_core::session::Session;
 use analyst_core::target::{self, Target};
 use analyst_core::tools::gate::Policy;
 use analyst_core::tools::ToolContext;
-use analyst_protocol::config::{EditPolicy, GlobalConfig, ProjectConfig, RunPolicy, TargetKind};
+use analyst_protocol::config::{EditPolicy, ProjectConfig, RunPolicy, TargetKind};
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::*;
 use analyst_protocol::transcript::Event;
@@ -25,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use wb_providers::model::ModelCapabilities;
-use wb_providers::{capabilities, ModelClient};
+use wb_providers::ModelClient;
 
 #[derive(Parser)]
 #[command(
@@ -221,173 +219,68 @@ struct EvalOpts {
     engine: String,
 }
 
+/// [`CoreApp::start`], with what the first start migrated from `~/.present` reported on stderr.
+fn start_core(home: PathBuf, sandbox: Option<String>) -> Result<CoreApp> {
+    let core = CoreApp::start(home, StartOptions { sandbox })?;
+    if let Some(r) = &core.migrated {
+        eprintln!(
+            "migrated {} into {}: {} provider(s), {} file(s), {} key(s) (the old folder is left as it was)",
+            r.from.display(),
+            core.home.display(),
+            r.providers.len(),
+            r.files.len(),
+            r.keys.len()
+        );
+    }
+    if let Some(e) = &core.migration_error {
+        eprintln!("warning: migrating ~/.present failed: {e}");
+    }
+    Ok(core)
+}
+
+/// The CLI's view of the started app ([`analyst_core::app::App`]) for one repository.
 struct App {
-    home: PathBuf,
+    core: CoreApp,
     repo: PathBuf,
-    global: GlobalConfig,
     project: ProjectConfig,
-    sandbox: Option<String>,
 }
 
 impl App {
     fn new(cli: &Cli) -> Result<App> {
-        let home = cli.home.clone().unwrap_or_else(config::analyst_home);
-        std::fs::create_dir_all(&home).with_context(|| format!("creating {}", home.display()))?;
+        let core = start_core(
+            cli.home.clone().unwrap_or_else(config::analyst_home),
+            cli.sandbox.clone(),
+        )?;
         let repo = cli.repo.clone().unwrap_or(std::env::current_dir()?);
         let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
-        migrate_legacy_home(&home);
-        // The network gate records every decision in `<home>/egress.jsonl`; loading the
-        // config registers the destinations it names (providers, package index, SSH targets).
-        wb_net::init(&home);
-        let global = config::load_global(&home)?;
         let project = config::load_project(&repo)?;
         Ok(App {
-            home,
+            core,
             repo,
-            global,
             project,
-            sandbox: cli.sandbox.clone(),
         })
     }
 
     fn target(&self, name: Option<&str>) -> Result<Target> {
-        let name = name.unwrap_or(&self.global.defaults.target);
-        Target::from_config(&config::find_target(&self.global, name)?)
+        self.core.target(name)
     }
 
     fn control_dir(&self) -> Option<PathBuf> {
-        let d = self.home.join("ssh");
-        std::fs::create_dir_all(&d).ok()?;
-        Some(d)
+        self.core.control_dir()
     }
 
     fn session_python(&self) -> String {
-        let venv = self.repo.join(".venv/bin/python");
-        if venv.is_file() {
-            venv.to_string_lossy().to_string()
-        } else {
-            "python3".to_string()
-        }
-    }
-
-    /// Whether a remote kernel can be wrapped in `bwrap --unshare-net` on its host.
-    async fn remote_no_network(&self, target: &Target) -> bool {
-        match target {
-            Target::Ssh { host, .. } => {
-                analyst_core::egress::remote_bwrap_works(host, self.control_dir().as_deref())
-                    .await
-                    .unwrap_or(false)
-            }
-            Target::Local => false,
-        }
-    }
-
-    /// The kernel transport. The local kernel is spawned without network access; a remote
-    /// one is when `remote_no_network` (see [`Self::remote_no_network`]).
-    fn transport(&self, target: &Target, remote_no_network: bool) -> Box<dyn KernelTransport> {
-        let eff = config::effective_project(&self.project, target.name());
-        match target {
-            Target::Local => {
-                let runs = self.home.join("runs");
-                let _ = std::fs::create_dir_all(&runs);
-                Box::new(
-                    LocalStdio::new(
-                        resolve_tooling_python_in(&self.global, &self.home),
-                        KernelArgs {
-                            python: self.session_python(),
-                            root: self.repo.to_string_lossy().to_string(),
-                            runs_dir: runs.to_string_lossy().to_string(),
-                            out_dir: Some(eff.out_dir),
-                            sandbox: Some(self.sandbox.clone().unwrap_or_else(|| "auto".into())),
-                            data_dirs: vec![],
-                        },
-                    )
-                    // The kernel and the scripts it runs never see provider API keys.
-                    .without_env(analyst_core::service::terminal::key_env_names(&self.global)),
-                )
-            }
-            Target::Ssh {
-                host,
-                sandbox,
-                data_dirs,
-                ..
-            } => {
-                let mirror = target.mirror_dir(&self.repo).unwrap_or_default();
-                Box::new(SshStdio {
-                    host: host.clone(),
-                    control_dir: self.control_dir(),
-                    remote_launcher: vec![
-                        "~/.analyst/tooling/.venv/bin/python".into(),
-                        "-m".into(),
-                        "analyst_kernel".into(),
-                    ],
-                    args: KernelArgs {
-                        python: format!("{mirror}/.venv/bin/python"),
-                        root: mirror.clone(),
-                        runs_dir: "~/.analyst/runs".into(),
-                        out_dir: Some(eff.out_dir),
-                        sandbox: Some(self.sandbox.clone().unwrap_or_else(|| sandbox.clone())),
-                        // User-approved external data directories from the global config.
-                        data_dirs: data_dirs.clone(),
-                    },
-                    no_network: remote_no_network,
-                })
-            }
-        }
+        analyst_core::app::session_python(&self.repo, None)
     }
 
     async fn connect(&self, target: &Target) -> Result<KernelClient> {
-        if !target.is_remote() {
-            self.ensure_local_tooling().await;
-        }
-        let t = self.transport(target, self.remote_no_network(target).await);
-        if t.network_isolation() == "none" {
-            eprintln!(
-                "warning: the kernel on `{}` is not isolated from the network (no working bwrap or sandbox-exec there)",
-                target.name()
-            );
-        }
-        tracing::info!("kernel: {}", t.describe());
-        KernelClient::connect(t, analyst_core::CORE_VERSION)
-            .await
-            .map_err(|e| anyhow!("starting the kernel on target `{}`: {e}\n  (set ANALYST_TOOLING_PYTHON or `tooling_python` in config.toml to the interpreter that has analyst_kernel installed)", target.name()))
-    }
-
-    /// Make sure a local tooling environment exists when nothing else provides one: the
-    /// first start on a machine creates `$ANALYST_HOME/tooling/.venv` from the kernel source.
-    async fn ensure_local_tooling(&self) {
-        if std::env::var_os("ANALYST_TOOLING_PYTHON").is_some_and(|v| !v.is_empty())
-            || self
-                .global
-                .tooling_python
-                .as_deref()
-                .is_some_and(|v| !v.is_empty())
-        {
-            return;
-        }
-        let resolved = resolve_tooling_python_in(&self.global, &self.home);
-        let bootstrapped = target::bootstrap::local_tooling_python(&self.home);
-        let uses_bootstrapped = std::path::Path::new(&resolved) == bootstrapped;
-        let dev_venv = resolved.contains("python/kernel/.venv");
-        if dev_venv || (uses_bootstrapped && target::bootstrap::local_is_current(&self.home)) {
-            return;
-        }
-        let Some(src) = target::bootstrap::find_dev_kernel_source() else {
-            return;
-        };
-        eprintln!(
-            "setting up the tooling environment in {} ...",
-            self.home.join("tooling").display()
-        );
-        if let Err(e) = target::bootstrap::ensure_local(&self.home, &src).await {
-            eprintln!("warning: tooling environment setup failed: {e:#}");
-        }
+        self.core.kernel(&self.repo, &self.project, target).await
     }
 
     fn session(&self, target: &Target, model: &str) -> Result<Session> {
-        match Session::find_latest(&self.home, &self.repo, target.name())? {
+        match Session::find_latest(&self.core.home, &self.repo, target.name())? {
             Some(s) => Ok(s),
-            None => Session::create(&self.home, &self.repo, target.name(), model),
+            None => Session::create(&self.core.home, &self.repo, target.name(), model),
         }
     }
 
@@ -396,43 +289,7 @@ impl App {
         spec: Option<&str>,
         reprobe: bool,
     ) -> Result<(Arc<dyn ModelClient>, ModelCapabilities, String)> {
-        let spec = match spec {
-            Some(s) => ModelSpec::parse(s)?,
-            None => config::default_model(&self.global)?,
-        };
-        let resolved = config::resolve_model(&self.global, &spec)?;
-        let client = model_client::client_for_repo(&self.home, Some(&self.repo), &resolved)?;
-        let key = spec.to_string();
-        let info_window = if reprobe || capabilities::cached(&self.home, &key).is_none() {
-            model_client::model_info_window(&self.home, Some(&self.repo), &resolved).await
-        } else {
-            None
-        };
-        let caps = model_client::ensure_capabilities(
-            &self.home,
-            client.as_ref(),
-            &resolved,
-            info_window,
-            reprobe,
-        )
-        .await?;
-        Ok((client, caps, key))
-    }
-}
-
-/// First start: bring the deck workbench's old home (`~/.present`) over once.
-fn migrate_legacy_home(home: &std::path::Path) {
-    match analyst_core::migrate::migrate_legacy_home(home) {
-        Ok(Some(r)) => eprintln!(
-            "migrated {} into {}: {} provider(s), {} file(s), {} key(s) (the old folder is left as it was)",
-            r.from.display(),
-            home.display(),
-            r.providers.len(),
-            r.files.len(),
-            r.keys.len()
-        ),
-        Ok(None) => {}
-        Err(e) => eprintln!("warning: migrating ~/.present failed: {e:#}"),
+        self.core.model(&self.repo, spec, reprobe).await
     }
 }
 
@@ -495,10 +352,7 @@ fn print_diagnostics(diags: &[Diagnostic]) -> usize {
 fn cmd_init(home: Option<PathBuf>, path: Option<PathBuf>) -> Result<()> {
     let root = path.unwrap_or(std::env::current_dir()?);
     // `uv venv` and `uv sync` install from the configured package index, through the gate.
-    let home = home.unwrap_or_else(config::analyst_home);
-    migrate_legacy_home(&home);
-    wb_net::init(&home);
-    config::load_global(&home)?;
+    start_core(home.unwrap_or_else(config::analyst_home), None)?;
     let report = analyst_core::init::init_repo(&root, &analyst_core::init::InitOptions::default())?;
     for rel in &report.kept {
         println!("keep   {rel}");
@@ -550,8 +404,17 @@ async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
     };
     // The same code path as the agent's package tools: names are validated, and on a remote
     // target the change is made locally, pushed, and applied there with `uv sync`.
-    let session = app.session(&target, app.global.defaults.model.as_deref().unwrap_or("-"))?;
-    let mut ctx = ToolContext::new(&app.repo, &app.home, session, "cli", app.project.clone());
+    let session = app.session(
+        &target,
+        app.core.global.defaults.model.as_deref().unwrap_or("-"),
+    )?;
+    let mut ctx = ToolContext::new(
+        &app.repo,
+        &app.core.home,
+        session,
+        "cli",
+        app.project.clone(),
+    );
     ctx.set_target(target.clone(), app.control_dir());
     let v = ctx
         .dispatch("cli-env", tool, &serde_json::json!({"packages": pkgs}))
@@ -569,12 +432,19 @@ async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
 
 fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
     let known = |provider: &str| -> Result<&analyst_protocol::config::ProviderConfig> {
-        if let Some(p) = app.global.providers.iter().find(|p| p.name == provider) {
+        if let Some(p) = app
+            .core
+            .global
+            .providers
+            .iter()
+            .find(|p| p.name == provider)
+        {
             return Ok(p);
         }
         Err(anyhow!(
             "provider `{provider}` is not configured in config.toml (known: {})",
-            app.global
+            app.core
+                .global
                 .providers
                 .iter()
                 .map(|p| p.name.as_str())
@@ -599,30 +469,31 @@ fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
                     "no key given on stdin (use `analyst key remove {provider}` to delete one)"
                 ));
             }
-            config::set_api_key(&app.home, p, key)?;
+            config::set_api_key(&app.core.home, p, key)?;
             println!(
                 "stored the key for `{provider}` as {} in {}",
                 config::key_env_name(p),
-                config::env_file_path(&app.home).display()
+                config::env_file_path(&app.core.home).display()
             );
         }
         KeyCmd::Remove { provider } => {
             let p = known(&provider)?;
-            config::set_api_key(&app.home, p, "")?;
+            config::set_api_key(&app.core.home, p, "")?;
             println!(
                 "removed {} from {}",
                 config::key_env_name(p),
-                config::env_file_path(&app.home).display()
+                config::env_file_path(&app.core.home).display()
             );
         }
         KeyCmd::Status => {
-            for p in &app.global.providers {
-                let source =
-                    match config::api_key_lookup(&app.home, Some(&app.repo), p).map(|(_, s)| s) {
-                        Some(config::KeySource::Env) => "environment",
-                        Some(config::KeySource::Stored) => ".env file",
-                        None => "none",
-                    };
+            for p in &app.core.global.providers {
+                let source = match config::api_key_lookup(&app.core.home, Some(&app.repo), p)
+                    .map(|(_, s)| s)
+                {
+                    Some(config::KeySource::Env) => "environment",
+                    Some(config::KeySource::Stored) => ".env file",
+                    None => "none",
+                };
                 println!("{}  key={source}  env={}", p.name, config::key_env_name(p));
             }
         }
@@ -635,13 +506,13 @@ async fn cmd_target(app: &App, cmd: TargetCmd) -> Result<()> {
         TargetCmd::List => {
             println!(
                 "local  (default: {})",
-                if app.global.defaults.target == "local" {
+                if app.core.global.defaults.target == "local" {
                     "yes"
                 } else {
                     "no"
                 }
             );
-            for t in &app.global.targets {
+            for t in &app.core.global.targets {
                 let kind = match t.kind {
                     TargetKind::Local => "local",
                     TargetKind::Ssh => "ssh",
@@ -654,7 +525,7 @@ async fn cmd_target(app: &App, cmd: TargetCmd) -> Result<()> {
                     t.python.as_deref().unwrap_or("3.12"),
                     t.sandbox.as_deref().unwrap_or("auto"),
                     t.data_dirs,
-                    if app.global.defaults.target == t.name {
+                    if app.core.global.defaults.target == t.name {
                         " (default)"
                     } else {
                         ""
@@ -686,8 +557,10 @@ async fn cmd_target(app: &App, cmd: TargetCmd) -> Result<()> {
         }
         TargetCmd::Sync { name } => {
             let target = app.target(Some(&name))?;
-            let mut session =
-                app.session(&target, app.global.defaults.model.as_deref().unwrap_or("-"))?;
+            let mut session = app.session(
+                &target,
+                app.core.global.defaults.model.as_deref().unwrap_or("-"),
+            )?;
             let report = target::sync::push(
                 &app.repo,
                 &target,
@@ -746,9 +619,18 @@ async fn cmd_run(
     timeout_s: Option<f64>,
 ) -> Result<i32> {
     let target = app.target(target.as_deref())?;
-    let session = app.session(&target, app.global.defaults.model.as_deref().unwrap_or("-"))?;
+    let session = app.session(
+        &target,
+        app.core.global.defaults.model.as_deref().unwrap_or("-"),
+    )?;
     let kernel = app.connect(&target).await?;
-    let mut ctx = ToolContext::new(&app.repo, &app.home, session, "cli", app.project.clone());
+    let mut ctx = ToolContext::new(
+        &app.repo,
+        &app.core.home,
+        session,
+        "cli",
+        app.project.clone(),
+    );
     ctx.set_kernel(Some(kernel.clone()));
     ctx.set_target(target.clone(), app.control_dir());
     ctx.stream_run_output(Arc::new(|stream, chunk| {
@@ -996,7 +878,13 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
         project.policy.runs = RunPolicy::Auto;
     }
     project.policy.max_steps = args.max_steps;
-    let mut ctx = ToolContext::new(&app.repo, &app.home, session, &conv_id, project.clone());
+    let mut ctx = ToolContext::new(
+        &app.repo,
+        &app.core.home,
+        session,
+        &conv_id,
+        project.clone(),
+    );
     ctx.set_kernel(kernel.clone());
     ctx.set_target(target.clone(), app.control_dir());
     // Deck tools start a deck's kernel (no network) on first use.
@@ -1178,15 +1066,17 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
         }
     };
     if !analysis.is_empty() {
-        app.ensure_local_tooling().await;
+        app.core
+            .ensure_local_tooling(|line| eprintln!("{line}"))
+            .await;
     }
     let launcher = vec![
-        resolve_tooling_python_in(&app.global, &app.home),
+        resolve_tooling_python_in(&app.core.global, &app.core.home),
         "-m".into(),
         "analyst_kernel".into(),
     ];
     let env = analyst_evals::EvalEnv {
-        home: app.home.clone(),
+        home: app.core.home.clone(),
         model: client,
         model_name: model_name.clone(),
         caps,
@@ -1225,7 +1115,12 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
 async fn cmd_kernel(app: &App, target: Option<String>) -> Result<i32> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let target = app.target(target.as_deref())?;
-    let transport = app.transport(&target, app.remote_no_network(&target).await);
+    let transport = app.core.transport(
+        &app.repo,
+        &app.project,
+        &target,
+        app.core.remote_no_network(&target).await,
+    );
     eprintln!("spawning: {}", transport.describe());
     let spawned = transport.spawn().await?;
     let mut child = spawned.child;

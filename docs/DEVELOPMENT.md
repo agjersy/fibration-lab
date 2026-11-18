@@ -15,10 +15,11 @@ crates/core/           sessions, agent loop, tools, kernel client, targets, sync
                        thin adapters (model_client.rs, tools/gate.rs, session.rs, skills.rs)
 crates/evals/          analyst-evals: the analysis and deck evaluation harnesses (used by the CLI only)
 crates/serve/          analyst-serve: development bridge, the real core over a loopback WebSocket (never shipped)
-crates/cli/            the `analyst` binary (analysis commands, `deck ...`, `chat`, `eval`)
+crates/cli/            the `analyst` binary (analysis commands, `deck ...`, `chat`, `eval`); its start-up is
+                       `analyst_core::app::App::start`, shared with the shell and analyst-serve
 present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
 present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and deck UI types
-python/kernel/         analyst_kernel (per-target kernel and its helper process: REPL and equation analysis) and
+python/kernel/         analyst_kernel (per-target kernel, its REPL process and its equation worker) and
                        analyst_mpl (figure capture backend)
 present/python/        present_kernel (the deck kernel) and present_sdk (deck build scripts)
 evals/tasks/           model-agnostic analysis evaluation tasks with fixture repos
@@ -128,7 +129,7 @@ Both deck tasks must PASS; the other six deck tasks need a real model.
 
 ## Desktop app (phase 1)
 
-The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust: an invoke handler over the one command table `analyst_core::commands`, which the development bridge uses too) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`, and the deck types from `present/crates/protocol` by `cargo test -p analyst-deck-protocol` into `apps/desktop/src/ipc/generated/deck/`. The shell embeds `apps/desktop/dist`, so run `pnpm build` in `apps/desktop` before `cargo clippy` or `cargo test -p analyst-desktop`. There is one renderer; the deck workbench's panels are part of it (`src/deck/`, `src/ui/deck/`, `src/state/decks.ts`).
+The workbench is a Tauri 2 application: `apps/desktop/src-tauri` (Rust: an invoke handler over the one command table `analyst_core::commands`, which the development bridge uses too) and `apps/desktop/src` (React). The IPC contract is [IPC.md](IPC.md); TypeScript types are generated from `crates/protocol` by `cargo test -p analyst-protocol` into `apps/desktop/src/ipc/generated/`, the command table `src/ipc/commands.ts` from `crates/core/src/commands.rs` by `cargo test -p analyst-core --lib commands` (that test fails when the committed file was stale; run it and commit the result), and the deck types from `present/crates/protocol` by `cargo test -p analyst-deck-protocol` into `apps/desktop/src/ipc/generated/deck/`. The shell embeds `apps/desktop/dist`, so run `pnpm build` in `apps/desktop` before `cargo clippy` or `cargo test -p analyst-desktop`. There is one renderer; the deck workbench's panels are part of it (`src/deck/`, `src/ui/deck/`, `src/state/decks.ts`).
 
 ```sh
 cd apps/desktop
@@ -198,5 +199,5 @@ The app reaches the network for model endpoints, package installs from the confi
 
 - Rust: `cargo fmt`, clippy clean, no `unwrap()` on I/O paths in library code.
 - Python: Ruff clean, stdlib plus SymPy and Ruff only in the kernel; `analyst_mpl` is stdlib plus Matplotlib only.
-- The kernel never imports user code in its own process; evaluation of user functions happens in subprocesses using the session interpreter (the helper process and `eq.check`'s per-check process).
+- The kernel never imports user code in its own process; evaluation of user functions happens in subprocesses using the session interpreter (the REPL process and `eq.check`'s per-check process; the equation worker never evaluates repository code).
 - Protocol changes bump `protocol_version` and are made on both sides in the same commit.

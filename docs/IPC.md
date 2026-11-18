@@ -49,6 +49,7 @@ interface SessionInfo extends SessionSummary {
   policy: PolicyView; kernel: KernelState; sandbox: string | null; python_abs: string | null;
   kernel_network_isolation: string | null;   // "bwrap" | "sandbox-exec" | "none"; null before the first kernel start
   conversations: ConversationSummary[]; active_conversation: ConversationId;
+  active_deck: string | null;   // the deck last opened with deck_open; reopened with the session
   target_kind: "local" | "ssh"; target_host: string | null;
 }
 
@@ -255,6 +256,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 
 - `{ type: "deck"; deck: string; event: Deck.DeckEvent }`: one deck's event. `Deck.DeckEvent` is `deck_changed` (deck document, changed and removed slide ids, `by`), `slide_view`, `diagnostics` (per slide), `refs_changed`, `build_output`, `export_done`, `kernel_state`, `task_progress`, `task_done`, `info_changed`. Deck commands that return a `TaskId` finish with a deck `task_done` (task ids `deck-task-<n>`), not the session-level `task_done`.
 - `{ type: "decks_changed"; decks: DeckSummary[] }`: a deck was created, or a checkpoint restore changed the repository.
+- `{ type: "refresh_failed"; conversation; proposal_id; deck; slide_id; message }`: an accepted refresh from analysis (`slide_refresh`, `deck_refresh_stale`) could not be written, usually because the slide changed after the refresh was proposed. The slide is untouched and the proposal resolves as rejected; the renderer adds an error card to the conversation with a "Refresh again" button (and a toast).
 
 **Commands**
 
@@ -262,7 +264,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 |---|---|---|---|
 | `decks_list` | `{ session }` | `DeckSummary[]` | reads `decks/*/deck/deck.json`; starts nothing |
 | `deck_create` | `{ session, title, template_abs, slug?, code? }` | `DeckSummary` | copies the template into `decks/<slug>/` (slug from the title when omitted); `conflict` when it exists |
-| `deck_open` | `{ session, deck }` | `Deck.DeckInfo` | starts the deck's kernel; deck, template description, engines, sandbox |
+| `deck_open` | `{ session, deck }` | `Deck.DeckInfo` | starts the deck's kernel; deck, template description, engines, sandbox. Records the deck as the session's active deck (`SessionInfo.active_deck`, kept in the session's `meta.json`); when a restored workbench mounts, the renderer reopens it, or shows the Decks list if it no longer exists |
 | `template_thumbnails` | `{ session, deck }` | `Deck.LayoutThumbnail[]` | |
 | `template_replace` | `{ session, deck, template_abs }` | `TaskId` | checkpointed first |
 | `deck_get` | `{ session, deck }` | `Deck.DeckView` | |
@@ -298,7 +300,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 | `history_revert_turn` | `{ session, turn }` | `CheckpointView` | `turn` is `<conversation>-<n>` |
 | `artifacts_list` | `{ session, run_id?, kind?, limit? }` | `ArtifactEntry[]` | what the session's runs produced, with `stale` when the tree changed since the run; slides cite runs from it |
 
-**Asset scope.** The shell enables Tauri's asset protocol with an empty static scope and adds, for each open session, each deck's `decks/<slug>/.present/cache/` (preview and fidelity thumbnails, layout thumbnails, PDF page images), `decks/<slug>/assets/` and `decks/<slug>/references/` (image references are their own source page) when the session is opened or created and when `decks_list` or `deck_create` runs. Slugs that are not plain folder names are skipped. The same calls (and `figures_list`) add the session's figure folders: the project's output directory (`out/` by default; an absolute path, `.`, or one that leaves the repository is skipped) and the session's `artifacts/` (figures pulled from a remote target). The renderer loads these paths (relative to the deck folder, or absolute) with `convertFileSrc`; `slide_preview_png` still takes base64, and the CSP keeps only `asset:` / `http://asset.localhost` for images, no remote origin.
+**Asset scope.** The shell enables Tauri's asset protocol with an empty static scope and adds, for each open session, each deck's `decks/<slug>/.present/cache/` (preview and fidelity thumbnails, layout thumbnails, PDF page images), `decks/<slug>/assets/` and `decks/<slug>/references/` (image references are their own source page) when the session is opened or created, when `decks_list` or `deck_create` runs, and whenever the core emits `decks_changed` for the session (a deck created by any path, the agent's tools and a checkpoint restore included): from the session's open or create on, the shell runs one watcher per open session on its event hub, independent of any window's subscription, and stops it when the session closes. Slugs that are not plain folder names are skipped. The same calls (and `figures_list`) add the session's figure folders: the project's output directory (`out/` by default; an absolute path, `.`, or one that leaves the repository is skipped) and the session's `artifacts/` (figures pulled from a remote target). The renderer loads these paths (relative to the deck folder, or absolute) with `convertFileSrc`; `slide_preview_png` still takes base64, and the CSP keeps only `asset:` / `http://asset.localhost` for images, no remote origin.
 
 Dropped with the deck shell: `project_*` (a deck belongs to a session), `analyst_scan` / `analyst_import` (slides cite runs from the artifact index instead), the snapshot history (`history_*` above is the checkpoint timeline), and the deck shell's own conversation, chat, model, skill, and audit commands (the one loop's commands in section 4 cover decks).
 
@@ -321,7 +323,7 @@ The renderer's Verify panel lists every item that is not `human_verified`, used 
 
 ## 11. One command table, two transports
 
-**One table.** Every command of this document is a row of `analyst_core::commands` (`crates/core/src/commands.rs`): the row names the command, deserializes its snake_case arguments, and calls the workbench. Both transports call its `dispatch(workbench, host, command, args)`: the desktop shell's invoke handler and the development bridge. What only a transport can do (native dialogs, the asset scope, the file manager) is its `Host`; `session_subscribe` and `session_unsubscribe` are listed in the table but carried by each transport, since their event stream is the transport's own. The renderer's hand-written `src/ipc/commands.ts` is checked against the table by a Rust test (command names and argument names). The types are the ts-rs export only.
+**One table.** Every command of this document is a row of `analyst_core::commands` (`crates/core/src/commands.rs`): the row names the command, deserializes its snake_case arguments, and calls the workbench. Both transports call its `dispatch(workbench, host, command, args)`: the desktop shell's invoke handler and the development bridge. What only a transport can do (native dialogs, the asset scope, the file manager) is its `Host`; `session_subscribe` and `session_unsubscribe` are listed in the table but carried by each transport, since their event stream is the transport's own. Each row also states its result type (`name(args) -> Result { body }`), and the renderer's `src/ipc/commands.ts` is generated from the rows (`analyst_core::commands::commands_ts`): command names, argument names and types (an `Option` argument is optional), and result types, with the types' TypeScript names taken from their ts-rs bindings (deck types as `Deck.X`). `cargo test -p analyst-core --lib commands` writes the file; the same test fails when the committed file was stale, so CI catches a table change without a regenerated `commands.ts`. Identifiers such as run, conversation, and task ids are plain `string` there, as they are in Rust. The types are the ts-rs export only.
 
 **The development bridge.** `analyst-serve` (`crates/serve`) is a separate binary that hosts the same `Workbench` as the shell and speaks the table and the session events over one WebSocket. It is never compiled into the shipped app: `tools/check_egress.py` fails if any crate but `crates/serve` depends on a WebSocket or HTTP server crate, or if the desktop app or the CLI links the bridge (through `Cargo.lock`).
 

@@ -3,6 +3,7 @@
 //! is the `analyst-evals` crate. See docs/PROTOCOL.md and docs/ARCHITECTURE.md.
 
 pub mod agent;
+pub mod app;
 pub mod checkpoint;
 pub mod commands;
 pub mod config;

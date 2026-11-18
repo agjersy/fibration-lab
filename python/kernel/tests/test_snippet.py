@@ -69,18 +69,28 @@ def test_snippet_params(kernel):
         kernel.call("exec.snippet", {})
 
 
-def test_snippets_and_equations_share_one_helper_and_a_timeout_restarts_it(kernel):
-    """The REPL and the equation analysis are one process; killing it on a budget overrun
-    restarts both: the REPL state is gone, and equations are served by the new process."""
-    kernel.call("exec.snippet", {"code": "z = 5"})
-    pid = kernel._helper._proc.pid
-    eqs = kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
-    assert eqs and kernel._helper._proc.pid == pid
-    assert kernel.call("exec.snippet", {"code": "z"})["value_repr"] == "5"
-    with pytest.raises(RpcError) as exc:
-        kernel.call("exec.snippet", {"code": "import time; time.sleep(30)", "timeout_s": 0.5})
-    assert exc.value.code == TIMEOUT
-    again = kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
-    assert [e["status"] for e in again] == [e["status"] for e in eqs]
-    assert kernel._helper._proc.pid != pid
-    assert kernel.call("exec.snippet", {"code": "'z' in dir()"})["value_repr"] == "False"
+def test_snippet_repl_and_equation_worker_are_separate_processes(kernel):
+    """Agent-run snippet code must not share a process with the equation checker: tampering with
+    SymPy in a snippet cannot make a wrong equation report "agree"."""
+    before = kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
+    r = kernel.call("exec.snippet", {"code": (
+        "import os, sympy\n"
+        "sympy.simplify = lambda *a, **k: sympy.Integer(0)\n"
+        "sympy.Expr.equals = lambda *a, **k: True\n"
+        "os.getpid()"
+    )})
+    assert r["ok"], r["stderr"]
+    repl_pid = int(r["value_repr"])
+    eq_pid = kernel._eq._proc.pid
+    assert repl_pid == kernel._snippets._proc.pid
+    assert repl_pid != eq_pid and repl_pid != __import__("os").getpid()
+    # the patch is real in the REPL ...
+    assert kernel.call("exec.snippet", {"code": "sympy.simplify(sympy.Symbol('x') + 1)"})["value_repr"] == "0"
+    # ... and invisible to the equation analysis and the check
+    after = kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
+    assert [(e["function"], e["status"], e.get("latex")) for e in after] == [
+        (e["function"], e["status"], e.get("latex")) for e in before
+    ]
+    assert kernel._eq._proc.pid == eq_pid
+    assert kernel.call("eq.check", {"path": "analysis/models.py", "function": "damped_cos"})["status"] == "mismatch"
+    assert kernel.call("eq.check", {"path": "analysis/models.py", "function": "double_exp"})["status"] == "agree"

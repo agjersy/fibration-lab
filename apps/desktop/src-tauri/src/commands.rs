@@ -7,6 +7,8 @@ use crate::{AppState, Subscription};
 use analyst_core::commands::{DialogFilter, Host};
 use analyst_core::service::Workbench;
 use analyst_protocol::ui::*;
+use std::collections::HashSet;
+use std::sync::Mutex;
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -80,11 +82,37 @@ pub struct DesktopHost {
 impl Host for DesktopHost {
     fn session_assets(&self, wb: &Workbench, session: &str) {
         allow_session_assets(&self.app, wb, session);
+        // From now on, decks created by any path (the agent included) widen the scope at once.
+        let state = self.app.state::<AppState>();
+        let Ok(mut watchers) = state.asset_watchers.lock() else {
+            return;
+        };
+        if watchers.get(session).is_some_and(|h| !h.is_finished()) {
+            return;
+        }
+        let Ok(rt) = wb.session(session) else {
+            return;
+        };
+        let (app, workbench, id) = (
+            self.app.clone(),
+            state.workbench.clone(),
+            session.to_string(),
+        );
+        let handle = watch_asset_events(&rt, move || allow_session_assets(&app, &workbench, &id));
+        watchers.insert(session.to_string(), handle);
     }
 
     fn session_closed(&self, session: &str) {
-        // Subscriptions of a closed session end too.
         let state = self.app.state::<AppState>();
+        if let Some(h) = state
+            .asset_watchers
+            .lock()
+            .ok()
+            .and_then(|mut w| w.remove(session))
+        {
+            h.abort();
+        }
+        // Subscriptions of a closed session end too.
         let Ok(mut subs) = state.subscriptions.lock() else {
             return;
         };
@@ -232,14 +260,11 @@ pub fn figure_asset_dirs(
     dirs
 }
 
-/// Adds the deck folders and figure folders of an open session to the asset protocol scope
-/// (once per folder). Called when a session is opened or created, when its decks change, and
-/// when its figures are listed (the output directory follows the target).
-pub(crate) fn allow_session_assets(app: &tauri::AppHandle, wb: &Workbench, session: &str) {
+/// The deck folders and figure folders of an open session (empty when it is not open).
+pub(crate) fn session_asset_dirs(wb: &Workbench, session: &str) -> Vec<std::path::PathBuf> {
     let Ok(rt) = wb.session(session) else {
-        return;
+        return vec![];
     };
-    let state = app.state::<AppState>();
     let slugs: Vec<String> = rt.decks_list().into_iter().map(|d| d.slug).collect();
     let mut dirs = deck_asset_dirs(&rt.repo, &slugs);
     dirs.extend(figure_asset_dirs(
@@ -247,17 +272,54 @@ pub(crate) fn allow_session_assets(app: &tauri::AppHandle, wb: &Workbench, sessi
         &rt.out_dir(),
         &rt.session_snapshot().artifacts_dir(),
     ));
-    let Ok(mut allowed) = state.asset_dirs.lock() else {
-        return;
+    dirs
+}
+
+/// The folders of `dirs` not yet in `allowed`, which are added to it.
+pub(crate) fn not_yet_allowed(
+    allowed: &Mutex<HashSet<std::path::PathBuf>>,
+    dirs: Vec<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    let Ok(mut allowed) = allowed.lock() else {
+        return vec![];
     };
+    dirs.into_iter()
+        .filter(|d| allowed.insert(d.clone()))
+        .collect()
+}
+
+/// Adds the deck folders and figure folders of an open session to the asset protocol scope
+/// (once per folder). Called when a session is opened or created, when its decks change (by
+/// any path: the Decks panel, the agent, a checkpoint restore; see [`watch_asset_events`]), and
+/// when its figures are listed (the output directory follows the target).
+pub(crate) fn allow_session_assets(app: &tauri::AppHandle, wb: &Workbench, session: &str) {
+    let state = app.state::<AppState>();
     let scope = app.asset_protocol_scope();
-    for dir in dirs {
-        if allowed.insert(dir.clone()) {
-            if let Err(e) = scope.allow_directory(&dir, true) {
-                tracing::warn!("asset scope: {}: {e}", dir.display());
-            }
+    for dir in not_yet_allowed(&state.asset_dirs, session_asset_dirs(wb, session)) {
+        if let Err(e) = scope.allow_directory(&dir, true) {
+            tracing::warn!("asset scope: {}: {e}", dir.display());
         }
     }
+}
+
+/// Calls `widen` whenever an event of the session may have added asset folders: the core
+/// announced a deck created or removed (`decks_changed`, whoever created it), or this watcher
+/// fell behind (`resync`). Ends when the session's event hub does.
+pub(crate) fn watch_asset_events(
+    rt: &analyst_core::service::SessionRuntime,
+    widen: impl Fn() + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    let mut rx = rt.subscribe();
+    tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            if matches!(
+                event,
+                SessionEvent::DecksChanged { .. } | SessionEvent::Resync
+            ) {
+                widen();
+            }
+        }
+    })
 }
 
 /// Run a desktop helper program; a failure to start is an `io` error.
@@ -299,6 +361,64 @@ fn open_with_default_app(path: &std::path::Path) -> R<()> {
 mod tests {
     use super::{deck_asset_dirs, figure_asset_dirs};
     use std::path::{Path, PathBuf};
+
+    /// A deck created outside the Decks panel (here through the core, as the agent's tool does)
+    /// widens the asset scope at once through the `decks_changed` watcher, without waiting for
+    /// the next `decks_list`.
+    #[tokio::test]
+    async fn a_deck_created_by_the_core_is_added_to_the_asset_scope() {
+        use analyst_core::service::{Workbench, WorkbenchOptions};
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let mut opts = WorkbenchOptions::new(home.path().to_path_buf());
+        opts.autostart_kernel = false;
+        opts.init = analyst_core::init::InitOptions {
+            run_uv: false,
+            git: true,
+        };
+        let wb = Arc::new(Workbench::new(opts).unwrap());
+        let info = wb
+            .create_session(&repo.path().to_string_lossy(), None, None, true)
+            .await
+            .unwrap();
+        let session = info.summary.id.clone();
+        let rt = wb.session(&session).unwrap();
+
+        // What the shell does on session_create: allow what exists, then watch.
+        let allowed: Arc<Mutex<HashSet<PathBuf>>> = Arc::default();
+        let first = super::not_yet_allowed(&allowed, super::session_asset_dirs(&wb, &session));
+        assert!(!first.is_empty());
+        let deck_assets = rt.repo.join("decks").join("q3").join("assets");
+        assert!(!allowed.lock().unwrap().contains(&deck_assets));
+        let watcher = {
+            let (allowed, wb, session) = (allowed.clone(), wb.clone(), session.clone());
+            super::watch_asset_events(&rt, move || {
+                super::not_yet_allowed(&allowed, super::session_asset_dirs(&wb, &session));
+            })
+        };
+
+        let template = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../present/evals/templates/plain/plain.pptx");
+        rt.deck_create(Some("q3"), "Q3", &template.to_string_lossy(), false)
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !allowed.lock().unwrap().contains(&deck_assets) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the new deck's folders never reached the scope"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let allowed_now = allowed.lock().unwrap().clone();
+        for dir in deck_asset_dirs(&rt.repo, &["q3".into()]) {
+            assert!(allowed_now.contains(&dir), "{}", dir.display());
+        }
+        watcher.abort();
+        wb.shutdown().await;
+    }
 
     #[test]
     fn the_asset_scope_covers_the_output_directory_and_pulled_figures() {

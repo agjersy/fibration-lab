@@ -484,6 +484,11 @@ def _iter_text_items(doc: dict[str, Any]):
         content = el.get("content") or {}
         if content.get("type") in ("text", "shape") and isinstance(content.get("text"), dict):
             yield el.get("id"), f"/elements/{i}/content/text", content["text"], False
+        elif content.get("type") == "table":
+            for ri, row in enumerate((content.get("table") or {}).get("rows", [])):
+                for ci, cell in enumerate(row.get("cells", [])):
+                    if isinstance(cell.get("text"), dict):
+                        yield el.get("id"), f"/elements/{i}/content/table/rows/{ri}/cells/{ci}/text", cell["text"], False
 
 
 def _check_doc(out: _Out, ctx: _SlideCtx, doc: dict[str, Any], contract: Contract, resolve_cite, chart_values,
@@ -533,7 +538,7 @@ def _check_doc(out: _Out, ctx: _SlideCtx, doc: dict[str, Any], contract: Contrac
         elif kind == "table":
             table = item["table"]
             has = bool((table.get("source") or {}).get("cite")) or any(
-                r.get("cite") for row in table.get("rows", []) for cell in row.get("cells", [])
+                r.get("cite") or r.get("run_cite") for row in table.get("rows", []) for cell in row.get("cells", [])
                 if isinstance(cell.get("text"), dict) for p in cell["text"].get("paragraphs", []) for r in p.get("runs", [])
             )  # fmt: skip
             if not has:

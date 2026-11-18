@@ -324,17 +324,28 @@ def test_bwrap_snippet_and_eq_check(bwrap_kernel: Kernel, repo: Path):
     assert bwrap_kernel.call("eq.check", {"path": "analysis/models.py", "function": "damped_cos"})["status"] == "mismatch"
 
 
-def test_bwrap_helper_outlives_the_thread_that_started_it(bwrap_kernel: Kernel):
-    """`bwrap --die-with-parent` kills a child when the thread that forked it exits; the helper is
-    often started by a short-lived thread (the prewarm, a request), and must survive it."""
+@needs_bwrap
+def test_bwrap_repl_and_equation_worker_outlive_the_threads_that_started_them(bwrap_kernel: Kernel):
+    """`bwrap --die-with-parent` kills a child when the thread that forked it exits. The REPL and
+    the equation worker are often started by short-lived threads (the prewarm, a request), and
+    both must survive them. Each runs under its own bwrap."""
     import threading
 
-    started = threading.Thread(target=lambda: bwrap_kernel.call("exec.snippet", {"code": "kept = 7"}))
+    def start_both() -> None:
+        bwrap_kernel.call("exec.snippet", {"code": "kept = 7"})
+        bwrap_kernel.call("eq.extract", {"path": "analysis/models.py"})
+
+    started = threading.Thread(target=start_both)
     started.start()
     started.join()
     time.sleep(0.5)
+    repl, eq = bwrap_kernel._snippets._proc, bwrap_kernel._eq._proc
+    assert repl.poll() is None and eq.poll() is None and repl.pid != eq.pid
+    for proc in (repl, eq):
+        assert Path(f"/proc/{proc.pid}/cmdline").read_bytes().split(b"\0")[0].endswith(b"bwrap")
     assert bwrap_kernel.call("exec.snippet", {"code": "kept"})["value_repr"] == "7"
     eqs = bwrap_kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
     assert any(e["tier"] == "derived" for e in eqs)
-    assert not any("helper" in (e.get("reason") or "") for e in eqs)
+    assert not any("worker" in (e.get("reason") or "") for e in eqs)
+    assert bwrap_kernel._eq._proc.pid == eq.pid
     assert bwrap_kernel.call("exec.snippet", {"code": "kept"})["value_repr"] == "7"
