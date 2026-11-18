@@ -652,7 +652,7 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
     let session = Session::create(&task_home, &repo, "local", &env.model_name)?;
     let conv_id = "eval".to_string();
     let mut ctx = ToolContext::new(&repo, &task_home, session, &conv_id, project.clone());
-    ctx.kernel = kernel.clone();
+    ctx.set_kernel(kernel.clone());
     let policy = Policy::for_project(&repo, &project, task.file.task.mode)?;
     let config = AgentConfig::new(
         task.file.task.mode,

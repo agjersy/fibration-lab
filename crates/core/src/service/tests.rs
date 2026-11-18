@@ -1521,15 +1521,18 @@ async fn finished_runs_in_memory_are_bounded() {
             host: "local".into(),
         };
         session.append_run(&meta).unwrap();
-        fx.rt.insert_run(runtime::RunRecord {
+        fx.rt.runs.insert(super::runs::RunRecord {
             meta,
             target: "local".into(),
             stdout: String::new(),
             stderr: String::new(),
             artifacts: vec![],
-            source: runtime::RunSource::Kernel,
+            source: super::runs::RunSource::Kernel,
             finished: true,
+            completed: true,
             conversation: None,
+            duration_s: None,
+            pull_error: None,
         });
     }
     assert_eq!(fx.rt.runs_in_memory(), runtime::MAX_FINISHED_RUNS);
@@ -1540,4 +1543,151 @@ async fn finished_runs_in_memory_are_bounded() {
         "and readable"
     );
     fx.wb.close_session(&fx.session).await.unwrap();
+}
+
+/// One run service: a run started by the UI (`run_start`) and a run started by the agent
+/// (`run.script`) of the same script produce the same session events, in the same order.
+/// The only difference is the conversation the agent's run is attributed to, and that is
+/// part of its first (and only) `run_started`.
+#[tokio::test]
+async fn agent_and_ui_runs_produce_the_same_events() {
+    /// The run events of one run, with the run id and timestamps left out.
+    fn shape(events: &[SessionEvent], run_id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut output = String::new();
+        for e in events {
+            match e {
+                SessionEvent::RunStarted { run } if run.meta.run_id == run_id => out.push(format!(
+                    "started script={} args={:?} status={:?} target={}",
+                    run.meta.script, run.meta.args, run.meta.status, run.target
+                )),
+                SessionEvent::RunOutput {
+                    run_id: id, chunk, ..
+                } if id == run_id => output.push_str(chunk),
+                SessionEvent::RunArtifact {
+                    run_id: id,
+                    artifact,
+                    ..
+                } if id == run_id => out.push(format!(
+                    "artifact kind={:?} name={}",
+                    artifact.kind,
+                    artifact.path.rsplit('/').next().unwrap_or("")
+                )),
+                SessionEvent::RunDone { run } if run.meta.run_id == run_id => out.push(format!(
+                    "done status={:?} exit={:?} artifacts={} stdout={:?}",
+                    run.meta.status,
+                    run.meta.exit_code,
+                    run.artifacts.len(),
+                    run.stdout_tail
+                )),
+                _ => {}
+            }
+        }
+        out.push(format!("output={output:?}"));
+        out
+    }
+    async fn collect_until_done(
+        rx: &mut Subscription,
+        run_id: &mut Option<String>,
+    ) -> Vec<SessionEvent> {
+        let mut events = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let e = match tokio::time::timeout_at(deadline, rx.recv()).await {
+                Ok(Ok(e)) => e,
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                other => panic!("run events not received: {other:?}"),
+            };
+            if let SessionEvent::RunStarted { run } = &e {
+                run_id.get_or_insert_with(|| run.meta.run_id.clone());
+            }
+            let done = matches!(&e, SessionEvent::RunDone { run } if Some(&run.meta.run_id) == run_id.as_ref());
+            events.push(e);
+            if done {
+                return events;
+            }
+        }
+    }
+
+    let fx = fixture_with(fake_kernel).await;
+    std::fs::write(
+        fx.rt.repo.join("scripts/hello.py"),
+        "import sys\nprint('hello', *sys.argv[1:], flush=True)\n",
+    )
+    .unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+
+    // The UI's Run button.
+    let mut rx = fx.rt.subscribe();
+    let view = fx
+        .rt
+        .run_start("scripts/hello.py", vec!["--n".into(), "1".into()])
+        .await
+        .unwrap();
+    assert!(view.conversation.is_none());
+    let mut ui_id = Some(view.meta.run_id.clone());
+    let ui_events = collect_until_done(&mut rx, &mut ui_id).await;
+
+    // The agent's `run.script`, through the same run service.
+    let conv_id = fx.rt.meta().active_conversation.unwrap();
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        &conv_id,
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.kernel = fx.rt.kernel_client().await;
+    let mut rx = fx.rt.subscribe();
+    let result = ctx
+        .dispatch(
+            "t1",
+            "run.script",
+            &json!({"script": "scripts/hello.py", "args": ["--n", "1"]}),
+        )
+        .await
+        .unwrap();
+    let agent_run = result["run_id"].as_str().unwrap().to_string();
+    assert_eq!(result["status"], "done", "{result}");
+    assert!(result["stdout"].as_str().unwrap().contains("hello --n 1"));
+    let mut agent_id = None;
+    let agent_events = collect_until_done(&mut rx, &mut agent_id).await;
+    assert_eq!(agent_id.as_deref(), Some(agent_run.as_str()));
+
+    let ui_shape = shape(&ui_events, ui_id.as_deref().unwrap());
+    let agent_shape = shape(&agent_events, &agent_run);
+    assert_eq!(ui_shape, agent_shape);
+    assert!(ui_shape[0].starts_with("started "), "{ui_shape:?}");
+    assert!(ui_shape.iter().any(|l| l.starts_with("done status=Done")));
+    // Exactly one `run_started` and one `run_done` per run, and the agent's run carries its
+    // conversation from the start.
+    for (events, id, conv) in [
+        (&ui_events, ui_id.as_deref().unwrap(), None),
+        (&agent_events, agent_run.as_str(), Some(conv_id.as_str())),
+    ] {
+        let started: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                SessionEvent::RunStarted { run } if run.meta.run_id == id => Some(run),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 1);
+        assert_eq!(started[0].conversation.as_deref(), conv);
+        let done = events
+            .iter()
+            .filter(|e| matches!(e, SessionEvent::RunDone { run } if run.meta.run_id == id))
+            .count();
+        assert_eq!(done, 1);
+    }
+    // Both are in the one run history.
+    let listed: Vec<String> = fx
+        .rt
+        .runs_list(None)
+        .into_iter()
+        .map(|r| r.meta.run_id)
+        .collect();
+    assert!(listed.contains(&agent_run) && listed.contains(ui_id.as_ref().unwrap()));
+    fx.wb.shutdown().await;
 }

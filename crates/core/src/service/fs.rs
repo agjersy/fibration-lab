@@ -1,4 +1,5 @@
-//! Repo filesystem operations behind `fs_*` commands: tree (respecting `.gitignore`), read and
+//! The workspace-files service ([`WorkspaceFiles`]): repo filesystem operations behind the
+//! UI's `fs_*` commands and the agent's file tools: tree (respecting `.gitignore`), read and
 //! write with SHA-256 hashes and conflict detection, create, delete (OS trash when available),
 //! rename, and search through `rg --json`.
 
@@ -383,86 +384,399 @@ pub fn rename(repo: &Path, from: &str, to: &str) -> ServiceResult<()> {
     Ok(())
 }
 
-/// Search file contents with ripgrep.
-pub async fn search(
+/// What one ripgrep search found.
+#[derive(Debug, Clone, Default)]
+pub struct SearchOutcome {
+    pub hits: Vec<SearchHit>,
+    /// More matches exist than were returned.
+    pub truncated: bool,
+    /// ripgrep reported a problem (an unreadable file) but still found matches.
+    pub warning: Option<String>,
+}
+
+const SEARCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MAX_SEARCH_STDOUT: usize = 8 * 1024 * 1024;
+
+/// Search file contents with ripgrep: the one search behind the UI's `fs_search` and the
+/// agent's `fs.search`. `per_submatch` reports every match on a line with its column (the
+/// UI); without it each matching line is reported once. The search stops at `max` hits and
+/// after 30 seconds.
+pub async fn grep(
     repo: &Path,
     pattern: &str,
     glob: Option<&str>,
-    max_results: Option<u32>,
-) -> ServiceResult<Vec<SearchHit>> {
+    max: usize,
+    per_submatch: bool,
+) -> ServiceResult<SearchOutcome> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
     if pattern.is_empty() {
         return Err(ServiceError::invalid("`pattern` must not be empty"));
     }
-    let max = max_results.unwrap_or(200).max(1) as usize;
-    let mut cmd = tokio::process::Command::new(crate::util::resolve_tool("rg"));
-    cmd.args(["--json", "-e", pattern])
+    let max = max.max(1);
+    let rg = crate::util::find_tool("rg").ok_or_else(|| {
+        ServiceError::internal("ripgrep (`rg`) is not installed, so search is unavailable")
+    })?;
+    let mut cmd = tokio::process::Command::new(rg);
+    cmd.args(["--json", "--max-columns", "1000", "-e", pattern])
         .current_dir(repo)
         .env("PATH", crate::util::tool_path_env())
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
     for h in ALWAYS_HIDDEN {
         cmd.arg("--glob").arg(format!("!{h}"));
     }
     if let Some(g) = glob {
         cmd.arg("--glob").arg(g);
     }
-    cmd.arg(".");
-    let out = cmd
-        .output()
-        .await
-        .map_err(|e| ServiceError::internal(format!("running rg: {e} (is ripgrep installed?)")))?;
-    // Exit status 2 with no output is a usage error (an invalid pattern or glob), not "no hits".
-    if out.status.code() == Some(2) && out.stdout.iter().all(|b| b.is_ascii_whitespace()) {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(ServiceError::invalid(format!(
-            "search failed: {}",
-            crate::util::truncate_bytes(err.trim(), 400)
-        )));
-    }
-    let mut hits = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if v["type"] != "match" {
-            continue;
-        }
-        let d = &v["data"];
-        let path = d["path"]["text"]
-            .as_str()
-            .unwrap_or("")
-            .trim_start_matches("./")
-            .to_string();
-        let line_no = d["line_number"].as_u64().unwrap_or(0);
-        let text = d["lines"]["text"].as_str().unwrap_or("").trim_end();
-        let text = crate::util::truncate_bytes(text, 400).to_string();
-        let subs = d["submatches"].as_array();
-        if let Some(subs) = subs.filter(|s| !s.is_empty()) {
-            for sm in subs {
-                let col = sm["start"].as_u64().unwrap_or(0) + 1;
+    cmd.arg("--").arg(".");
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| ServiceError::internal(format!("running rg: {e}")))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ServiceError::internal("rg stdout not captured"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ServiceError::internal("rg stderr not captured"))?;
+    let err_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        let _ = (&mut stderr).take(64 * 1024).read_to_end(&mut buf).await;
+        String::from_utf8_lossy(&buf).to_string()
+    });
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut truncated = false;
+    let read = async {
+        let mut lines = tokio::io::BufReader::new(stdout).lines();
+        let mut seen = 0usize;
+        'lines: while let Ok(Some(line)) = lines.next_line().await {
+            seen += line.len();
+            if seen > MAX_SEARCH_STDOUT {
+                truncated = true;
+                break;
+            }
+            let v: serde_json::Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if v["type"] != "match" {
+                continue;
+            }
+            if hits.len() >= max {
+                truncated = true;
+                break;
+            }
+            let d = &v["data"];
+            let path = d["path"]["text"]
+                .as_str()
+                .unwrap_or("")
+                .trim_start_matches("./")
+                .to_string();
+            let line_no = d["line_number"].as_u64().unwrap_or(0);
+            let text = d["lines"]["text"].as_str().unwrap_or("").trim_end();
+            let text = crate::util::truncate_bytes(text, 400).to_string();
+            let cols: Vec<u64> = d["submatches"]
+                .as_array()
+                .map(|subs| {
+                    subs.iter()
+                        .map(|sm| sm["start"].as_u64().unwrap_or(0) + 1)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let cols = if cols.is_empty() || !per_submatch {
+                vec![cols.first().copied().unwrap_or(1)]
+            } else {
+                cols
+            };
+            for col in cols {
+                if hits.len() >= max {
+                    truncated = true;
+                    break 'lines;
+                }
                 hits.push(SearchHit {
                     path: path.clone(),
                     line: line_no,
                     col,
                     text: text.clone(),
                 });
-                if hits.len() >= max {
-                    return Ok(hits);
+            }
+        }
+    };
+    let timed_out = tokio::time::timeout(SEARCH_TIMEOUT, read).await.is_err();
+    if timed_out || truncated {
+        let _ = child.start_kill();
+    }
+    let status = child.wait().await.ok();
+    let stderr_text = err_task.await.unwrap_or_default();
+    if timed_out {
+        return Err(ServiceError::invalid(format!(
+            "search timed out after {} s; narrow the pattern or add a glob",
+            SEARCH_TIMEOUT.as_secs()
+        )));
+    }
+    // rg exits 0 with matches, 1 with none, 2 on errors (bad regex, unreadable files).
+    // Killing it after enough matches is not an error.
+    let code = status.and_then(|s| s.code());
+    let mut warning = None;
+    if !truncated && code != Some(0) && code != Some(1) {
+        let msg = stderr_text.trim();
+        if hits.is_empty() {
+            return Err(ServiceError::invalid(format!(
+                "search failed: ripgrep failed (this is not \"no matches\"): {}",
+                if msg.is_empty() {
+                    format!("exit status {code:?}")
+                } else {
+                    crate::util::truncate_bytes(msg, 2000).to_string()
+                }
+            )));
+        }
+        warning = Some(crate::util::truncate_bytes(msg, 1000).to_string());
+    }
+    Ok(SearchOutcome {
+        hits,
+        truncated,
+        warning,
+    })
+}
+
+/// `fs_search`: every match with its column.
+pub async fn search(
+    repo: &Path,
+    pattern: &str,
+    glob: Option<&str>,
+    max_results: Option<u32>,
+) -> ServiceResult<Vec<SearchHit>> {
+    let max = max_results.unwrap_or(200).max(1) as usize;
+    Ok(grep(repo, pattern, glob, max, true).await?.hits)
+}
+
+/// A page of a text file as the agent reads it, or the fact that the file is binary.
+#[derive(Debug, Clone)]
+pub enum Page {
+    Text {
+        start_line: usize,
+        end_line: usize,
+        total_lines: usize,
+        /// The lines, each prefixed with its number.
+        content: String,
+    },
+    Binary {
+        size: usize,
+    },
+}
+
+/// The workspace-files service of a session: every file access of the UI's `fs_*` commands
+/// and of the agent's file tools goes through it (DESIGN-REVIEW item 1). It confines paths
+/// to the repository (plus, for reads, the session's spilled tool results and approved data
+/// directories), reads, lists, searches with one ripgrep runner, and writes: editor saves
+/// with hash conflict detection, agent proposals with create-new and no-symlink semantics.
+#[derive(Debug, Clone)]
+pub struct WorkspaceFiles {
+    repo: PathBuf,
+    /// The session's `artifacts/` directory (spilled tool results), readable by absolute path.
+    artifacts_dir: Option<PathBuf>,
+}
+
+impl WorkspaceFiles {
+    pub fn new(repo: &Path) -> WorkspaceFiles {
+        WorkspaceFiles {
+            repo: repo.to_path_buf(),
+            artifacts_dir: None,
+        }
+    }
+
+    pub fn with_artifacts(mut self, dir: PathBuf) -> WorkspaceFiles {
+        self.artifacts_dir = Some(dir);
+        self
+    }
+
+    pub fn repo(&self) -> &Path {
+        &self.repo
+    }
+
+    pub fn resolve(&self, raw: &str) -> ServiceResult<(String, PathBuf)> {
+        resolve(&self.repo, raw)
+    }
+
+    pub fn tree(
+        &self,
+        path: Option<&str>,
+        depth: Option<u32>,
+        out_dir: &str,
+    ) -> ServiceResult<Vec<FileEntry>> {
+        tree(&self.repo, path, depth, out_dir)
+    }
+
+    pub fn read(&self, path: &str) -> ServiceResult<FileContent> {
+        read(&self.repo, path)
+    }
+
+    pub fn read_binary(&self, path: &str) -> ServiceResult<(String, Vec<u8>)> {
+        read_binary(&self.repo, path)
+    }
+
+    pub fn write(
+        &self,
+        path: &str,
+        content: &str,
+        expected_hash: Option<&str>,
+    ) -> ServiceResult<WriteResult> {
+        write(&self.repo, path, content, expected_hash)
+    }
+
+    pub fn create(&self, path: &str, is_dir: bool) -> ServiceResult<()> {
+        create(&self.repo, path, is_dir)
+    }
+
+    pub fn delete(&self, path: &str) -> ServiceResult<()> {
+        delete(&self.repo, path)
+    }
+
+    pub fn rename(&self, from: &str, to: &str) -> ServiceResult<()> {
+        rename(&self.repo, from, to)
+    }
+
+    pub async fn search(
+        &self,
+        pattern: &str,
+        glob: Option<&str>,
+        max: usize,
+        per_submatch: bool,
+    ) -> ServiceResult<SearchOutcome> {
+        grep(&self.repo, pattern, glob, max, per_submatch).await
+    }
+
+    /// Build an agent edit proposal against the file as it is now.
+    pub fn propose(
+        &self,
+        id: &str,
+        tool: &str,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<crate::tools::proposals::Proposal> {
+        crate::tools::proposals::build(&self.repo, id, tool, args)
+    }
+
+    /// Write an accepted agent proposal (conflict detection by base hash; a create never
+    /// overwrites; nothing is written through a symlink or into a reserved directory).
+    pub fn apply(&self, p: &crate::tools::proposals::Proposal) -> anyhow::Result<()> {
+        crate::tools::proposals::apply(&self.repo, p)
+    }
+
+    /// Resolve a path the agent wants to read: repo-relative (canonicalised, so a symlink
+    /// cannot lead out of the repo except into one of `extra_roots`, the approved data
+    /// directories), or an absolute path inside the session artifacts directory.
+    pub fn resolve_for_agent(&self, raw: &str, extra_roots: &[PathBuf]) -> ServiceResult<PathBuf> {
+        let p = Path::new(raw);
+        if p.is_absolute() {
+            let canon = std::fs::canonicalize(p)
+                .map_err(|e| ServiceError::not_found(format!("`{raw}`: {e}")))?;
+            if let Some(art) = &self.artifacts_dir {
+                let art_canon = std::fs::canonicalize(art).unwrap_or_else(|_| art.clone());
+                if canon.starts_with(&art_canon) {
+                    return Ok(canon);
                 }
             }
+            return Err(ServiceError::invalid(format!(
+                "`{raw}` is outside the repo and the session artifacts directory"
+            )));
+        }
+        // The repo's `.env` holds API keys for the app. The agent's file tools never read
+        // it, so a key cannot end up in a prompt.
+        if normalize_rel_path(raw).is_ok_and(|n| n.eq_ignore_ascii_case(wb_net::secrets::ENV_FILE))
+        {
+            return Err(ServiceError::policy_denied(
+                "`.env` holds API keys and is not readable through the file tools",
+            ));
+        }
+        crate::util::resolve_in_roots(&self.repo, raw, true, extra_roots)
+            .map_err(ServiceError::invalid)
+    }
+
+    /// A line-numbered page of a text file for the agent (`fs.read`).
+    pub fn read_page(
+        &self,
+        raw: &str,
+        start_line: Option<usize>,
+        end_line: Option<usize>,
+        extra_roots: &[PathBuf],
+    ) -> ServiceResult<Page> {
+        let full = self.resolve_for_agent(raw, extra_roots)?;
+        let bytes = std::fs::read(&full).map_err(|e| map_io(raw, e))?;
+        let text = match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(e) => {
+                return Ok(Page::Binary {
+                    size: e.as_bytes().len(),
+                })
+            }
+        };
+        let total = text.lines().count();
+        let start = start_line.unwrap_or(1).max(1);
+        let end = end_line.unwrap_or(total).min(total);
+        // A single line can be enormous (minified data); bound each one so a page of lines
+        // is a page.
+        const MAX_LINE: usize = 2000;
+        let content: String = if start > end {
+            String::new()
         } else {
-            hits.push(SearchHit {
-                path,
-                line: line_no,
-                col: 1,
-                text,
-            });
-            if hits.len() >= max {
+            text.lines()
+                .enumerate()
+                .filter(|(i, _)| *i + 1 >= start && *i < end)
+                .map(|(i, l)| {
+                    if l.len() > MAX_LINE {
+                        format!(
+                            "{:>5}| {}...[line truncated, {} bytes]",
+                            i + 1,
+                            crate::util::truncate_bytes(l, MAX_LINE),
+                            l.len()
+                        )
+                    } else {
+                        format!("{:>5}| {l}", i + 1)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(Page::Text {
+            start_line: start,
+            end_line: end,
+            total_lines: total,
+            content,
+        })
+    }
+
+    /// A flat, depth-limited listing for the agent (`fs.list`): repo-relative paths,
+    /// directories with a trailing slash, at most 2000 entries.
+    pub fn list(&self, raw: &str, depth: usize) -> ServiceResult<Vec<String>> {
+        let canon_repo = std::fs::canonicalize(&self.repo).map_err(|e| map_io(raw, e))?;
+        let root = resolve_in_repo(&self.repo, raw, true).map_err(ServiceError::invalid)?;
+        if !root.is_dir() {
+            return Err(ServiceError::invalid(format!("`{raw}` is not a directory")));
+        }
+        let mut entries = Vec::new();
+        for e in walkdir::WalkDir::new(&root)
+            .min_depth(1)
+            .max_depth(depth.clamp(1, 6))
+            .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|e| !ALWAYS_HIDDEN.contains(&e.file_name().to_string_lossy().as_ref()))
+            .flatten()
+        {
+            let p = e.path().strip_prefix(&canon_repo).unwrap_or(e.path());
+            let mut s = p.to_string_lossy().replace('\\', "/");
+            if e.file_type().is_dir() {
+                s.push('/');
+            }
+            entries.push(s);
+            if entries.len() >= 2000 {
                 break;
             }
         }
+        Ok(entries)
     }
-    Ok(hits)
 }
 
 fn map_io(path: &str, e: std::io::Error) -> ServiceError {

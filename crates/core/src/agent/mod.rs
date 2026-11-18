@@ -21,7 +21,7 @@ pub use approver::{
 
 use crate::checkpoint;
 use crate::tools::gate::{Decision as PolicyDecision, Policy, ScopeChange};
-use crate::tools::proposals::{self, Proposal};
+use crate::tools::proposals::Proposal;
 use crate::tools::registry::{self, ToolClass};
 use crate::tools::ToolContext;
 use crate::util::{estimate_tokens, now_rfc3339, truncate_bytes};
@@ -793,7 +793,7 @@ impl Agent {
         let is_edit = class == Some(ToolClass::Edit);
         let mut proposal: Option<Proposal> = None;
         if is_edit && eval.decision != PolicyDecision::Deny {
-            match proposals::build(&self.ctx.repo, id, name, args) {
+            match self.ctx.files.propose(id, name, args) {
                 Ok(p) => {
                     let _ = self.record(Event::Proposal {
                         ts: now_rfc3339(),
@@ -893,7 +893,7 @@ impl Agent {
         }
         if let Some(p) = proposal {
             let in_scope = self.policy.in_scope(&p.path);
-            let r = proposals::apply(&self.ctx.repo, &p).map(|_| {
+            let r = self.ctx.files.apply(&p).map(|_| {
                 edited.push(p.path.clone());
                 if !in_scope {
                     summary.unwanted_edits += 1;

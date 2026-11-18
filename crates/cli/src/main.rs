@@ -495,8 +495,7 @@ async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
     // target the change is made locally, pushed, and applied there with `uv sync`.
     let session = app.session(&target, app.global.defaults.model.as_deref().unwrap_or("-"))?;
     let mut ctx = ToolContext::new(&app.repo, &app.home, session, "cli", app.project.clone());
-    ctx.target = target.clone();
-    ctx.control_dir = app.control_dir();
+    ctx.set_target(target.clone(), app.control_dir());
     let v = ctx
         .dispatch("cli-env", tool, &serde_json::json!({"packages": pkgs}))
         .await
@@ -693,10 +692,9 @@ async fn cmd_run(
     let session = app.session(&target, app.global.defaults.model.as_deref().unwrap_or("-"))?;
     let kernel = app.connect(&target).await?;
     let mut ctx = ToolContext::new(&app.repo, &app.home, session, "cli", app.project.clone());
-    ctx.kernel = Some(kernel.clone());
-    ctx.target = target.clone();
-    ctx.control_dir = app.control_dir();
-    ctx.output_sink = Some(Arc::new(|stream, chunk| {
+    ctx.set_kernel(Some(kernel.clone()));
+    ctx.set_target(target.clone(), app.control_dir());
+    ctx.stream_run_output(Arc::new(|stream, chunk| {
         if stream == "stdout" {
             print!("{chunk}");
             let _ = std::io::stdout().flush();
@@ -942,10 +940,9 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
     }
     project.policy.max_steps = args.max_steps;
     let mut ctx = ToolContext::new(&app.repo, &app.home, session, &conv_id, project.clone());
-    ctx.kernel = kernel.clone();
-    ctx.target = target.clone();
-    ctx.control_dir = app.control_dir();
-    ctx.output_sink = Some(Arc::new(|stream, chunk| {
+    ctx.set_kernel(kernel.clone());
+    ctx.set_target(target.clone(), app.control_dir());
+    ctx.stream_run_output(Arc::new(|stream, chunk| {
         if stream == "stdout" {
             print!("{chunk}");
         } else {

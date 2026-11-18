@@ -563,6 +563,8 @@ async fn run_turn(
         };
         let session = rt.session_snapshot();
         let mut ctx = ToolContext::new(&rt.repo, &rt.home, session, &conv.id, project.clone());
+        ctx.use_runs(rt.runs.clone());
+        ctx.files = rt.files.clone();
         ctx.kernel = kernel.clone();
         ctx.target = target.clone();
         ctx.control_dir = rt.opts.control_dir.clone();
@@ -604,13 +606,6 @@ async fn run_turn(
     agent.ctx.data_roots = target.data_dirs().to_vec();
     agent.ctx.target = target;
     agent.ctx.project = project.clone();
-    // Runs the turn starts are attributed to this conversation (`RunView.conversation`).
-    let (weak_rt, run_conv) = (Arc::downgrade(rt), conv.id.clone());
-    agent.ctx.on_run_started = Some(Arc::new(move |run_id: &str| {
-        if let Some(rt) = weak_rt.upgrade() {
-            rt.note_agent_run(run_id, &run_conv);
-        }
-    }));
     let scope = agent.policy.scope().map(<[String]>::to_vec);
     let mut policy = Policy::for_project(&rt.repo, &project, meta.mode)
         .map_err(|e| ServiceError::invalid(e.to_string()))?;
