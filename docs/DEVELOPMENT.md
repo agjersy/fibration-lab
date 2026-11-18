@@ -20,7 +20,8 @@ docs/                  vision, architecture, protocol, decisions
 - Python 3.11 or newer, `uv`, `ruff`
 - `git`, `rg` (ripgrep)
 - For sandboxed runs: `bwrap` (Linux) or macOS. Without either the kernel falls back to resource limits and reports `sandbox: "limits"`.
-- For remote targets: OpenSSH client, and `rsync` on both ends (optional; a `tar` fallback is used otherwise)
+- For remote targets: OpenSSH client and `git` locally; `git`, `tar`, and the target's Python version on the host (the app installs neither `git` nor Python there)
+- For the SSH sync integration test (`crates/core/tests/sync_ssh.rs`): `sshd`, `ssh`, and `ssh-keygen` (`apt-get install -y openssh-server openssh-client`). The test starts its own server on a localhost port with throwaway keys and is skipped when they are missing; `ANALYST_REQUIRE_SSHD=1` turns the skip into a failure
 
 ## Setup
 
@@ -126,11 +127,17 @@ The macOS sandbox also checks `file-read-metadata` on every directory along a pa
    It prints the profile (or `bwrap` argv) and then executes a one-line Python command under it. On macOS, denials are also logged by the system: `log stream --style compact --predicate 'sender == "Sandbox"'` in another terminal shows the operation and path that was refused.
 3. Add that path to `data_dirs` in `.analyst/project.toml` if it is data, or report it if it is part of the interpreter or a system location.
 
+**`no Python 3.12 interpreter was found on ...`.** The app never downloads Python (`UV_PYTHON_DOWNLOADS=never` on every `uv` it starts, locally and on hosts). Install that version on the machine the message names, or for a remote target set `python = "<installed version>"` in its `[[targets]]` entry.
+
+**`not installing: pyproject.toml names its own package source (...)`.** Installs come from `[packages] index_url` only. The message names the entry: an extra index, a `git` or `url` source, a direct URL requirement, or a lockfile package pinned to another registry. Remove it, or change `index_url` if that index is the one you mean to use. A `uv.lock` written against another index is refused the same way; delete it and let the next sync write a new one.
+
+**`` `git` was not found on <host> ``.** The mirror on a remote target is a git checkout; install `git` on the host.
+
 **Matplotlib cannot find a font cache or config.** Runs set `MPLCONFIGDIR` inside the run directory, which is writable; the user's `~/.matplotlib` is intentionally hidden.
 
 ## Network rule
 
-The app reaches the network for model endpoints, package installs from the configured index, and SSH targets only, and only through `crates/wb-net` (ARCHITECTURE.md section 5.6). In `crates/core` that means: build HTTP requests with `wb_net::gate().request(..)`, never a client of your own; build `uv` installs with `egress::uv_install` (other `uv` calls run offline); and spawn command lines through the existing helpers (`target::run_command`, `TaskLogger::stream_command`, the kernel transports), which call `egress::guard`. `python3 tools/check_egress.py` checks that no other crate can reach the network. Decisions are logged to `$ANALYST_HOME/egress.jsonl`. Kernels and terminals are spawned through `wb_sandbox::no_network::wrap`; tests that need isolation skip when neither `bwrap` nor `sandbox-exec` works.
+The app reaches the network for model endpoints, package installs from the configured index, and SSH targets only, and only through `crates/wb-net` (ARCHITECTURE.md section 5.6). In `crates/core` that means: build HTTP requests with `wb_net::gate().request(..)`, never a client of your own; build `uv` installs with `egress::uv_install` (other `uv` calls run offline); and spawn command lines through the existing helpers (`target::run_command`, `TaskLogger::stream_command`, the kernel transports), which call `egress::guard`. `target::run_command` passes the working directory to the guard (`egress::guard_in`), which then also reads the project for package sources of its own before an install; code that spawns an install another way calls `egress::check_project_sources` itself. The only git command that may use the network is the mirror push built by `egress::git_push`. `python3 tools/check_egress.py` checks that no other crate can reach the network. Decisions are logged to `$ANALYST_HOME/egress.jsonl`. Kernels and terminals are spawned through `wb_sandbox::no_network::wrap`; tests that need isolation skip when neither `bwrap` nor `sandbox-exec` works.
 
 ## Conventions
 
