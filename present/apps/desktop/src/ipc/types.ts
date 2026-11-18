@@ -15,18 +15,6 @@ export type TaskId = string;
 /** `ProjectSummary` of IPC.md section 2; the generated `ProjectInfo` flattens it. */
 export type ProjectSummary = Pick<ProjectInfo, "id" | "name" | "path_abs" | "template_name" | "deck_mode" | "slides" | "model" | "created_at" | "last_opened_at" | "open">;
 
-/** IPC.md section 2 `AnalystItem` (the UI view; the kernel's own `AnalystItem` in ./generated differs). */
-export interface AnalystItemView {
-  id: string;
-  kind: "figure" | "table";
-  title: string;
-  run_id: string;
-  script: string;
-  args: string[];
-  created: string;
-  thumb: string | null;
-}
-
 export interface DialogFilter {
   name: string;
   extensions: string[];

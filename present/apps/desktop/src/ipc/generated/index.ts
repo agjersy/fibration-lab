@@ -2,8 +2,6 @@
 
 export type { Agg } from "./Agg";
 export type { Align } from "./Align";
-export type { AnalystItem } from "./AnalystItem";
-export type { AnalystScanResult } from "./AnalystScanResult";
 export type { AppInfo } from "./AppInfo";
 export type { AssetView } from "./AssetView";
 export type { AuditImage } from "./AuditImage";

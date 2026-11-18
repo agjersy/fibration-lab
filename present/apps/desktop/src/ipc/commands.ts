@@ -2,7 +2,6 @@
 // apps/desktop/src-tauri/src/commands.rs, thin glue over `present_core::service`; it registers exactly
 // these names.
 import type {
-  AnalystItemView,
   AppInfo,
   AssetView,
   ChartSource,
@@ -79,8 +78,6 @@ export interface Commands {
   refs_remove_unused: { args: P; result: string[] };
   refs_search: { args: P & { query: string; ref_ids?: string[] }; result: SearchHit[] };
   source_passage: { args: P & { cite: Cite }; result: SourcePassage };
-  analyst_scan: { args: P & { repo_abs: string }; result: AnalystItemView[] };
-  analyst_import: { args: P & { repo_abs: string; item: string }; result: RefView };
   assets_list: { args: P; result: AssetView[] };
   asset_add: { args: P & { path_abs: string }; result: AssetView };
   history_list: { args: P & { limit?: number }; result: SnapshotView[] };
@@ -146,8 +143,6 @@ export const COMMAND_NAMES = [
   "refs_remove_unused",
   "refs_search",
   "source_passage",
-  "analyst_scan",
-  "analyst_import",
   "assets_list",
   "asset_add",
   "history_list",
