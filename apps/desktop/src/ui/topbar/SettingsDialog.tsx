@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { backend } from "../../ipc";
-import type { PolicyView, SessionId } from "../../ipc";
+import type { PolicyPatch, PolicyView, SessionId } from "../../ipc";
 import { startTask } from "../../state/actions";
 import { POLICY_PRESETS, presetOf, presetPatch } from "../../state/policyPresets";
 import { useSessions } from "../../state/sessions";
@@ -24,7 +24,7 @@ export function SettingsDialog({ session, onClose }: { session: SessionId | null
   const [maxSteps, setMaxSteps] = useState(info?.policy.max_steps ?? 40);
   const [protectedText, setProtectedText] = useState(info?.policy.protected.join("\n") ?? "");
 
-  const setPolicy = (policy: Partial<PolicyView>) => {
+  const setPolicy = (policy: PolicyPatch) => {
     if (!session) return;
     backend()
       .invoke("session_set_policy", { session, policy })
@@ -95,7 +95,7 @@ export function SettingsDialog({ session, onClose }: { session: SessionId | null
             <summary>Advanced</summary>
             <div className="form-grid">
               {POLICY_FIELDS.map((f) => (
-                <PolicySelect key={f.key} id={`st-${f.key}`} label={f.label} value={info.policy[f.key]} options={f.options} onChange={(v) => setPolicy({ [f.key]: v } as Partial<PolicyView>)} />
+                <PolicySelect key={f.key} id={`st-${f.key}`} label={f.label} value={info.policy[f.key]} options={f.options} onChange={(v) => setPolicy({ [f.key]: v } as PolicyPatch)} />
               ))}
               <label htmlFor="st-max-steps">Max steps</label>
               <input

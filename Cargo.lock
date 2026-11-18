@@ -98,6 +98,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "trash",
+ "ts-rs",
  "uuid",
  "walkdir",
  "wb-net",
