@@ -168,8 +168,8 @@ export async function moveSlideAfter(session: SessionId, deck: string, slideId: 
   const firstSection = d.deck.sections[0]?.title;
   useDecks.getState().applyDeck(session, deck, moveSlide(d.deck, slideId, after, firstSection), []);
   try {
-    if (after) await backend().invoke("slide_move", { session, deck, slide_id: slideId, after });
-    else await backend().invoke("slide_move", { session, deck, slide_id: slideId, ...(firstSection !== undefined ? { section: firstSection } : {}) });
+    // No anchor means "to the front" in the core; a section alone would mean "to its end".
+    await backend().invoke("slide_move", { session, deck, slide_id: slideId, ...(after ? { after } : {}) });
   } catch (e) {
     notifyError(e);
     await reloadDeck(session, deck).catch(notifyError);
