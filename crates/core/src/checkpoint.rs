@@ -567,7 +567,11 @@ mod tests {
         let r = repo.path();
         let slides = r.join("decks/q3/deck/slides");
         std::fs::create_dir_all(&slides).unwrap();
-        std::fs::write(r.join("decks/q3/deck/deck.json"), "{\"mode\":\"structured\"}").unwrap();
+        std::fs::write(
+            r.join("decks/q3/deck/deck.json"),
+            "{\"mode\":\"structured\"}",
+        )
+        .unwrap();
         std::fs::write(slides.join("s-1.json"), "{\"title\":\"one\"}").unwrap();
         std::fs::create_dir_all(r.join("decks/q3/exports")).unwrap();
         std::fs::write(r.join("decks/q3/.gitignore"), "exports/\n").unwrap();
@@ -587,7 +591,10 @@ mod tests {
             "{\"mode\":\"structured\"}"
         );
         assert!(slides.join("s-1.json").is_file());
-        assert!(!r.join("decks/q3/deck/build.py").exists(), "the script is gone");
+        assert!(
+            !r.join("decks/q3/deck/build.py").exists(),
+            "the script is gone"
+        );
         // Outside the deck's documents nothing moved: code, exports, the user's index.
         assert_eq!(std::fs::read_to_string(r.join("a.py")).unwrap(), "a = 2\n");
         assert!(r.join("decks/q3/exports/q3.pptx").is_file());
