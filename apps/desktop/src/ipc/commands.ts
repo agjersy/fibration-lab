@@ -103,6 +103,8 @@ export interface Commands {
   provider_keys_status: { args: Record<string, never>; result: ProviderKeyStatus[] };
   provider_key_set: { args: { provider: string; key: string }; result: null };
   dialog_pick_directory: { args: { title?: string }; result: string | null };
+  /** Native open dialog for files (templates, references); `null` when cancelled. */
+  dialog_pick_files: { args: { title?: string; filters?: { name: string; extensions: string[] }[]; multiple?: boolean }; result: string[] | null };
   // ---- decks (IPC.md section 9); deck events arrive as `{type: "deck", deck, event}` ----
   decks_list: { args: S; result: DeckSummary[] };
   deck_create: { args: S & { title: string; template_abs: string; slug?: string; code?: boolean }; result: DeckSummary };
@@ -116,6 +118,8 @@ export interface Commands {
   slide_duplicate: { args: D & { slide_id: string }; result: Deck.SlideView };
   slide_move: { args: D & { slide_id: string; after?: string; section?: string }; result: null };
   slide_lock: { args: D & { slide_id: string; element_id?: string; locked: boolean }; result: null };
+  /** Places a figure of a run on a slide, cited by its run (the core function of the agent's `slide.place_figure`). */
+  slide_place_figure: { args: D & { slide_id: string; run_id: RunId; artifact: string; placeholder?: string }; result: Deck.SlideView };
   slide_preview_png: { args: D & { slide_id: string; png_base64: string }; result: null };
   chart_compute: { args: D & { source: unknown; steps?: unknown }; result: Deck.ChartComputeResult };
   deck_code_read: { args: D & { path: string }; result: Deck.FileContent };

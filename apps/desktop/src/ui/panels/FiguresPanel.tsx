@@ -4,6 +4,8 @@ import { useFigureSrc } from "../../state/figureCache";
 import { groupFigures } from "../../state/figures";
 import type { FigureEntry } from "../../state/figures";
 import { useChat } from "../../state/chat";
+import { placeFigureOnSlide } from "../../state/deckActions";
+import { useActiveDeckSlug } from "../../state/decks";
 import { useRuns } from "../../state/runs";
 import type { FigureSelection } from "../../state/runs";
 import { useActiveSession, useSessionInfo } from "../../state/sessions";
@@ -70,6 +72,7 @@ export function FiguresPanel() {
   const active = useRuns((s) => (session ? (s.activeFigure[session] ?? null) : null));
   const pinned = useRuns((s) => (session ? (s.pinned[session] ?? NO_PINS) : NO_PINS));
   const compare = useRuns((s) => (session ? (s.compare[session] ?? null) : null));
+  const deck = useActiveDeckSlug(session);
 
   // One entry per figure and run (formats folded together), newest run first.
   const runs = useMemo<RunFigures[]>(() => groups.map((g) => ({ run: g.run, entries: groupFigures(g.figures) })), [groups]);
@@ -148,6 +151,16 @@ export function FiguresPanel() {
         </button>
         <button type="button" className="small" onClick={sendToAgent} disabled={!figure}>
           Send to agent
+        </button>
+        <button
+          type="button"
+          className="small"
+          onClick={() => figure && void placeFigureOnSlide(session, figure.primary.run_id, figure.primary.path)}
+          disabled={!figure || figure.primary.format === "pdf"}
+          title={deck ? `Place this figure on the selected slide of ${deck}, cited by its run` : "Open a deck and select a slide first"}
+          data-testid="place-on-slide"
+        >
+          Place on slide
         </button>
       </div>
       <div className="panel-body">

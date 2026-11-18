@@ -6,6 +6,7 @@ import { Modal } from "./ui/common/Dialog";
 import { useActiveSession, useSessions } from "./state/sessions";
 import { useUi } from "./state/ui";
 import { Toasts } from "./ui/Toasts";
+import { NewDeckDialog } from "./ui/deck/DecksView";
 import { Palette } from "./ui/palette/Palette";
 import { useResolvedTheme } from "./ui/theme";
 import { NewSessionDialog } from "./ui/topbar/NewSessionDialog";
@@ -21,6 +22,7 @@ export function App() {
   const sessions = useSessions((s) => s.sessions);
   const newSessionOpen = useUi((s) => s.newSessionOpen);
   const settingsOpen = useUi((s) => s.settingsOpen);
+  const newDeckOpen = useUi((s) => s.newDeckOpen);
   useResolvedTheme();
   useAppCommands();
   useUnsavedGuards();
@@ -50,6 +52,7 @@ export function App() {
         ) : null}
       </div>
       {newSessionOpen ? <NewSessionDialog onClose={() => useUi.getState().setNewSessionOpen(false)} /> : null}
+      {newDeckOpen && active ? <NewDeckDialog session={active} onClose={() => useUi.getState().setNewDeckOpen(false)} /> : null}
       {settingsOpen ? <SettingsDialog session={active} onClose={() => useUi.getState().setSettingsOpen(false)} /> : null}
       {unsaved ? (
         <Modal

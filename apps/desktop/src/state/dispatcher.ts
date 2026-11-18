@@ -2,9 +2,11 @@
 // subscription per open session; events for sessions that are not active
 // still update state.
 import { backend } from "../ipc";
-import type { SessionEvent, SessionId } from "../ipc";
+import type { Deck, SessionEvent, SessionId } from "../ipc";
 import { flushAgentText, queueAgentText, useChat } from "./chat";
 import { useDiagnostics } from "./diagnostics";
+import { applyDeckEvent } from "./deckEvents";
+import { useDecks } from "./decks";
 import { noteEvent } from "./eventSeq";
 import { useFiles } from "./files";
 import { checkExternalChanges } from "./fileWatch";
@@ -127,6 +129,12 @@ export function applyEvent(session: SessionId, e: SessionEvent): void {
       break;
     case "resync":
       quietly(resyncSession(session));
+      break;
+    case "deck":
+      applyDeckEvent(session, e.deck, e.event as Deck.DeckEvent);
+      break;
+    case "decks_changed":
+      useDecks.getState().setList(session, e.decks);
       break;
   }
 }

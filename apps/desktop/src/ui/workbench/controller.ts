@@ -82,6 +82,41 @@ export function openProposal(proposalId: string, title: string): void {
   api.addPanel({ id, component: "proposal", tabComponent: "closable", title: `Review: ${title}`, params: { proposalId }, position: { referenceGroup: group } });
 }
 
+/** The deck workbench's panels: where each opens when it is not in the layout yet. */
+export const DECK_PANELS = {
+  decks: { title: "Decks", group: GROUPS.sidebar },
+  slides: { title: "Slides", group: GROUPS.sidebar },
+  canvas: { title: "Canvas", group: GROUPS.editors },
+  outline: { title: "Outline", group: GROUPS.editors },
+  references: { title: "References", group: GROUPS.panels },
+  sources: { title: "Sources", group: GROUPS.panels },
+  checks: { title: "Checks", group: GROUPS.bottom },
+  notes: { title: "Notes", group: GROUPS.bottom },
+  exports: { title: "Exports", group: GROUPS.bottom },
+} as const;
+
+export type DeckPanel = keyof typeof DECK_PANELS;
+
+/**
+ * Shows a deck panel, adding it to its default group first when the layout does not have it
+ * (layouts saved before the deck panels existed, or a panel the user closed). Panels of both
+ * workbenches can then be dragged anywhere: a slide beside the figure it shows, the editor
+ * beside the slide it feeds.
+ */
+export function openDeckPanel(id: DeckPanel, activate = true): void {
+  if (!api) return;
+  const existing = api.getPanel(id);
+  if (existing) {
+    if (activate) showPanel(id);
+    return;
+  }
+  const def = DECK_PANELS[id];
+  let group = api.getGroup(def.group);
+  if (!group) group = api.addGroup({ id: def.group, direction: def.group === GROUPS.sidebar ? "left" : def.group === GROUPS.editors ? "right" : "below" });
+  if (!group.api.isVisible) group.api.setVisible(true);
+  api.addPanel({ id, component: id, tabComponent: "closable", title: def.title, position: { referenceGroup: def.group }, inactive: !activate });
+}
+
 export function closePanel(id: string): void {
   api?.getPanel(id)?.api.close();
 }

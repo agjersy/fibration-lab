@@ -19,6 +19,15 @@ import { ProjectView } from "../sidebar/ProjectView";
 import { RunsView } from "../sidebar/RunsView";
 import { ScriptsView } from "../sidebar/ScriptsView";
 import { ErrorBoundary } from "../common/ErrorBoundary";
+import { CanvasPanel } from "../deck/CanvasPanel";
+import { ChecksPanel } from "../deck/ChecksPanel";
+import { DecksView } from "../deck/DecksView";
+import { ExportsPanel } from "../deck/ExportsPanel";
+import { NotesPanel } from "../deck/NotesPanel";
+import { OutlinePanel } from "../deck/OutlinePanel";
+import { ReferencesPanel } from "../deck/ReferencesPanel";
+import { SlidesPanel } from "../deck/SlidesPanel";
+import { SourcesPanel } from "../deck/SourcesPanel";
 import { GROUPS, clearWorkbench, requestClosePanel, setWorkbench } from "./controller";
 
 type PanelComponent = React.FunctionComponent<IDockviewPanelProps>;
@@ -48,6 +57,16 @@ const components: Record<string, PanelComponent> = {
   figures: guarded("Figures", FiguresPanel),
   equations: guarded("Equations", EquationsPanel),
   packages: guarded("Packages", PackagesPanel),
+  // The deck workbench: the same dock, so panels of both can sit side by side.
+  decks: guarded("Decks", DecksView),
+  slides: guarded("Slides", SlidesPanel),
+  canvas: guarded("Canvas", CanvasPanel),
+  outline: guarded("Outline", OutlinePanel),
+  references: guarded("References", ReferencesPanel),
+  sources: guarded("Sources", SourcesPanel),
+  checks: guarded("Checks", ChecksPanel),
+  notes: guarded("Notes", NotesPanel),
+  exports: guarded("Exports", ExportsPanel),
 };
 
 function FixedTab(props: IDockviewPanelHeaderProps) {
@@ -79,6 +98,7 @@ export function buildDefaultLayout(api: DockviewApi): void {
   api.addPanel({ id: "scripts", component: "scripts", tabComponent: "fixed", title: "Scripts", position: { referenceGroup: GROUPS.sidebar }, inactive: true });
   api.addPanel({ id: "library", component: "library", tabComponent: "fixed", title: "Library", position: { referenceGroup: GROUPS.sidebar }, inactive: true });
   api.addPanel({ id: "runs", component: "runs", tabComponent: "fixed", title: "Runs", position: { referenceGroup: GROUPS.sidebar }, inactive: true });
+  api.addPanel({ id: "decks", component: "decks", tabComponent: "fixed", title: "Decks", position: { referenceGroup: GROUPS.sidebar }, inactive: true });
   const chat = api.addGroup({ id: GROUPS.chat, referenceGroup: GROUPS.editors, direction: "right" });
   api.addPanel({ id: "chat", component: "chat", tabComponent: "fixed", title: "Agent", position: { referenceGroup: GROUPS.chat } });
   const bottom = api.addGroup({ id: GROUPS.bottom, referenceGroup: GROUPS.editors, direction: "below" });

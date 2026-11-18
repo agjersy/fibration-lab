@@ -6,7 +6,8 @@ import type { KeyContext } from "../keymap";
 import { openTerminal, refreshIndex, runCurrentScript, saveBuffer } from "../state/actions";
 import { useSessions } from "../state/sessions";
 import { useUi } from "../state/ui";
-import { activeEditorPath, closableTabFocused, closeActiveTab, cycleTab, focusChatInput, showPanel, toggleDock } from "./workbench/controller";
+import { activeEditorPath, closableTabFocused, closeActiveTab, cycleTab, focusChatInput, openDeckPanel, showPanel, toggleDock } from "./workbench/controller";
+import type { DeckPanel } from "./workbench/controller";
 
 export function contextOf(target: EventTarget | null): KeyContext {
   const el = target instanceof Element ? target : null;
@@ -98,6 +99,22 @@ export function useAppCommands(): void {
       { id: "show_packages", title: "Show packages", category: "View", run: () => showPanel("packages") },
       { id: "show_diagnostics", title: "Show diagnostics", category: "View", run: () => showPanel("diagnostics") },
       { id: "show_run_output", title: "Show run output", category: "View", run: () => showPanel("runoutput") },
+      ...(["decks", "slides", "canvas", "outline", "references", "sources", "checks", "notes", "exports"] as DeckPanel[]).map((p) => ({
+        id: `show_deck_${p}`,
+        title: `Show ${p === "decks" ? "decks" : `deck ${p}`}`,
+        category: "Deck",
+        run: () => openDeckPanel(p),
+      })),
+      {
+        id: "new_deck",
+        title: "New deck",
+        category: "Deck",
+        run: () => {
+          if (!session()) return;
+          openDeckPanel("decks");
+          useUi.getState().setNewDeckOpen(true);
+        },
+      },
       { id: "new_session", title: "New session", category: "Session", run: () => useUi.getState().setNewSessionOpen(true) },
       { id: "settings", title: "Settings and policy", category: "Session", run: () => useUi.getState().setSettingsOpen(true) },
       { id: "theme_light", title: "Theme: light", category: "View", run: () => useUi.getState().setTheme("light") },

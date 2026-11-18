@@ -23,6 +23,8 @@ interface UiState {
   palette: PaletteMode;
   newSessionOpen: boolean;
   settingsOpen: boolean;
+  /** The "New deck" dialog of the active session. */
+  newDeckOpen: boolean;
   toasts: Toast[];
   /** The "unsaved changes" question currently shown, if any. */
   unsavedPrompt: UnsavedPrompt | null;
@@ -32,6 +34,7 @@ interface UiState {
   setPalette(mode: PaletteMode): void;
   setNewSessionOpen(open: boolean): void;
   setSettingsOpen(open: boolean): void;
+  setNewDeckOpen(open: boolean): void;
   toast(kind: Toast["kind"], text: string): void;
   dismissToast(id: number): void;
 }
@@ -53,6 +56,7 @@ export const useUi = create<UiState>((set, get) => ({
   palette: null,
   newSessionOpen: false,
   settingsOpen: false,
+  newDeckOpen: false,
   toasts: [],
   unsavedPrompt: null,
   askUnsaved: (title, message) =>
@@ -83,6 +87,7 @@ export const useUi = create<UiState>((set, get) => ({
   setPalette: (palette) => set({ palette }),
   setNewSessionOpen: (newSessionOpen) => set({ newSessionOpen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  setNewDeckOpen: (newDeckOpen) => set({ newDeckOpen }),
   toast: (kind, text) => {
     const id = ++toastId;
     set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));
