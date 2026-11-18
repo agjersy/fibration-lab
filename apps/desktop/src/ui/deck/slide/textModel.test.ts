@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TEMPLATE, demoSlides } from "../../../ipc/mock/deck/fixtures";
+import { TEMPLATE, demoSlides } from "../../../test/deck/fixtures";
 import { findLayout } from "../../../deck/model";
 import type { Text } from "../../../deck/types";
 import { bulletKind, canonicalText, domToText, mergeEdited, normalizeRuns, paragraphElement, shiftLevel, splitParagraph, textToHtml } from "./textModel";

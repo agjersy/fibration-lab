@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { OptionInfo, ScriptInfo } from "../../ipc";
-import { FIT_DECAY_PY } from "../../ipc/mock/fixtures";
-import { parseScript } from "../../ipc/mock/indexer";
+// What the real kernel's script index returns for e2e/fixture/scripts/fit_decay.py.
+import fitDecayIndex from "../../test/fit_decay.index.json";
 import { boolFlags, buildArgs, commandLine, defaultText, optionKind, pruneOverrides, shellQuote, splitShell } from "./runForm";
 
 function opt(over: Partial<OptionInfo> & { flags: string[]; dest: string }): OptionInfo {
@@ -153,8 +153,8 @@ describe("buildArgs", () => {
     expect(commandLine(s, args(s, { label: "run 3" }))).toBe("python scripts/s.py --label 'run 3'");
   });
 
-  it("handles the mock's fit_decay.py fixture end to end", () => {
-    const s = parseScript("scripts/fit_decay.py", FIT_DECAY_PY);
+  it("handles the kernel's index of the e2e fit_decay.py fixture end to end", () => {
+    const s = fitDecayIndex as ScriptInfo;
     expect(s.options.map((o) => [o.dest, optionKind(o), o.positional])).toEqual([
       ["input", "value", true],
       ["model", "value", false],

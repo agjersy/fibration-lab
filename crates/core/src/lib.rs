@@ -1,11 +1,12 @@
 //! analyst-core: sessions, agent loop, policy, providers, kernel client, targets, sync,
-//! checkpoints, tools, and the evaluation harness. See docs/PROTOCOL.md and docs/ARCHITECTURE.md.
+//! checkpoints, tools, and the command table of the desktop IPC contract. The evaluation harness
+//! is the `analyst-evals` crate. See docs/PROTOCOL.md and docs/ARCHITECTURE.md.
 
 pub mod agent;
 pub mod checkpoint;
+pub mod commands;
 pub mod config;
 pub mod egress;
-pub mod evals;
 pub mod init;
 pub mod kernel;
 pub mod migrate;

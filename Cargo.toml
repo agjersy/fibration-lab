@@ -11,7 +11,9 @@ members = [
     # Analysis workbench
     "crates/protocol",
     "crates/core",
+    "crates/evals",
     "crates/cli",
+    "crates/serve",
     "apps/desktop/src-tauri",
     # Deck workbench: analyst-deck-protocol and analyst-deck (library crates used by the core)
     "present/crates/protocol",

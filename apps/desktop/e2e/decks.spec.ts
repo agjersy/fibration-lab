@@ -1,42 +1,20 @@
-// The deck workbench in the one window (mock backend): create a deck from a template, edit a
+// The deck workbench in the one window (real core): create a deck from a template, edit a
 // slide in place, reorder slides, place a run's figure on a slide and follow its citation to the
 // run, accept a slide proposal in the one chat, export.
-import { expect, test } from "@playwright/test";
 import type { Locator, Page } from "@playwright/test";
-
-const REPO = "/home/user/projects/beam-sim";
-const TEMPLATE = "/home/user/templates/corp.potx";
-
-async function createSession(page: Page) {
-  await page.goto("/");
-  await expect(page.getByTestId("topbar")).toBeVisible();
-  await page.getByTestId("new-session").click();
-  await page.getByLabel("Repository").fill(REPO);
-  await page.getByLabel("Target").selectOption("local");
-  await page.getByLabel("Model").selectOption({ index: 1 });
-  await page.getByText("Initialize as an analysis repo").click();
-  await page.getByTestId("create-session").click();
-  const tab = page.getByTestId("session-tab").filter({ hasText: "beam-sim" });
-  await expect(tab.locator(".dot.ready")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId("workbench")).toBeVisible();
-}
-
-async function palette(page: Page, command: string) {
-  await page.keyboard.press("ControlOrMeta+Shift+P");
-  await page.getByLabel("Palette query").fill(command);
-  await page.getByTestId("palette").getByRole("option", { name: new RegExp(`^${command}`) }).first().click();
-}
+import { createSession, expect, expectNoErrors, palette, test, trackErrors } from "./harness";
+import type { Bridge } from "./harness";
 
 /** Creates a deck through the Decks view and its New deck dialog. */
-async function createDeck(page: Page, title = "Q3 Review") {
+async function createDeck(page: Page, bridge: Bridge, title = "Q3 Review") {
   await page.locator(".dv-tab", { hasText: "Decks" }).click();
   const view = page.getByTestId("decks-view");
   await view.getByTestId("new-deck").click();
   const dialog = page.getByRole("dialog", { name: "New deck" });
   await dialog.getByLabel("Title").fill(title);
-  await dialog.getByLabel("Template").fill(TEMPLATE);
+  await dialog.getByLabel("Template").fill(bridge.template);
   await dialog.getByTestId("create-deck").click();
-  await expect(dialog).toHaveCount(0);
+  await expect(dialog).toHaveCount(0, { timeout: 30_000 });
   // The new deck opens in the Slides rail (beside the Decks view in the sidebar) and the Canvas.
   await expect(page.getByTestId("slides-view")).toContainText(title);
   await expect(page.getByTestId("canvas")).toBeVisible();
@@ -67,25 +45,13 @@ function railTitles(page: Page): Locator {
   return page.getByTestId("slides-view").getByTestId("rail-item");
 }
 
-test.describe("deck workbench (mock backend)", () => {
-  test.beforeEach(async ({ page }) => {
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(e.message));
-    page.on("console", (m) => {
-      if (m.type() === "error") errors.push(m.text());
-    });
-    (page as Page & { __errors?: string[] }).__errors = errors;
-  });
+test.describe("deck workbench (real core)", () => {
+  test.beforeEach(({ page }) => trackErrors(page));
+  test.afterEach(({ page }) => expectNoErrors(page));
 
-  test.afterEach(async ({ page }) => {
-    const errors = (page as Page & { __errors?: string[] }).__errors ?? [];
-    expect(errors, "no console errors or page errors").toEqual([]);
-    expect(await page.evaluate(() => (globalThis as unknown as { __analystErrors?: string[] }).__analystErrors), "window.__analystErrors").toEqual([]);
-  });
-
-  test("create a deck from a template and edit a slide title in place", async ({ page }) => {
-    await createSession(page);
-    await createDeck(page);
+  test("create a deck from a template and edit a slide title in place", async ({ page, bridge }) => {
+    await createSession(page, bridge);
+    await createDeck(page, bridge);
     await page.locator(".dv-tab", { hasText: "Decks" }).click();
     await expect(page.getByTestId("decks-view").getByTestId("deck-item")).toContainText("decks/q3-review");
     await page.locator(".dv-tab", { hasText: "Slides" }).click();
@@ -99,9 +65,9 @@ test.describe("deck workbench (mock backend)", () => {
     await expect(page.locator(".dv-tab", { hasText: "Project" })).toBeVisible();
   });
 
-  test("reorder slides by dragging in the rail", async ({ page }) => {
-    await createSession(page);
-    await createDeck(page);
+  test("reorder slides by dragging in the rail", async ({ page, bridge }) => {
+    await createSession(page, bridge);
+    await createDeck(page, bridge);
     await addSlide(page, "First");
     await addSlide(page, "Second");
     await addSlide(page, "Third");
@@ -117,18 +83,18 @@ test.describe("deck workbench (mock backend)", () => {
     await expect(railTitles(page).nth(2)).toHaveAttribute("aria-label", "Slide 3: Second");
   });
 
-  test("place a run's figure on a slide and follow its citation to the run", async ({ page }) => {
-    await createSession(page);
+  test("place a run's figure on a slide and follow its citation to the run", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     // A run that writes a figure.
     await page.locator(".dv-tab", { hasText: "Scripts" }).click();
     const card = page.locator('[data-script="decay_sim"]');
     await card.locator(".script-header").click();
     await card.getByLabel("--tau", { exact: false }).fill("1.8");
     await card.getByRole("button", { name: "Run", exact: true }).click();
-    await expect(page.getByTestId("run-output")).toContainText("exit 0", { timeout: 15_000 });
+    await expect(page.getByTestId("run-output")).toContainText("exit 0", { timeout: 30_000 });
     await expect(page.getByTestId("figure-frame").locator("img")).toBeVisible();
 
-    await createDeck(page);
+    await createDeck(page, bridge);
     await addSlide(page, "Decay constant recovered");
     // Figures panel: a direct user action places the figure on the selected slide.
     await page.locator(".dv-tab", { hasText: "Figures" }).click();
@@ -147,17 +113,17 @@ test.describe("deck workbench (mock backend)", () => {
     const runId = await badge.getAttribute("data-run");
     await expect(page.locator(`[data-run="${runId}"].list-item.selected`)).toBeVisible();
     await expect(page.getByTestId("figures-panel")).toBeVisible();
-    await expect(page.getByTestId("figure-tab").filter({ hasText: "decay-simulation" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("figure-tab").filter({ hasText: "decay" })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByTestId("run-output")).toContainText("decay_sim.py");
     await expect(page.getByTestId("run-output")).toContainText("--tau 1.8");
     // The outline lists the run among the slide's sources.
     await palette(page, "Show deck outline");
-    await expect(page.getByTestId("outline-row").first()).toContainText("run decay-simulation.png");
+    await expect(page.getByTestId("outline-row").first()).toContainText("run decay.png");
   });
 
-  test("accept a slide proposal in the one chat", async ({ page }) => {
-    await createSession(page);
-    await createDeck(page);
+  test("accept a slide proposal in the one chat", async ({ page, bridge }) => {
+    await createSession(page, bridge);
+    await createDeck(page, bridge);
     await addSlide(page, "Results");
     const chat = page.getByTestId("chat");
     const modes = chat.getByTestId("mode-select");
@@ -178,9 +144,9 @@ test.describe("deck workbench (mock backend)", () => {
     await expect(chat.getByTestId("summary-card")).toBeVisible({ timeout: 15_000 });
   });
 
-  test("export the deck", async ({ page }) => {
-    await createSession(page);
-    await createDeck(page);
+  test("export the deck", async ({ page, bridge }) => {
+    await createSession(page, bridge);
+    await createDeck(page, bridge);
     await addSlide(page, "Results");
     await palette(page, "Show deck exports");
     const exports = page.getByTestId("exports-panel");

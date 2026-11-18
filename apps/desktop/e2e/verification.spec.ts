@@ -1,30 +1,7 @@
-// Human verification in the one window (mock backend): mark an equation verified, see a code
+// Human verification in the one window (real core): mark an equation verified, see a code
 // change reset it, and get the export warning for a deck that depends on unverified items.
-import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-
-const REPO = "/home/user/projects/beam-sim";
-const TEMPLATE = "/home/user/templates/corp.potx";
-
-async function createSession(page: Page) {
-  await page.goto("/");
-  await expect(page.getByTestId("topbar")).toBeVisible();
-  await page.getByTestId("new-session").click();
-  await page.getByLabel("Repository").fill(REPO);
-  await page.getByLabel("Target").selectOption("local");
-  await page.getByLabel("Model").selectOption({ index: 1 });
-  await page.getByText("Initialize as an analysis repo").click();
-  await page.getByTestId("create-session").click();
-  const tab = page.getByTestId("session-tab").filter({ hasText: "beam-sim" });
-  await expect(tab.locator(".dot.ready")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId("workbench")).toBeVisible();
-}
-
-async function palette(page: Page, command: string) {
-  await page.keyboard.press("ControlOrMeta+Shift+P");
-  await page.getByLabel("Palette query").fill(command);
-  await page.getByTestId("palette").getByRole("option", { name: new RegExp(`^${command}`) }).first().click();
-}
+import { createSession, expect, expectNoErrors, palette, test, trackErrors } from "./harness";
 
 async function openModels(page: Page) {
   await page.keyboard.press("ControlOrMeta+p");
@@ -42,23 +19,12 @@ async function showEquations(page: Page) {
   return row;
 }
 
-test.describe("verification (mock backend)", () => {
-  test.beforeEach(async ({ page }) => {
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(e.message));
-    page.on("console", (m) => {
-      if (m.type() === "error") errors.push(m.text());
-    });
-    (page as Page & { __errors?: string[] }).__errors = errors;
-  });
+test.describe("verification (real core)", () => {
+  test.beforeEach(({ page }) => trackErrors(page));
+  test.afterEach(({ page }) => expectNoErrors(page));
 
-  test.afterEach(async ({ page }) => {
-    const errors = (page as Page & { __errors?: string[] }).__errors ?? [];
-    expect(errors, "no console errors or page errors").toEqual([]);
-  });
-
-  test("mark an equation verified; a code change resets it to unverified", async ({ page }) => {
-    await createSession(page);
+  test("mark an equation verified; a code change resets it to unverified", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     const editor = await openModels(page);
     const row = await showEquations(page);
     await expect(row.getByTestId("equation-verify-state")).toHaveText("unverified");
@@ -86,15 +52,15 @@ test.describe("verification (mock backend)", () => {
     await expect(queue).toContainText("1 verified");
   });
 
-  test("exporting a deck that depends on unverified items asks first", async ({ page }) => {
-    await createSession(page);
+  test("exporting a deck that depends on unverified items asks first", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     await openModels(page);
     // A deck with a slide.
     await page.locator(".dv-tab", { hasText: "Decks" }).click();
     await page.getByTestId("decks-view").getByTestId("new-deck").click();
     const dialog = page.getByRole("dialog", { name: "New deck" });
     await dialog.getByLabel("Title").fill("Q3 Review");
-    await dialog.getByLabel("Template").fill(TEMPLATE);
+    await dialog.getByLabel("Template").fill(bridge.template);
     await dialog.getByTestId("create-deck").click();
     await expect(page.getByTestId("canvas")).toBeVisible();
     const rail = page.getByTestId("slides-view");
@@ -106,7 +72,7 @@ test.describe("verification (mock backend)", () => {
     await row.getByTestId("equation-place").click();
     const canvas = page.getByTestId("slide-canvas");
     await expect(canvas.getByTestId("slide-equation")).toBeVisible();
-    await expect(canvas.getByTestId("equation-badge")).toHaveText("declared ✓");
+    await expect(canvas.getByTestId("equation-badge")).toHaveText("derived");
     await expect(canvas.getByTestId("slide-verify-badge")).toHaveAttribute("data-state", "unverified");
     await canvas.getByTestId("equation-badge").click();
     await expect(page.getByTestId("equation-single_exp")).toHaveAttribute("data-focused", "true");
@@ -145,14 +111,14 @@ test.describe("verification (mock backend)", () => {
     await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
   });
 
-  test("refresh a stale equation from the analysis through a normal proposal", async ({ page }) => {
-    await createSession(page);
+  test("refresh a stale equation from the analysis through a normal proposal", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     const editor = await openModels(page);
     await page.locator(".dv-tab", { hasText: "Decks" }).click();
     await page.getByTestId("decks-view").getByTestId("new-deck").click();
     const dialog = page.getByRole("dialog", { name: "New deck" });
     await dialog.getByLabel("Title").fill("Q3 Review");
-    await dialog.getByLabel("Template").fill(TEMPLATE);
+    await dialog.getByLabel("Template").fill(bridge.template);
     await dialog.getByTestId("create-deck").click();
     const rail = page.getByTestId("slides-view");
     await rail.getByTestId("add-slide").click();

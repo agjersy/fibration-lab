@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Q3_COMPUTED, Q3_TABLE, demoSlides } from "../../../ipc/mock/deck/fixtures";
+import { Q3_COMPUTED, Q3_TABLE, demoSlides } from "../../../test/deck/fixtures";
 import type { Chart } from "../../../deck/types";
 import { chartData, chartTable, formatNumber, niceScale, pieAngles, project, stack } from "./chartModel";
 

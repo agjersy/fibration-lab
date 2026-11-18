@@ -1,0 +1,23 @@
+[package]
+name = "analyst-evals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Evaluation harness for analysis and deck tasks (PROTOCOL 8 and 9), used by `analyst eval`. Not linked by the desktop app."
+
+[dependencies]
+analyst-core = { path = "../core" }
+analyst-protocol = { path = "../protocol" }
+analyst-deck = { path = "../../present/crates/core" }
+analyst-deck-protocol = { path = "../../present/crates/protocol" }
+wb-providers = { path = "../wb-providers" }
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+regex.workspace = true
+glob.workspace = true
+walkdir.workspace = true
+tempfile.workspace = true

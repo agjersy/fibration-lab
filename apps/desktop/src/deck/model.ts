@@ -1,5 +1,5 @@
 // Pure helpers over the deck document (PROTOCOL 2) and the template description (PROTOCOL 3), shared
-// by the stores, the views, the preview renderer and the mock backend.
+// by the stores, the views and the preview renderer.
 import type { Deck, LayoutInfo, Paragraph, PlaceholderContent, PlaceholderInfo, Run, Slide, TemplateDescription, Text } from "./types";
 
 export function runsText(runs: Run[]): string {

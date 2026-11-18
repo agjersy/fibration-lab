@@ -1,0 +1,136 @@
+{
+  "path": "scripts/fit_decay.py",
+  "name": "fit_decay",
+  "description": "Fit a decay model to measured data.",
+  "has_main": true,
+  "has_main_guard": true,
+  "options": [
+    {
+      "flags": [
+        "input"
+      ],
+      "dest": "input",
+      "type": null,
+      "default": null,
+      "help": "CSV file with t,y columns",
+      "required": true,
+      "choices": null,
+      "action": null,
+      "nargs": null,
+      "const": null,
+      "positional": true
+    },
+    {
+      "flags": [
+        "--model"
+      ],
+      "dest": "model",
+      "type": null,
+      "default": "single",
+      "help": "model to fit",
+      "required": false,
+      "choices": [
+        "single",
+        "double"
+      ],
+      "action": null,
+      "nargs": null,
+      "const": null,
+      "positional": false
+    },
+    {
+      "flags": [
+        "--label"
+      ],
+      "dest": "label",
+      "type": null,
+      "default": null,
+      "help": "label written into the results",
+      "required": true,
+      "choices": null,
+      "action": null,
+      "nargs": null,
+      "const": null,
+      "positional": false
+    },
+    {
+      "flags": [
+        "--bounds"
+      ],
+      "dest": "bounds",
+      "type": "float",
+      "default": [
+        0.1,
+        10.0
+      ],
+      "help": "lower and upper bound for tau",
+      "required": false,
+      "choices": null,
+      "action": null,
+      "nargs": 2,
+      "const": null,
+      "positional": false
+    },
+    {
+      "flags": [
+        "--no-plot"
+      ],
+      "dest": "plot",
+      "type": null,
+      "default": true,
+      "help": "skip the figure",
+      "required": false,
+      "choices": null,
+      "action": "store_false",
+      "nargs": null,
+      "const": null,
+      "positional": false
+    },
+    {
+      "flags": [
+        "--log-scale"
+      ],
+      "dest": "log_scale",
+      "type": null,
+      "default": false,
+      "help": "logarithmic y axis",
+      "required": false,
+      "choices": null,
+      "action": "store_true",
+      "nargs": null,
+      "const": null,
+      "positional": false
+    },
+    {
+      "flags": [
+        "--weights"
+      ],
+      "dest": "weights",
+      "type": null,
+      "default": true,
+      "help": "weight points by their uncertainty",
+      "required": false,
+      "choices": null,
+      "action": "argparse.BooleanOptionalAction",
+      "nargs": null,
+      "const": null,
+      "positional": false
+    },
+    {
+      "flags": [
+        "-v",
+        "--verbose"
+      ],
+      "dest": "verbose",
+      "type": null,
+      "default": 0,
+      "help": "more logging",
+      "required": false,
+      "choices": null,
+      "action": "count",
+      "nargs": null,
+      "const": null,
+      "positional": false
+    }
+  ]
+}

@@ -1,9 +1,9 @@
 """``eq.extract`` and ``eq.check`` (PROTOCOL.md 1.3, section 3, and section 9).
 
 The kernel process never imports SymPy and never evaluates repository text. Parsing of
-``Math:`` sections, tier A derivation, simplification, and rendering happen in the equation
-worker (``_eqworker`` running ``eqcore``), a subprocess of the tooling interpreter that is
-killed when a request exceeds its budget. ``eq.check`` evaluates both the expression and
+``Math:`` sections, tier A derivation, simplification, and rendering happen in the kernel's
+helper process (``helper.Helper`` running ``eqcore``), which is killed when a request exceeds
+its budget. ``eq.check`` evaluates both the expression and
 the real function in the sandboxed session interpreter; the expression travels there as a
 small JSON tree interpreted by a closed set of operations, not as code.
 """
@@ -15,209 +15,48 @@ import logging
 import math
 import os
 import random
-import select
 import signal
 import subprocess
-import sys
 import textwrap
 import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from .astutil import FuncDef, iter_functions, module_name, parse_file, read_source
 from .errors import SCRIPT_NOT_FOUND, RpcError, invalid_params
+from .helper import Helper
 from .paths import rel_to_root, resolve_in_root
 from .sandbox import SandboxSpec, rlimit_prologue, wrap
 
 log = logging.getLogger("analyst_kernel.equations")
 
-ANALYZE_BUDGET_S = 10.0  # per function, enforced by killing the worker
-WORKER_START_S = 60.0  # importing SymPy on a cold disk
 DEFAULT_TRIALS = 32
 DEFAULT_TOL = 1e-6
 ZERO_EPS = 1e-300
 DEFAULT_RANGE = (0.1, 10.0)
 CHECK_TIMEOUT_S = 60.0
 
-_BOOT = "import sys; sys.path.insert(0, sys.argv[1]); from analyst_kernel._eqworker import main; sys.exit(main())"
+# The equation analysis runs in the kernel's helper process; ``EqWorker`` is its client.
+EqWorker = Helper
 
-
-# Analyzed once by ``EqWorker.prewarm``: a declared and a derived expression with a function call.
-_WARMUP_SOURCE = (
-    "def warmup(t, a, tau):\n"
-    '    """Decay.\n\n    Math:\n        y = a * exp(-t / tau)\n    """\n'
-    "    return a * np.exp(-t / tau) + np.sqrt(a) ** 2\n"
-)
-
-
-class EqWorker:
-    """Client for the equation worker subprocess. One request at a time; restarted on demand."""
-
-    def __init__(self, python: str | None = None, budget_s: float = ANALYZE_BUDGET_S) -> None:
-        self.python = python or sys.executable
-        self.budget_s = budget_s
-        self._proc: subprocess.Popen | None = None
-        self._buf = b""
-        self._lock = threading.Lock()
-        self._seq = 0
-        self._closed = False
-
-    # ---- process management ---------------------------------------------------
-    def _spawn(self) -> subprocess.Popen:
-        pkg_parent = str(Path(__file__).resolve().parent.parent)
-        env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "LANG", "TMPDIR", "SYSTEMROOT")}
-        proc = subprocess.Popen(
-            [self.python, "-I", "-c", _BOOT, pkg_parent],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env=env,
-            start_new_session=True,
-        )
-        self._proc = proc
-        self._buf = b""
-        ready = self._read_line(time.monotonic() + WORKER_START_S)
-        if ready is None or not ready.get("ready"):
-            self._kill()
-            raise RuntimeError("equation worker did not start (is sympy installed in the tooling environment?)")
-        return proc
-
-    def _kill(self) -> None:
-        proc, self._proc = self._proc, None
-        self._buf = b""
-        if proc is None:
-            return
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-        for stream in (proc.stdin, proc.stdout):
-            try:
-                if stream is not None:
-                    stream.close()
-            except OSError:
-                pass
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:  # pragma: no cover
-            pass
-
-    def _read_line(self, deadline: float) -> dict[str, Any] | None:
-        """One JSON line from the worker, or None on timeout or EOF."""
-        proc = self._proc
-        if proc is None or proc.stdout is None:
-            return None
-        fd = proc.stdout.fileno()
-        while b"\n" not in self._buf:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            ready, _, _ = select.select([fd], [], [], min(remaining, 0.5))
-            if not ready:
-                continue
-            try:
-                data = os.read(fd, 65536)
-            except OSError:
-                return None
-            if not data:
-                return None
-            self._buf += data
-        line, _, self._buf = self._buf.partition(b"\n")
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            return None
-        return obj if isinstance(obj, dict) else None
-
-    def prewarm(self) -> bool:
-        """Start the worker now (it imports SymPy) so the first request does not wait for it.
-
-        Safe to call from a background thread: a request that arrives meanwhile waits for
-        this start rather than beginning a second one. After the start one small function is
-        analyzed, which loads the parts of SymPy that are imported lazily (simplification,
-        the LaTeX printer). True when a worker is ready.
-        """
-        with self._lock:
-            if self._closed:
-                return False
-            if self._proc is None or self._proc.poll() is not None:
-                try:
-                    self._spawn()
-                except (OSError, RuntimeError, ValueError):
-                    self._kill()
-                    return False
-                if self._closed:  # closed while starting: do not leave a worker behind
-                    self._kill()
-                    return False
-        return "error" not in self.analyze(_WARMUP_SOURCE, 0, False)
-
-    # ---- requests -----------------------------------------------------------------
-    def analyze(self, source: str, line_offset: int, is_method: bool) -> dict[str, Any]:
-        """Analysis of one function; ``{"error": reason}`` when the worker failed or timed out."""
-        with self._lock:
-            if self._closed:
-                return {"error": "kernel is shutting down"}
-            try:
-                proc = self._proc if self._proc is not None and self._proc.poll() is None else self._spawn()
-                self._seq += 1
-                req_id = self._seq
-                payload = {"id": req_id, "source": source, "line_offset": line_offset, "is_method": is_method}
-                assert proc.stdin is not None
-                proc.stdin.write((json.dumps(payload) + "\n").encode("utf-8"))
-                proc.stdin.flush()
-            except (OSError, RuntimeError, ValueError) as exc:
-                self._kill()
-                return {"error": f"equation worker unavailable: {exc}"}
-            deadline = time.monotonic() + self.budget_s
-            while True:
-                res = self._read_line(deadline)
-                if res is None:
-                    timed_out = time.monotonic() >= deadline
-                    self._kill()  # no thread or process keeps computing after this
-                    if timed_out:
-                        return {"error": f"equation analysis exceeded {self.budget_s:g}s and was stopped"}
-                    return {"error": "equation worker exited while analyzing this function"}
-                if res.get("id") == req_id:
-                    break
-            if "error" in res:
-                return {"error": str(res["error"])}
-            result = res.get("result")
-            return result if isinstance(result, dict) else {"error": "equation worker protocol error"}
-
-    def close(self) -> None:
-        self._closed = True
-        # Do not wait for a request in flight: killing the worker makes it return.
-        proc = self._proc
-        if proc is not None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
-        with self._lock:
-            self._kill()
-
-
-_default_worker: EqWorker | None = None
+_default_worker: Helper | None = None
 _default_lock = threading.Lock()
 
 
-def default_worker() -> EqWorker:
+def default_worker() -> Helper:
+    """An unsandboxed helper in this interpreter, for ``eq_extract`` outside a kernel (tests)."""
     global _default_worker
     with _default_lock:
         if _default_worker is None or _default_worker._closed:
-            _default_worker = EqWorker()
+            _default_worker = Helper()
         return _default_worker
 
 
 # ---- extraction ----------------------------------------------------------------
 
 
-def _analyze_function(worker: EqWorker, f: FuncDef, source: str) -> dict[str, Any]:
+def _analyze_function(worker: Helper, f: FuncDef, source: str) -> dict[str, Any]:
     """Equation fields plus the private keys ``_params``, ``_declared_error``, ``_check_tree``, ``_varargs``."""
     import ast
 
@@ -254,7 +93,7 @@ def _analyze_function(worker: EqWorker, f: FuncDef, source: str) -> dict[str, An
     return out
 
 
-def extract_file(root: Path, path: str, function: str | None = None, worker: EqWorker | None = None) -> list[dict[str, Any]]:
+def extract_file(root: Path, path: str, function: str | None = None, worker: Helper | None = None) -> list[dict[str, Any]]:
     file = resolve_in_root(root, path)
     if not file.is_file() or file.suffix != ".py":
         raise RpcError(SCRIPT_NOT_FOUND, f"{path} is not an existing Python file")
@@ -275,7 +114,7 @@ def public(eq: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in eq.items() if not k.startswith("_")}
 
 
-def eq_extract(root: Path, path: str, function: str | None = None, worker: EqWorker | None = None) -> list[dict[str, Any]]:
+def eq_extract(root: Path, path: str, function: str | None = None, worker: Helper | None = None) -> list[dict[str, Any]]:
     if not isinstance(path, str) or not path:
         raise invalid_params("path must be a non-empty string")
     return [public(e) for e in extract_file(root, path, function, worker)]
@@ -456,7 +295,7 @@ def eq_check(
     trials: int | None = None,
     tol: float | None = None,
     ranges: dict[str, Any] | None = None,
-    worker: EqWorker | None = None,
+    worker: Helper | None = None,
 ) -> dict[str, Any]:
     if not isinstance(function, str) or not function:
         raise invalid_params("function must be a non-empty string")

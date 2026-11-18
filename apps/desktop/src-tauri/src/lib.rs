@@ -77,111 +77,6 @@ pub fn workbench_from_env() -> anyhow::Result<Arc<Workbench>> {
     Ok(Arc::new(wb))
 }
 
-/// The command names registered in `generate_handler!`, kept in one place so a test can check
-/// them against docs/IPC.md sections 4, 7, and 9.
-pub const COMMANDS: &[&str] = &[
-    "app_info",
-    "sessions_list",
-    "session_create",
-    "session_open",
-    "session_close",
-    "session_info",
-    "session_rename",
-    "session_subscribe",
-    "session_unsubscribe",
-    "session_set_target",
-    "session_set_policy",
-    "layout_get",
-    "layout_save",
-    "fs_tree",
-    "fs_read",
-    "fs_read_binary",
-    "fs_write",
-    "fs_create",
-    "fs_delete",
-    "fs_rename",
-    "fs_search",
-    "index_get",
-    "check_run",
-    "run_start",
-    "run_cancel",
-    "runs_list",
-    "run_get",
-    "out_list",
-    "out_read",
-    "figures_list",
-    "figure_data",
-    "eq_extract",
-    "eq_check",
-    "env_packages",
-    "env_add",
-    "env_remove",
-    "env_sync",
-    "conversation_new",
-    "conversation_select",
-    "conversation_transcript",
-    "chat_send",
-    "chat_cancel",
-    "chat_set_mode",
-    "chat_set_model",
-    "proposal_respond",
-    "models_list",
-    "model_probe",
-    "provider_keys_status",
-    "provider_key_set",
-    "targets_list",
-    "target_bootstrap",
-    "terminal_open",
-    "terminal_write",
-    "terminal_resize",
-    "terminal_close",
-    "dialog_pick_directory",
-    "dialog_pick_files",
-    "decks_list",
-    "deck_create",
-    "deck_open",
-    "template_thumbnails",
-    "template_replace",
-    "deck_get",
-    "slide_update",
-    "slide_create",
-    "slide_delete",
-    "slide_duplicate",
-    "slide_move",
-    "slide_lock",
-    "slide_place_figure",
-    "slide_place_equation",
-    "slide_preview_png",
-    "chart_compute",
-    "deck_code_read",
-    "deck_code_write",
-    "deck_build",
-    "deck_switch_mode",
-    "render_fidelity",
-    "deck_check_run",
-    "refs_list",
-    "refs_add",
-    "refs_remove",
-    "refs_remove_unused",
-    "refs_search",
-    "source_passage",
-    "assets_list",
-    "asset_add",
-    "exports_list",
-    "export_run",
-    "export_reveal",
-    "export_open",
-    "history_list",
-    "history_restore",
-    "history_revert_turn",
-    "artifacts_list",
-    "verification_list",
-    "verification_set",
-    "deck_verification_gaps",
-    "slide_refresh",
-    "deck_refresh_stale",
-];
-
 /// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see
 /// `bundle.resources` in `tauri.conf.json`), when it is there.
 fn bundled_kernel_source(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
@@ -242,9 +137,39 @@ pub fn build_app_menu<R: tauri::Runtime>(
     Menu::with_items(app, &[&app_menu, &edit, &window])
 }
 
+/// The invoke handler: the two subscription commands are the shell's own (a channel per
+/// window); every other command is a row of the one command table,
+/// `analyst_core::commands::dispatch`, which the development bridge (`analyst-serve`) calls too.
+fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    use analyst_core::commands::{dispatch, COMMANDS, TRANSPORT_COMMANDS};
+    let transport: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> =
+        Box::new(tauri::generate_handler![
+            commands::session_subscribe,
+            commands::session_unsubscribe
+        ]);
+    move |invoke| {
+        let cmd = invoke.message.command().to_string();
+        if TRANSPORT_COMMANDS.contains(&cmd.as_str()) || !COMMANDS.contains(&cmd.as_str()) {
+            return transport(invoke);
+        }
+        let args = match invoke.message.payload() {
+            tauri::ipc::InvokeBody::Json(v) => v.clone(),
+            tauri::ipc::InvokeBody::Raw(_) => serde_json::Value::Null,
+        };
+        let app = invoke.message.webview().app_handle().clone();
+        invoke.resolver.respond_async(async move {
+            let workbench = app.state::<AppState>().workbench.clone();
+            let host = commands::DesktopHost { app };
+            dispatch(&workbench, &host, &cmd, args)
+                .await
+                .map_err(|e| tauri::ipc::InvokeError(serde_json::to_value(e).unwrap_or_default()))
+        });
+        true
+    }
+}
+
 /// Configure and run the app.
 pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
-    use commands::*;
     let state = AppState::new(workbench.clone());
     let shutdown_wb = workbench.clone();
     let setup_wb = workbench.clone();
@@ -279,108 +204,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            app_info,
-            sessions_list,
-            session_create,
-            session_open,
-            session_close,
-            session_info,
-            session_rename,
-            session_subscribe,
-            session_unsubscribe,
-            session_set_target,
-            session_set_policy,
-            layout_get,
-            layout_save,
-            fs_tree,
-            fs_read,
-            fs_read_binary,
-            fs_write,
-            fs_create,
-            fs_delete,
-            fs_rename,
-            fs_search,
-            index_get,
-            check_run,
-            run_start,
-            run_cancel,
-            runs_list,
-            run_get,
-            out_list,
-            out_read,
-            figures_list,
-            figure_data,
-            eq_extract,
-            eq_check,
-            env_packages,
-            env_add,
-            env_remove,
-            env_sync,
-            conversation_new,
-            conversation_select,
-            conversation_transcript,
-            chat_send,
-            chat_cancel,
-            chat_set_mode,
-            chat_set_model,
-            proposal_respond,
-            models_list,
-            model_probe,
-            provider_keys_status,
-            provider_key_set,
-            targets_list,
-            target_bootstrap,
-            terminal_open,
-            terminal_write,
-            terminal_resize,
-            terminal_close,
-            dialog_pick_directory,
-            dialog_pick_files,
-            decks_list,
-            deck_create,
-            deck_open,
-            template_thumbnails,
-            template_replace,
-            deck_get,
-            slide_update,
-            slide_create,
-            slide_delete,
-            slide_duplicate,
-            slide_move,
-            slide_lock,
-            slide_place_figure,
-            slide_place_equation,
-            slide_preview_png,
-            chart_compute,
-            deck_code_read,
-            deck_code_write,
-            deck_build,
-            deck_switch_mode,
-            render_fidelity,
-            deck_check_run,
-            refs_list,
-            refs_add,
-            refs_remove,
-            refs_remove_unused,
-            refs_search,
-            source_passage,
-            assets_list,
-            asset_add,
-            exports_list,
-            export_run,
-            export_reveal,
-            export_open,
-            history_list,
-            history_restore,
-            history_revert_turn,
-            artifacts_list,
-            verification_list,
-            verification_set,
-            deck_verification_gaps,
-            slide_refresh,
-            deck_refresh_stale,
-        ])
+        .invoke_handler(invoke_handler())
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("building the Tauri app: {e}"))?
         .run(move |_app, event| {
@@ -394,7 +218,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::COMMANDS;
+    use analyst_core::commands::COMMANDS;
 
     /// Copied from docs/IPC.md sections 4, 7, and 9 (the `command` columns).
     const IPC_MD_COMMANDS: &[&str] = &[
@@ -515,20 +339,5 @@ mod tests {
             );
         }
         assert_eq!(COMMANDS.len(), IPC_MD_COMMANDS.len());
-    }
-
-    /// The registered list must match the source of `generate_handler!` in this file.
-    #[test]
-    fn generate_handler_matches_command_list() {
-        let src = include_str!("lib.rs");
-        let start = src.find("generate_handler![").expect("handler list");
-        let end = src[start..].find("])").expect("handler list end") + start;
-        let body = &src[start + "generate_handler![".len()..end];
-        let names: Vec<&str> = body
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        assert_eq!(names, COMMANDS);
     }
 }

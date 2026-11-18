@@ -10,6 +10,9 @@ only through wb-net. This check is static and deliberately blunt:
    network client module and open no sockets.
 4. The desktop shells ship a content security policy with no remote or dev-server origin, and
    neither they nor the renderers pull in an updater or HTTP plugin.
+5. No crate except the development bridge (crates/serve, `analyst-serve`) depends on a
+   WebSocket or HTTP server crate, and neither the desktop app nor the CLI links the bridge or
+   a server crate (checked through Cargo.lock, transitively). The shipped app has no listener.
 
 It cannot see subprocesses: `uv` and `ssh` are covered by the rule that the core asks the gate
 before it spawns them (wb_net::Gate::authorize_package_index / authorize_ssh).
@@ -22,12 +25,20 @@ import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GATE = ROOT / "crates" / "wb-net"
+BRIDGE = ROOT / "crates" / "serve"
+BRIDGE_CRATE = "analyst-serve"
+SHIPPED = ("analyst-desktop", "analyst-cli")
 SKIP_DIRS = {"target", "node_modules", ".venv", "dist", ".git", "gen", "__pycache__"}
 
 HTTP_CRATES = {
     "reqwest", "hyper", "hyper-util", "ureq", "isahc", "curl", "surf", "attohttpc", "minreq",
     "awc", "tungstenite", "tokio-tungstenite", "rmcp", "octocrab", "ssh2", "russh", "async-ssh2-tokio",
     "tauri-plugin-http", "tauri-plugin-updater", "tauri-plugin-websocket", "tauri-plugin-upload",
+}  # fmt: skip
+SERVER_CRATES = {
+    "tokio-tungstenite", "tungstenite", "async-tungstenite", "axum", "axum-server", "hyper-server",
+    "warp", "actix", "actix-web", "actix-server", "actix-http", "tiny_http", "tide", "poem", "rocket",
+    "salvo", "gotham", "simple-websockets", "ws",
 }  # fmt: skip
 RUST_CLIENT = re.compile(
     r"reqwest::(blocking|Client\s*::\s*(new|builder)|ClientBuilder|get\s*\()|\bClientBuilder::new\s*\("
@@ -70,14 +81,46 @@ def dependency_tables(manifest: dict):
 
 def check_manifests(bad: list[str]) -> None:
     for manifest in walk(ROOT, "Cargo.toml"):
-        if GATE in manifest.parents or manifest.parent == ROOT:
+        if manifest.parent == ROOT:
             continue
+        in_gate = GATE in manifest.parents
+        in_bridge = manifest.parent == BRIDGE
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
         for section, table in dependency_tables(data):
             for name, spec in table.items():
                 real = spec.get("package", name) if isinstance(spec, dict) else name
-                if real in HTTP_CRATES:
+                if real in SERVER_CRATES:
+                    if not in_bridge:
+                        bad.append(f"{rel(manifest)}: [{section}] depends on server crate `{real}`; only crates/serve may")
+                elif real in HTTP_CRATES and not in_gate:
                     bad.append(f"{rel(manifest)}: [{section}] depends on `{real}`; only crates/wb-net may")
+                if real == BRIDGE_CRATE and not in_bridge:
+                    bad.append(f"{rel(manifest)}: [{section}] depends on the development bridge `{real}`")
+
+
+def check_lockfile(bad: list[str]) -> None:
+    """The shipped binaries must not link the bridge or any server crate, even transitively."""
+    lock = ROOT / "Cargo.lock"
+    if not lock.is_file():
+        bad.append("Cargo.lock is missing (update tools/check_egress.py)")
+        return
+    packages = tomllib.loads(lock.read_text(encoding="utf-8")).get("package", [])
+    deps: dict[str, set[str]] = {}
+    for p in packages:
+        deps.setdefault(p["name"], set()).update(d.split(" ")[0] for d in p.get("dependencies", []))
+    for root in SHIPPED:
+        if root not in deps:
+            bad.append(f"Cargo.lock: `{root}` not found (update tools/check_egress.py)")
+            continue
+        seen, todo = set(), [root]
+        while todo:
+            name = todo.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            todo.extend(deps.get(name, ()))
+        for forbidden in sorted(seen & (SERVER_CRATES | {BRIDGE_CRATE})):
+            bad.append(f"Cargo.lock: `{root}` links `{forbidden}`; the shipped app must have no listener")
 
 
 def check_rust(bad: list[str]) -> None:
@@ -137,13 +180,14 @@ def check_shells(bad: list[str]) -> None:
 def main() -> int:
     bad: list[str] = []
     check_manifests(bad)
+    check_lockfile(bad)
     check_rust(bad)
     check_python(bad)
     check_shells(bad)
     if bad:
         print("network egress outside the gate:\n  " + "\n  ".join(bad))
         return 1
-    print("ok: only crates/wb-net can reach the network")
+    print("ok: only crates/wb-net can reach the network; only crates/serve (never shipped) listens")
     return 0
 
 

@@ -322,3 +322,19 @@ def test_bwrap_snippet_and_eq_check(bwrap_kernel: Kernel, repo: Path):
     res = bwrap_kernel.call("eq.check", {"path": "analysis/models.py", "function": "double_exp"})
     assert res["status"] == "agree" and res["trials"] == 32
     assert bwrap_kernel.call("eq.check", {"path": "analysis/models.py", "function": "damped_cos"})["status"] == "mismatch"
+
+
+def test_bwrap_helper_outlives_the_thread_that_started_it(bwrap_kernel: Kernel):
+    """`bwrap --die-with-parent` kills a child when the thread that forked it exits; the helper is
+    often started by a short-lived thread (the prewarm, a request), and must survive it."""
+    import threading
+
+    started = threading.Thread(target=lambda: bwrap_kernel.call("exec.snippet", {"code": "kept = 7"}))
+    started.start()
+    started.join()
+    time.sleep(0.5)
+    assert bwrap_kernel.call("exec.snippet", {"code": "kept"})["value_repr"] == "7"
+    eqs = bwrap_kernel.call("eq.extract", {"path": "analysis/models.py"})["equations"]
+    assert any(e["tier"] == "derived" for e in eqs)
+    assert not any("helper" in (e.get("reason") or "") for e in eqs)
+    assert bwrap_kernel.call("exec.snippet", {"code": "kept"})["value_repr"] == "7"

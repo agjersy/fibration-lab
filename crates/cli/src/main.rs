@@ -1140,9 +1140,9 @@ async fn run_one(agent: &mut Agent, text: &str, turn: &str) -> bool {
 }
 
 async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
-    use analyst_core::evals::deck as deck_evals;
+    use analyst_evals::deck as deck_evals;
     // Analysis tasks and deck tasks can share a folder; a filter must match one of them.
-    let analysis = match analyst_core::evals::load_tasks(&o.tasks, o.task.as_deref()) {
+    let analysis = match analyst_evals::load_tasks(&o.tasks, o.task.as_deref()) {
         Ok(t) => t,
         Err(_) if o.task.is_some() => vec![],
         Err(e) => return Err(e),
@@ -1185,7 +1185,7 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
         "-m".into(),
         "analyst_kernel".into(),
     ];
-    let env = analyst_core::evals::EvalEnv {
+    let env = analyst_evals::EvalEnv {
         home: app.home.clone(),
         model: client,
         model_name: model_name.clone(),
@@ -1196,7 +1196,7 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
     };
     for t in &analysis {
         println!("task {} ...", t.file.task.name);
-        let r = analyst_core::evals::run_task(&env, t).await?;
+        let r = analyst_evals::run_task(&env, t).await?;
         report(&r);
         out.push(r);
     }
@@ -1210,10 +1210,10 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
         report(&r);
         out.push(r);
     }
-    let sc = analyst_core::evals::scorecard(&model_name, out);
-    let path = analyst_core::evals::write_scorecard(&o.results, &sc)?;
+    let sc = analyst_evals::scorecard(&model_name, out);
+    let path = analyst_evals::write_scorecard(&o.results, &sc)?;
     println!();
-    print!("{}", analyst_core::evals::markdown_table(&sc));
+    print!("{}", analyst_evals::markdown_table(&sc));
     println!("scorecard: {}", path.display());
     Ok(if sc.tasks.iter().all(|t| t.passed) {
         0

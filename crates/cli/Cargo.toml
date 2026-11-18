@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 analyst-core = { path = "../core" }
+analyst-evals = { path = "../evals" }
 analyst-protocol = { path = "../protocol" }
 wb-net = { path = "../wb-net" }
 wb-providers = { path = "../wb-providers" }

@@ -35,6 +35,10 @@ function chromiumExecutable(): string | undefined {
 
 const executablePath = chromiumExecutable();
 
+// The specs run the built bundle (`pnpm build` first) against the real core: e2e/harness.ts
+// starts one `analyst-serve` per worker (from `target/debug`, or ANALYST_BIN_DIR) with the
+// scripted model server, and resets the fixture projects before each test.
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 60_000,

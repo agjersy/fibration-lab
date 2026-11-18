@@ -46,7 +46,7 @@ export function hasTauri(): boolean {
 }
 
 export interface BackendHolder<B> {
-  /** Picks the injected backend, else the Tauri one inside the desktop shell, else the mock. */
+  /** Picks the injected backend, else the Tauri one inside the desktop shell, else the browser one (the development bridge). */
   getBackend(): Promise<B>;
   /** Synchronous accessor for code paths that run after bootstrap. */
   backend(): B;
@@ -57,7 +57,7 @@ export interface BackendHolder<B> {
  * Lazily selects a backend. `globalKey` names a `window` property that tests and the smoke harness may
  * set to inject one; the chosen instance is stored there too.
  */
-export function createBackendHolder<B>(options: { globalKey: string; loadTauri: () => Promise<B>; loadMock: () => Promise<B> }): BackendHolder<B> {
+export function createBackendHolder<B>(options: { globalKey: string; loadTauri: () => Promise<B>; loadBrowser: () => Promise<B> }): BackendHolder<B> {
   let instance: B | null = null;
   const globals = (): Record<string, unknown> => (typeof window === "undefined" ? {} : (window as unknown as Record<string, unknown>));
   return {
@@ -68,7 +68,7 @@ export function createBackendHolder<B>(options: { globalKey: string; loadTauri: 
         instance = injected;
         return instance;
       }
-      instance = hasTauri() ? await options.loadTauri() : await options.loadMock();
+      instance = hasTauri() ? await options.loadTauri() : await options.loadBrowser();
       globals()[options.globalKey] = instance;
       return instance;
     },

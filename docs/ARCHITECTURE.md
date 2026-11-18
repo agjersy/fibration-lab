@@ -95,12 +95,12 @@ Three tiers:
 
 **Decided: Tauri 2, built as a host-native desktop application for macOS and Linux.**
 
-What "native" means here: the app is a single native executable with native windows, menus, file dialogs, keyboard handling, multi-window support, and platform installers (`.app` and `.dmg`, `.deb` and `.rpm`). There is no browser process, no local HTTP server, and no dependency on a browser being installed. The interface itself is drawn by the operating system's embedded webview component (WKWebView on macOS, WebKitGTK on Linux), the same component system applications use to render rich content; all interface assets are bundled inside the executable and loaded from it. The Rust core owns every capability that touches the machine (files, processes, SSH, model calls); the interface layer only draws and forwards intent.
+What "native" means here: the app is a single native executable with native windows, menus, file dialogs, keyboard handling, multi-window support, and platform installers (`.app` and `.dmg`, `.deb` and `.rpm`). There is no browser process, no local HTTP server, and no dependency on a browser being installed. (Development and the browser tests use `analyst-serve`, a separate loopback WebSocket bridge to the same core that the shipped app never links; IPC.md section 11.) The interface itself is drawn by the operating system's embedded webview component (WKWebView on macOS, WebKitGTK on Linux), the same component system applications use to render rich content; all interface assets are bundled inside the executable and loaded from it. The Rust core owns every capability that touches the machine (files, processes, SSH, model calls); the interface layer only draws and forwards intent.
 
 | Layer | Choice | Notes |
 |---|---|---|
 | Shell | Tauri 2 | Native window, menus, dialogs, multi-window for undocked panels, sidecar binaries, platform installers (updates ship as new installers; there is no auto-updater). Interface drawn by the OS webview component: WKWebView on macOS, WebKitGTK on Linux. |
-| Core | Rust on `tokio` | All services in section 5. Compiled into the Tauri backend; also linked into a headless CLI for phase 0 and evals. |
+| Core | Rust on `tokio` | All services in section 5. Compiled into the Tauri backend; also linked into the headless CLI and the development bridge. The evaluation harness is its own crate (`analyst-evals`), linked by the CLI only. |
 | IPC | Tauri commands and per-session channels; types exported with `ts-rs` | Request/response as commands; streams (model tokens, run output, artifacts) as events on a per-session channel. The `protocol` crate's types produce the TypeScript bindings. The contract is [IPC.md](IPC.md). |
 | Model clients | SSE streaming over requests built by the network gate (`wb-net`), hand-written adapters | Two adapters are a few hundred lines each and keep full control over tool-call parsing. No provider SDKs. |
 | Storage | `toml`, JSONL | See section 7. |
@@ -191,14 +191,16 @@ The kernel is a long-lived process per session, launched from the tooling enviro
 | `run.cancel` | Terminate a run (process group). |
 | `out.list` | List a run's output directory on the target with sizes and types, without transferring anything. |
 | `out.read` | Return a bounded preview of a non-rendered artifact on the target (head of a CSV, shape and summary of an array, first rows of a table). The agent and the UI inspect data outputs through this call; the files themselves are not transferred. |
-| `exec.snippet` | Run a short snippet in a persistent REPL subprocess in the session venv, also sandboxed. For quick checks by the agent or the user. |
+| `exec.snippet` | Run a short snippet in the persistent REPL of the kernel's helper process (session venv, sandboxed). For quick checks by the agent or the user. |
 | `eq.extract` | Equation extraction for a file or function (section 5.11). |
 | `eq.check` | Numeric consistency check of a declared equation against a function. |
 | `contract.check` | Script contract checker (section 5.13). |
 | `contract.similar` | Near-duplicate function detection across scripts and the library (section 5.13). |
 | `lint.run` | Ruff diagnostics for a file. |
 
-The REPL subprocess for `exec.snippet` is the only stateful execution surface; script runs are always fresh processes so results are reproducible from the terminal. The kernel holds no state that is not on disk in the run directory, so a kernel restart is always safe.
+**Process model.** Per session: the kernel (with a request thread pool), one long-lived **helper process**, and per run a supervisor, the sandbox wrapper, and the script. The helper (`analyst_kernel/helper.py`) runs in the session interpreter under the run sandbox and serves two kinds of request over one JSON-line pipe protocol, one at a time on its main thread: `exec.snippet` (the persistent REPL) and the SymPy equation analysis behind `eq.extract` and `eq.check` (`eqcore`, imported from the tooling environment, whose package directories the sandbox makes readable). `kernel.hello` starts it and its SymPy import in the background (the prewarm). A request over its budget (30 s per snippet by default, 10 s per analyzed function) kills the helper, so nothing keeps computing; the next request starts a fresh one, and the REPL state is gone. `eq.check` evaluates the real function in a separate sandboxed process per check.
+
+The helper's REPL is the only stateful execution surface; script runs are always fresh processes so results are reproducible from the terminal. The kernel holds no state that is not on disk in the run directory, so a kernel restart is always safe.
 
 ### 5.5 Execution targets and remote execution over SSH (D5)
 
@@ -702,16 +704,19 @@ macOS and Linux are the supported platforms through phase 3, for both the deskto
 
 ```
 apps/desktop/
-  src-tauri/           Tauri shell: commands, events, window management (thin glue over crates/core)
-  src/                 React renderer
+  src-tauri/           Tauri shell: invoke handler over the core's command table, events, window management
+  src/                 React renderer (TauriBackend in the app, WsBackend on the dev bridge in a browser)
+  e2e/                 Playwright suite against the real core through analyst-serve
 crates/protocol/       IPC and kernel message types; TypeScript bindings generated with ts-rs
 crates/wb-*/           shared with the deck workbench: network gate, providers, policy, transcript, skills, sandbox
-crates/core/           sessions, agent loop, tools, targets, sync, storage (providers, policy, transcript and skills come from crates/wb-*)
+crates/core/           sessions, agent loop, tools, targets, sync, storage, the IPC command table (providers, policy, transcript and skills come from crates/wb-*)
+crates/evals/          analyst-evals: the analysis and deck evaluation harnesses (CLI only)
+crates/serve/          analyst-serve: development bridge, the core over a loopback WebSocket (never shipped)
 crates/cli/            the `analyst` CLI: analysis commands, `deck ...`, `chat`, `eval` (analysis and deck tasks)
 present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
 present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and UI types (ts-rs into apps/desktop/src/ipc/generated/deck)
 present/python/        the deck kernel (present_kernel) and the deck build SDK (present_sdk)
-python/kernel/         analyst_kernel (runs, index, equations, contract) and analyst_mpl
+python/kernel/         analyst_kernel (runs, index, equations, contract, the helper process) and analyst_mpl
 evals/                 task suite, graders, scorecard runner
 docs/
 ```

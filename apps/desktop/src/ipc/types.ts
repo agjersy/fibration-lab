@@ -1,6 +1,6 @@
-// IPC types are generated from crates/protocol by ts-rs (`cargo test -p analyst-protocol`).
-// docs/IPC.md is the contract; types.manual.ts mirrors it and types.compat.test.ts checks
-// that the generated export matches it in both directions.
+// IPC types are generated from crates/protocol by ts-rs (`cargo test -p analyst-protocol`);
+// they are the only copy of the contract's types on this side. The command table
+// (`commands.ts`) is checked against the Rust one by `analyst_core::commands`'s tests.
 export * from "./generated";
 export type { TurnSummaryView as TurnSummary } from "./generated";
 // Deck types (ts-rs export of analyst-deck-protocol, `cargo test -p analyst-deck-protocol`):
