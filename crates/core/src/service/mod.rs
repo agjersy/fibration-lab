@@ -4,6 +4,7 @@
 //! webview.
 
 pub mod agent_runner;
+pub mod artifacts;
 pub mod decks;
 pub mod error;
 pub mod events;

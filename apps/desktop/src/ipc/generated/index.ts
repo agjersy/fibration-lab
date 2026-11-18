@@ -10,6 +10,7 @@ export type TurnId = string;
 
 export type { AppInfo } from "./AppInfo";
 export type { Artifact } from "./Artifact";
+export type { ArtifactEntry } from "./ArtifactEntry";
 export type { ArtifactKind } from "./ArtifactKind";
 export type { AskPolicy } from "./AskPolicy";
 export type { Attachment } from "./Attachment";

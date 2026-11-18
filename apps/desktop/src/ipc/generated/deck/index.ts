@@ -2,8 +2,6 @@
 
 export type { Agg } from "./Agg";
 export type { Align } from "./Align";
-export type { AnalystItem } from "./AnalystItem";
-export type { AnalystScanResult } from "./AnalystScanResult";
 export type { AssetView } from "./AssetView";
 export type { Autofit } from "./Autofit";
 export type { Bullet } from "./Bullet";
@@ -77,6 +75,7 @@ export type { RefKind } from "./RefKind";
 export type { RefView } from "./RefView";
 export type { RequestId } from "./RequestId";
 export type { Run } from "./Run";
+export type { RunCite } from "./RunCite";
 export type { SandboxInfo } from "./SandboxInfo";
 export type { SandboxKind } from "./SandboxKind";
 export type { SearchHit } from "./SearchHit";

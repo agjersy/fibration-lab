@@ -369,6 +369,22 @@ export interface DeckSummary {
   open: boolean;
 }
 
+/** One artifact of one run, as the artifact index lists it. */
+export interface ArtifactEntry {
+  run_id: RunId;
+  path: string;
+  kind: Artifact["kind"];
+  script: string;
+  args: string[];
+  tree_hash: string | null;
+  /** The working tree is no longer the tree the run executed. */
+  stale: boolean;
+  title: string | null;
+  size: number;
+  created_at: string;
+  target: string;
+}
+
 /** One undo point of the session's repository: code and decks together. */
 export interface CheckpointView {
   id: string;

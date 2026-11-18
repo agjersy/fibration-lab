@@ -29,6 +29,9 @@ pub struct ToolSpec {
     pub deck: bool,
 }
 
+/// `slide.place_figure`: place a figure of an analysis run on a slide, cited by its run.
+pub const PLACE_FIGURE: &str = "slide.place_figure";
+
 /// Which kinds of decks the project has; the deck tools offered follow from it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeckKinds {
@@ -83,6 +86,17 @@ fn all() -> &'static [ToolSpec] {
                     deck: true,
                 }),
         );
+        // The tool that joins the two workbenches: a slide cites an analysis run directly.
+        tools.push(ToolSpec {
+            deck: true,
+            name: PLACE_FIGURE,
+            class: ToolClass::Edit,
+            description: "Propose placing a figure of an analysis run on a slide: name the run and the artifact path as artifacts_list shows them. The image is copied into the deck's assets and the element cites the run (run id, artifact, script, arguments, tree identity), so the checker can tell when the code has changed since.",
+            parameters: obj(
+                json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "run_id": {"type": "string"}, "artifact": {"type": "string", "description": "The figure's repo-relative path, as artifacts_list returns it."}, "placeholder": {"type": "string", "description": "The placeholder key to fill; by default the first empty placeholder of the slide's layout that accepts an image."}, "alt": {"type": "string", "description": "Alt text; by default the figure's title."}}),
+                &["slide_id", "run_id", "artifact"],
+            ),
+        });
         tools
     })
 }
@@ -113,6 +127,7 @@ fn analysis_tools() -> Vec<ToolSpec> {
         ToolSpec { deck: false, name: "contract.similar", class: Read, description: "Find duplicate and near-duplicate functions across scripts and the library.", parameters: obj(json!({"threshold":{"type":"number"}}), &[]) },
         ToolSpec { deck: false, name: "lint.run", class: Read, description: "Run ruff on the given paths (default: all).", parameters: obj(json!({"paths":{"type":"array","items":{"type":"string"}}}), &[]) },
         ToolSpec { deck: false, name: "fig.list", class: Read, description: "List figures produced by runs (all, or one run).", parameters: obj(json!({"run_id":{"type":"string"}}), &[]) },
+        ToolSpec { deck: false, name: "artifacts.list", class: Read, description: "The artifact index: what the session's runs produced (figures, tables, files), by run id and path, with the script and arguments of the run and whether the code has changed since (stale). Use it to pick a figure for slide_place_figure.", parameters: obj(json!({"run_id":{"type":"string"},"kind":{"type":"string","enum":["figure","table","array","json","text","file"]},"limit":{"type":"integer","minimum":1}}), &[]) },
         ToolSpec { deck: false, name: "target.info", class: Read, description: "Name, kind, sandbox level, and data directories of the execution target.", parameters: obj(json!({}), &[]) },
         ToolSpec { deck: false, name: "fs.propose_edit", class: Edit, description: "Edit a file: either `edits` (each `old` must match exactly once and is replaced by `new`) or full `content`.", parameters: obj(json!({"path":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"old":{"type":"string"},"new":{"type":"string"}},"required":["old","new"]}},"content":{"type":"string"}}), &["path"]) },
         ToolSpec { deck: false, name: "fs.propose_create", class: Edit, description: "Create a new file with the given content.", parameters: obj(json!({"path":{"type":"string"},"content":{"type":"string"}}), &["path","content"]) },
@@ -176,7 +191,9 @@ pub fn defs_for(mode: Mode, decks: DeckKinds) -> Vec<ToolDef> {
             }
             if analyst_deck::tools::CODE_MODE_TOOLS.contains(&t.name) {
                 decks.code
-            } else if analyst_deck::tools::STRUCTURED_TOOLS.contains(&t.name) {
+            } else if analyst_deck::tools::STRUCTURED_TOOLS.contains(&t.name)
+                || t.name == PLACE_FIGURE
+            {
                 decks.structured
             } else {
                 decks.any()

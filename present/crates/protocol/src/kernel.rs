@@ -77,8 +77,6 @@ methods! {
     ChartCompute = "chart.compute": ChartComputeParams => ChartComputeResult;
     ExportOutlineMd = "export.outline_md": ExportParams => OutResult;
     ExportNotesDocx = "export.notes_docx": ExportParams => OutResult;
-    AnalystScan = "analyst.scan": AnalystScanParams => AnalystScanResult;
-    AnalystImport = "analyst.import": AnalystImportParams => AnalystImportResult;
 }
 
 /// `{}`.
@@ -565,53 +563,6 @@ pub struct ExportParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OutResult {
     pub out: String,
-}
-
-// ---- Personal Analyst ----
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AnalystScanParams {
-    pub repo_abs: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, TS)]
-pub struct AnalystScanResult {
-    pub figures: Vec<AnalystItem>,
-    pub tables: Vec<AnalystItem>,
-}
-
-/// `AnalystFigure` / `AnalystTable` of `analyst.scan`.
-///
-/// PROTOCOL 1.3 names these types without defining them. Only the fields the rest of the
-/// contract depends on are typed: `item` is what `analyst.import` takes, and `run_id` and
-/// `name` form the citation location `run:<run_id>/<name>`. Anything else the kernel
-/// sends is kept in `extra`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, TS)]
-pub struct AnalystItem {
-    pub item: String,
-    pub run_id: String,
-    pub name: String,
-    #[serde(flatten)]
-    #[ts(skip)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-/// Type alias matching the PROTOCOL name.
-pub type AnalystFigure = AnalystItem;
-/// Type alias matching the PROTOCOL name.
-pub type AnalystTable = AnalystItem;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AnalystImportParams {
-    pub repo_abs: String,
-    pub item: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rows: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AnalystImportResult {
-    pub ref_id: RefId,
 }
 
 // ---- notifications (kernel -> core) ----

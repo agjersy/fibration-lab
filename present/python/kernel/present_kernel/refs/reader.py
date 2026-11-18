@@ -178,7 +178,7 @@ class ProjectRefs:
             if not out.is_file():
                 render_page(resolved.path, int(page), dpi, out)
             return {"png": out.relative_to(self.project).as_posix()}
-        if kind in ("image", "analyst-figure"):
+        if kind == "image":
             if page != 1:
                 raise not_found("an image reference has only page 1")
             if resolved.path.suffix.lower() == ".png":
@@ -243,7 +243,7 @@ class ProjectRefs:
                 grid = doc["grids"][loc]
                 return loc, grid["r0"], grid["c0"], grid["r0"] + len(grid["cells"]) - 1, grid["c0"] + len(grid["cells"][0]) - 1
             return None
-        if kind in ("csv", "analyst-table"):
+        if kind == "csv":
             parsed = locs.parse_csv(loc)
             grid = doc["grids"].get("")
             if grid is None:
@@ -252,8 +252,6 @@ class ProjectRefs:
             if parsed:
                 r1, r2, c1, c2 = parsed
                 return "", min(r1, r2), min(c1 or 1, c2 or width), max(r1, r2), max(c1 or 1, c2 or width)
-            if kind == "analyst-table" and loc.startswith("run:"):
-                return "", 1, 1, max(len(grid["cells"]), 1), width
         return None
 
     def _read(self, doc: dict[str, Any], loc: str) -> tuple[str, str]:
@@ -292,11 +290,8 @@ class ProjectRefs:
                 if loc in doc["texts"]:
                     return doc["texts"][loc], loc
                 raise not_found(f"no text in shape {loc}")
-        elif kind == "image":
-            if loc == "full" or loc.startswith("box:"):
-                return "", loc
-        elif kind == "analyst-figure" and loc.startswith("run:"):
-            return doc["texts"].get("", ""), doc["root_loc"]
+        elif kind == "image" and (loc == "full" or loc.startswith("box:")):
+            return "", loc
         rng = self._sheet_range(doc, loc)
         if rng is not None:
             cells, _ = self._range_cells(doc, *rng)

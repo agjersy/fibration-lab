@@ -2177,3 +2177,173 @@ async fn deck_modes_are_enforced_by_policy_and_slide_proposals_keep_their_shape(
     assert_eq!(r["c1"].1["denied"], "locked");
     fx.wb.shutdown().await;
 }
+
+/// Slides cite analysis results directly: the artifact index lists what runs produced, a
+/// figure is placed on a slide by run id and artifact path, the image is copied into the
+/// deck (data is not), the element carries the run's citation, and the checker reports the
+/// element as stale once the code has changed. The scan-and-import bridge is gone.
+#[tokio::test]
+async fn a_slide_cites_an_analysis_run_and_goes_stale_when_the_code_changes() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    // A script that writes a figure (a 1x1 PNG) and a data file into its output directory.
+    let script = r#"import base64, os, sys
+out = os.environ["ANALYST_OUT_DIR"]
+os.makedirs(out, exist_ok=True)
+png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+open(os.path.join(out, "margin.png"), "wb").write(base64.b64decode(png))
+open(os.path.join(out, "margin.csv"), "w").write("region,margin\nnorth,0.18\n")
+print("wrote", *sys.argv[1:])
+"#;
+    std::fs::write(fx.rt.repo.join("scripts/margin.py"), script).unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let mut rx = fx.rt.subscribe();
+    let run = fx
+        .rt
+        .run_start("scripts/margin.py", vec!["--region".into(), "north".into()])
+        .await
+        .unwrap();
+    let run_id = run.meta.run_id.clone();
+    next_matching(
+        &mut rx,
+        |e| matches!(e, SessionEvent::RunDone { run } if run.meta.run_id == run_id),
+    )
+    .await;
+
+    // The artifact index: from the run record and the kernel's artifact list.
+    let all = fx.rt.artifacts_list(None, None, None);
+    assert_eq!(all.len(), 2, "{all:?}");
+    let figures = fx.rt.artifacts_list(
+        Some(&run_id),
+        Some(analyst_protocol::kernel::ArtifactKind::Figure),
+        None,
+    );
+    assert_eq!(figures.len(), 1);
+    let fig = &figures[0];
+    assert!(
+        fig.path.starts_with("out/") && fig.path.ends_with("/margin.png"),
+        "{}",
+        fig.path
+    );
+    assert_eq!(fig.script, "scripts/margin.py");
+    assert_eq!(fig.args, vec!["--region", "north"]);
+    assert!(fig.tree_hash.is_some() && !fig.stale);
+
+    // The agent lists artifacts and places the figure by run id and path.
+    let deck = fx.rt.deck("q3").await.unwrap();
+    let slide = deck.slide_create(None, "Title and Content").await.unwrap();
+    let slide_id = slide.slide.id.to_string();
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-cite",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.decks = fx.rt.decks.clone();
+    let listed = ctx
+        .dispatch("t0", "artifacts.list", &json!({"kind": "figure"}))
+        .await
+        .unwrap();
+    assert_eq!(listed["artifacts"][0]["run_id"], run_id.as_str());
+    // Data is never copied into a deck.
+    let csv = all.iter().find(|a| a.path.ends_with(".csv")).unwrap();
+    let refused = ctx
+        .dispatch(
+            "t1",
+            "slide.place_figure",
+            &json!({"slide_id": slide_id, "run_id": run_id, "artifact": csv.path, "placeholder": "body"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.message.contains("only figures are placed"),
+        "{}",
+        refused.message
+    );
+    let placed = ctx
+        .dispatch(
+            "t2",
+            "slide.place_figure",
+            &json!({"slide_id": slide_id, "run_id": run_id, "artifact": fig.path, "placeholder": "body", "alt": "Margin by region"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(placed["updated"], slide_id.as_str(), "{placed}");
+    let doc: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            fx.rt
+                .repo
+                .join(crate::service::decks::slide_rel("q3", &slide_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let image = &doc["placeholders"]["body"];
+    assert_eq!(image["type"], "image");
+    let cite = &image["run_cite"];
+    assert_eq!(cite["run_id"], run_id.as_str());
+    assert_eq!(cite["artifact"], fig.path.as_str());
+    assert_eq!(cite["script"], "scripts/margin.py");
+    assert_eq!(cite["args"], json!(["--region", "north"]));
+    assert_eq!(cite["tree_hash"], fig.tree_hash.clone().unwrap().as_str());
+    // The image is in the deck's assets, named by its content; nothing else was copied.
+    let asset = image["asset"].as_str().unwrap();
+    assert!(
+        asset.starts_with("assets/") && asset.ends_with(".png"),
+        "{asset}"
+    );
+    let assets: Vec<String> = std::fs::read_dir(fx.rt.repo.join("decks/q3/assets"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        assets,
+        vec![asset.trim_start_matches("assets/").to_string()]
+    );
+
+    // The checker: not stale while the code is the code the run executed (changing the
+    // deck does not change that) ...
+    let stale = |diags: &[Value]| -> Vec<Value> {
+        diags
+            .iter()
+            .filter(|d| d["rule"] == "stale")
+            .cloned()
+            .collect()
+    };
+    let before = deck.run_checks(None).await.unwrap();
+    assert!(stale(&before).is_empty(), "{before:?}");
+    // ... and a warning on that element once the script has changed.
+    std::fs::write(
+        fx.rt.repo.join("scripts/margin.py"),
+        script.replace("0.18", "0.21"),
+    )
+    .unwrap();
+    let after = deck.run_checks(None).await.unwrap();
+    let found = stale(&after);
+    assert_eq!(found.len(), 1, "{after:?}");
+    assert_eq!(found[0]["severity"], "warn");
+    assert_eq!(found[0]["slide_id"], slide_id.as_str());
+    assert_eq!(found[0]["element_id"], image["id"]);
+    assert!(found[0]["message"].as_str().unwrap().contains(&run_id));
+    assert!(fx.rt.artifacts_list(Some(&run_id), None, None)[0].stale);
+
+    // The bridge that scanned a repository's output folders is gone from the deck kernel.
+    for method in ["analyst.scan", "analyst.import"] {
+        let err = deck
+            .ws
+            .kernel
+            .call_value(method, json!({"repo_abs": fx.rt.repo.to_string_lossy()}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(-32601), "{method}: {err}");
+    }
+    fx.wb.shutdown().await;
+}

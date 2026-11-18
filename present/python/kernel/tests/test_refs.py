@@ -515,5 +515,5 @@ def test_thirty_page_pdf_ingests_in_seconds(tmp_path):
 
 def test_methods_are_registered(env):
     methods = env.kernel.dispatcher.methods()
-    for name in ("refs.ingest", "refs.read", "refs.table", "refs.page_image", "embed.texts", "analyst.scan", "analyst.import"):
+    for name in ("refs.ingest", "refs.read", "refs.table", "refs.page_image", "embed.texts"):
         assert name in methods

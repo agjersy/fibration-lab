@@ -78,20 +78,8 @@ def register(kernel) -> None:
 
         return run(kernel.home, params.get("texts"), _str(params, "kind", required=False, default="passage"))
 
-    def analyst_scan(params: dict[str, Any]) -> dict[str, Any]:
-        from . import analyst
-
-        return analyst.scan(_str(params, "repo_abs"))
-
-    def analyst_import(params: dict[str, Any]) -> dict[str, Any]:
-        from . import analyst
-
-        return analyst.import_item(kernel.project, _str(params, "repo_abs"), _str(params, "item"), _int(params, "max_rows"))
-
     d.register("refs.ingest", refs_ingest)
     d.register("refs.read", refs_read)
     d.register("refs.table", refs_table)
     d.register("refs.page_image", refs_page_image)
     d.register("embed.texts", embed_texts)
-    d.register("analyst.scan", analyst_scan)
-    d.register("analyst.import", analyst_import)

@@ -7,8 +7,8 @@ use analyst_deck_protocol::config::{ContractConfig, ExportPreset};
 use analyst_deck_protocol::deck::{Deck, Slide, Table};
 use analyst_deck_protocol::ids::{ElementId, RefId, SlideId};
 use analyst_deck_protocol::kernel::{
-    AnalystScanResult, ChartComputeResult, Chunk, Diagnostic, ElementMapEntry, HelloResult,
-    ImageRef, LayoutThumbnail, Notification, OutlineNode, TableRef,
+    ChartComputeResult, Chunk, Diagnostic, ElementMapEntry, HelloResult, ImageRef, LayoutThumbnail,
+    Notification, OutlineNode, TableRef,
 };
 use analyst_deck_protocol::template::{TemplateDescription, TemplateSidecar};
 use analyst_deck_protocol::ui;
@@ -51,7 +51,6 @@ fn export_typescript_bindings() {
     TableRef::export_all(&cfg).unwrap();
     ImageRef::export_all(&cfg).unwrap();
     ChartComputeResult::export_all(&cfg).unwrap();
-    AnalystScanResult::export_all(&cfg).unwrap();
     Notification::export_all(&cfg).unwrap();
     ContractConfig::export_all(&cfg).unwrap();
     ExportPreset::export_all(&cfg).unwrap();

@@ -5,10 +5,16 @@ import type { Crop } from "./Crop";
 import type { Diagram } from "./Diagram";
 import type { ElementId } from "./ElementId";
 import type { ImageFit } from "./ImageFit";
+import type { RunCite } from "./RunCite";
 import type { TableEl } from "./TableEl";
 import type { Text } from "./Text";
 
 /**
  * What fills a layout placeholder.
  */
-export type PlaceholderContent = { "type": "text", id: ElementId, text: Text, } | { "type": "image", id: ElementId, asset: string, alt: string, fit?: ImageFit, crop?: Crop, cite?: Array<Cite>, } | { "type": "chart", id: ElementId, chart: Chart, } | { "type": "table", id: ElementId, table: TableEl, } | { "type": "diagram", id: ElementId, diagram: Diagram, } | { "type": "empty" };
+export type PlaceholderContent = { "type": "text", id: ElementId, text: Text, } | { "type": "image", id: ElementId, asset: string, alt: string, fit?: ImageFit, crop?: Crop, cite?: Array<Cite>, 
+/**
+ * The analysis run this figure came from, when it was placed from a run of the
+ * project: a citation of the run itself, not of a reference.
+ */
+run_cite?: RunCite, } | { "type": "chart", id: ElementId, chart: Chart, } | { "type": "table", id: ElementId, table: TableEl, } | { "type": "diagram", id: ElementId, diagram: Diagram, } | { "type": "empty" };

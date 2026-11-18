@@ -246,9 +246,149 @@ impl ToolContext {
         }
     }
 
+    /// `slide.place_figure`: look the figure up in the artifact index, copy the image into
+    /// the deck's assets (content-addressed, so the deck stays self-contained; data files are
+    /// never copied), and turn the call into a slide update whose image element cites the
+    /// run. Returns the arguments of the equivalent `slide.propose_update`.
+    async fn place_figure_args(&self, args: &Value) -> Result<Value, ToolError> {
+        let slug = self.deck_slug(args)?;
+        let run_id = str_arg(args, "run_id")?;
+        let artifact = str_arg(args, "artifact")?;
+        let slide_id = str_arg(args, "slide_id")?;
+        let entry = crate::service::artifacts::find(
+            &self.runs,
+            &self.session,
+            &self.repo,
+            run_id,
+            artifact,
+        )
+        .ok_or_else(|| {
+            ToolError::new(format!(
+                "run `{run_id}` has no artifact `{artifact}`; call artifacts_list to see what its runs produced"
+            ))
+        })?;
+        let ext = entry
+            .path
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if entry.kind != ArtifactKind::Figure
+            || !matches!(ext.as_str(), "png" | "svg" | "jpg" | "jpeg" | "gif")
+        {
+            return Err(ToolError::new(format!(
+                "`{}` is not an image a slide can show (png, svg, jpg, gif); only figures are placed, data stays where the run wrote it",
+                entry.path
+            )));
+        }
+        // The rendered file is in the repo (a remote run's figures are pulled there), or in
+        // the session's copy of what was pulled.
+        let source = crate::util::resolve_in_repo(&self.repo, &entry.path, true)
+            .ok()
+            .filter(|p| p.is_file())
+            .unwrap_or_else(|| self.session.pulled_artifact_path(run_id, &entry.path));
+        let bytes = std::fs::read(&source).map_err(|e| {
+            ToolError::new(format!("the figure `{}` cannot be read: {e}", entry.path))
+        })?;
+        let asset = format!("assets/{}.{ext}", &crate::util::sha256_hex(&bytes)[..16]);
+        let svc = self.decks.open(&slug).await?;
+        let target = svc.ws.project.root.join(&asset);
+        if !target.is_file() {
+            analyst_deck::util::write_atomic(&target, &bytes)?;
+        }
+        let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
+            .map_err(|_| ToolError::new("`slide_id` is not a slide id"))?;
+        let (slide, _) = svc
+            .ws
+            .deck()
+            .read_slide(&id)
+            .map_err(|e| ToolError::new(e.to_string()))?;
+        let mut doc = serde_json::to_value(&slide)?;
+        let key = match args.get("placeholder").and_then(Value::as_str) {
+            Some(k) => k.to_string(),
+            None => {
+                // The first placeholder of the layout that takes an image and is free.
+                let (_, catalog) = self
+                    .deck_prepare_tool("template.layouts", &json!({"deck": slug}))
+                    .await?;
+                let Prepared::Done(catalog) = catalog else {
+                    return Err(ToolError::new("the template's layouts are not available"));
+                };
+                let layouts = catalog.result["layouts"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let candidates: Vec<String> = layouts
+                    .iter()
+                    .find(|l| l["layout"] == slide.layout.as_str())
+                    .and_then(|l| l["placeholders"].as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| {
+                        p["accepts"]
+                            .as_array()
+                            .is_some_and(|a| a.iter().any(|x| x == "image"))
+                    })
+                    .filter_map(|p| p["key"].as_str().map(str::to_string))
+                    .collect();
+                candidates
+                    .iter()
+                    .find(|k| {
+                        let cur = &doc["placeholders"][k.as_str()];
+                        cur.is_null() || cur["type"] == "empty"
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        ToolError::new(format!(
+                            "layout {:?} has no free placeholder for an image (image placeholders: {}); pass `placeholder`, or use a layout with a picture placeholder",
+                            slide.layout,
+                            if candidates.is_empty() {
+                                "none".to_string()
+                            } else {
+                                candidates.join(", ")
+                            }
+                        ))
+                    })?
+            }
+        };
+        let alt = args
+            .get("alt")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(entry.title.clone())
+            .unwrap_or_else(|| format!("Figure from {}", entry.script));
+        doc["placeholders"][key.as_str()] = json!({
+            "type": "image",
+            "asset": asset,
+            "alt": alt,
+            "run_cite": {
+                "run_id": entry.run_id,
+                "artifact": entry.path,
+                "script": entry.script,
+                "args": entry.args,
+                "tree_hash": entry.tree_hash,
+            },
+        });
+        Ok(json!({"deck": slug, "slide_id": slide_id, "slide": doc}))
+    }
+
     /// Run the first half of a deck tool: read tools finish here, edit tools come back as a
     /// [`Change`] for the loop to gate. Starts the deck's kernel when needed.
     pub async fn deck_prepare(
+        &self,
+        name: &str,
+        args: &Value,
+    ) -> Result<(Arc<DeckService>, Prepared), ToolError> {
+        if name == crate::tools::registry::PLACE_FIGURE {
+            let update = self.place_figure_args(args).await?;
+            return self
+                .deck_prepare_tool("slide.propose_update", &update)
+                .await;
+        }
+        self.deck_prepare_tool(name, args).await
+    }
+
+    async fn deck_prepare_tool(
         &self,
         name: &str,
         args: &Value,
@@ -471,6 +611,25 @@ impl ToolContext {
                 )?)
             }
             "fig.list" => self.fig_list(args),
+            "artifacts.list" => {
+                let kind = match args.get("kind").filter(|k| !k.is_null()) {
+                    Some(k) => {
+                        Some(serde_json::from_value::<ArtifactKind>(k.clone()).map_err(bad_args)?)
+                    }
+                    None => None,
+                };
+                let entries = crate::service::artifacts::list(
+                    &self.runs,
+                    &self.session,
+                    &self.repo,
+                    args.get("run_id").and_then(Value::as_str),
+                    kind,
+                    args.get("limit")
+                        .and_then(Value::as_u64)
+                        .map(|n| n as usize),
+                );
+                Ok(json!({"artifacts": entries}))
+            }
             "target.info" => self.target_info().await,
             "fs.propose_edit" | "fs.propose_create" | "fs.propose_delete" => {
                 let p = self.files.propose(call_id, name, args)?;

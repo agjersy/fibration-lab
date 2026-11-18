@@ -46,10 +46,18 @@ impl OpenOptions {
     }
 }
 
+/// The identity of the project tree the deck's analysis runs execute: the session supplies
+/// it, the checker compares the run citations on slides with it.
+pub type TreeIdentity = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// The checker rule for a slide element that cites an analysis run whose code has changed.
+pub const RULE_STALE: &str = "stale";
+
 pub struct Workspace {
     pub project: Project,
     pub home: PathBuf,
     pub kernel: KernelClient,
+    tree_identity: Mutex<Option<TreeIdentity>>,
     index: Mutex<Index>,
     /// Held while the shared scratch render is built and read, so a check started by the
     /// user and one started by the agent never read each other's half-written file.
@@ -91,6 +99,7 @@ impl Workspace {
             project,
             home: options.home.clone(),
             kernel,
+            tree_identity: Mutex::new(None),
             index: Mutex::new(index),
             scratch_lock: tokio::sync::Mutex::new(()),
         };
@@ -129,6 +138,74 @@ impl Workspace {
         if added {
             let _ = self.embed_pending().await;
         }
+    }
+
+    /// Tell the workspace how to learn the current identity of the project tree, so the
+    /// checker can report stale run citations.
+    pub fn set_tree_identity(&self, f: TreeIdentity) {
+        *self.tree_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// Findings for slide elements that cite an analysis run (`run_cite`) whose tree
+    /// identity is not the project's current one: the code has changed since the figure
+    /// was made. A warning; refreshing the figure is the user's (or a later feature's) call.
+    fn stale_run_cites(&self, slides: Option<&[String]>) -> Vec<Value> {
+        let identity = self
+            .tree_identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(identity) = identity else {
+            return Vec::new();
+        };
+        let Ok((_, docs)) = self.deck().read_all() else {
+            return Vec::new();
+        };
+        let mut current: Option<Option<String>> = None;
+        let mut out = Vec::new();
+        for (index, slide) in docs.iter().enumerate() {
+            if slides.is_some_and(|ids| !ids.iter().any(|i| i == slide.id.as_str())) {
+                continue;
+            }
+            let Ok(v) = serde_json::to_value(slide) else {
+                continue;
+            };
+            let placeholders = v["placeholders"].as_object().into_iter().flat_map(|m| {
+                m.iter()
+                    .map(|(k, item)| (format!("/placeholders/{k}"), item))
+            });
+            let elements = v["elements"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(i, el)| (format!("/elements/{i}/content"), &el["content"]));
+            for (pointer, item) in placeholders.chain(elements) {
+                let cite = &item["run_cite"];
+                let Some(run_tree) = cite["tree_hash"].as_str() else {
+                    continue;
+                };
+                // The tree identity is computed once, and only when a slide cites a run.
+                let now = current.get_or_insert_with(|| identity());
+                if now.as_deref().is_some_and(|n| n != run_tree) {
+                    out.push(json!({
+                        "rule": RULE_STALE,
+                        "severity": "warn",
+                        "slide_id": slide.id,
+                        "slide_index": index,
+                        "element_id": item["id"],
+                        "pointer": pointer,
+                        "message": format!(
+                            "the figure cites run {} of {}, and the project's code has changed since that run",
+                            cite["run_id"].as_str().unwrap_or("?"),
+                            cite["script"].as_str().unwrap_or("?")
+                        ),
+                        "fix_hint": "run the script again and place the new figure, or keep the figure if the change does not affect it",
+                    }));
+                }
+            }
+        }
+        out
     }
 
     pub async fn close(&self) {
@@ -389,13 +466,17 @@ impl Workspace {
         if let Some(r) = rules {
             params["rules"] = json!(r);
         }
-        Ok(self
+        let mut diags = self
             .kernel
             .call_value("check.run", params)
             .await?
             .as_array()
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if rules.is_none_or(|r| r.iter().any(|x| x == RULE_STALE)) {
+            diags.extend(self.stale_run_cites(slides));
+        }
+        Ok(diags)
     }
 
     /// Export the deck. `state_id` names the state the file was built from (the session's

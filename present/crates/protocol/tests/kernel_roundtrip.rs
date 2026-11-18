@@ -52,8 +52,6 @@ fn every_method_round_trips() {
     check::<ChartCompute>(&all, &mut seen);
     check::<ExportOutlineMd>(&all, &mut seen);
     check::<ExportNotesDocx>(&all, &mut seen);
-    check::<AnalystScan>(&all, &mut seen);
-    check::<AnalystImport>(&all, &mut seen);
 
     // Every method of PROTOCOL 1.3 is declared, checked, and has a fixture; nothing else.
     assert_eq!(seen, METHOD_NAMES);
@@ -67,7 +65,7 @@ fn every_method_round_trips() {
     fixture_names.sort_unstable();
     declared.sort_unstable();
     assert_eq!(fixture_names, declared);
-    assert_eq!(declared.len(), 23);
+    assert_eq!(declared.len(), 21);
 }
 
 #[test]

@@ -547,6 +547,26 @@ pub struct DeckSummary {
     pub open: bool,
 }
 
+/// One artifact of one run, as the artifact index lists it (IPC.md section 7).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct ArtifactEntry {
+    pub run_id: RunId,
+    /// Repo-relative path, as the run reported it.
+    pub path: String,
+    pub kind: crate::kernel::ArtifactKind,
+    pub script: String,
+    pub args: Vec<String>,
+    /// The identity of the project tree the run executed.
+    pub tree_hash: Option<String>,
+    /// The working tree is no longer the tree the run executed.
+    pub stale: bool,
+    /// The figure's title, from its sidecar.
+    pub title: Option<String>,
+    pub size: u64,
+    pub created_at: String,
+    pub target: String,
+}
+
 /// One undo point of the session's repository (a git checkpoint): code and decks together.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct CheckpointView {
@@ -801,6 +821,7 @@ mod tests {
         SessionEvent::export_all(&cfg).unwrap();
         DeckSummary::export_all(&cfg).unwrap();
         CheckpointView::export_all(&cfg).unwrap();
+        ArtifactEntry::export_all(&cfg).unwrap();
         IpcError::export_all(&cfg).unwrap();
         Event::export_all(&cfg).unwrap();
         OutListResult::export_all(&cfg).unwrap();

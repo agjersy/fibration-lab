@@ -1688,6 +1688,25 @@ impl SessionRuntime {
         self.decks.open(slug).await
     }
 
+    // ---- artifact index ----
+
+    /// What the session's runs produced, by run id and path (figures, tables, files).
+    pub fn artifacts_list(
+        &self,
+        run_id: Option<&str>,
+        kind: Option<ArtifactKind>,
+        limit: Option<u32>,
+    ) -> Vec<ArtifactEntry> {
+        super::artifacts::list(
+            &self.runs,
+            &self.session_snapshot(),
+            &self.repo,
+            run_id,
+            kind,
+            limit.map(|n| n as usize),
+        )
+    }
+
     // ---- history: one undo timeline for code and decks ----
 
     pub fn history_list(&self, limit: Option<u32>) -> ServiceResult<Vec<CheckpointView>> {

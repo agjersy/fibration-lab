@@ -55,7 +55,7 @@ pub fn mode_instructions(mode: Mode) -> &'static str {
 }
 
 /// What build mode adds when the project has decks: one scope covers files and slides.
-pub const BUILD_WITH_DECKS: &str = "This project has decks, and build mode can change code and slides in the same turn: declare_scope takes files and slides (and how many slides you will add) in one declaration. Slide changes are proposals like file edits. After each slide you create or change, look at it with slide_render and fix what the checker reports.";
+pub const BUILD_WITH_DECKS: &str = "This project has decks, and build mode can change code and slides in the same turn: declare_scope takes files and slides (and how many slides you will add) in one declaration. Slide changes are proposals like file edits. After each slide you create or change, look at it with slide_render and fix what the checker reports. To show a result of this project's analysis, find the figure with artifacts_list and place it with slide_place_figure: the slide then cites the run itself (the checker warns when the code has changed since), and data files are never copied into a deck.";
 
 /// Added when a deck is in code generation mode.
 pub const CODE_MODE_DECK: &str = "A deck in CODE GENERATION mode is the Python script deck/build.py of that deck, built with the deck SDK (`from present_sdk import Deck, cite, theme`). Read it with code_read, change it with code_propose_edit, and run it with deck_build. Use the SDK for layouts, placeholders, theme colors, charts, and diagrams so the deck stays on the template; use `slide.raw` (python-pptx) only for what the SDK cannot express. Attach citations with cite(obj, \"ref:...\").";

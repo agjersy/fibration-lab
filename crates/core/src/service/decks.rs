@@ -290,6 +290,9 @@ impl DeckServices {
         let ws = Workspace::open(&root, &options)
             .await
             .map_err(|e| ServiceError::kernel_offline(format!("opening deck `{slug}`: {e:#}")))?;
+        // Run citations on slides are checked against the project's code as it is now.
+        let repo = self.repo.clone();
+        ws.set_tree_identity(Arc::new(move || super::artifacts::current_tree(&repo)));
         let host = Arc::new(GitHost {
             repo: self.repo.clone(),
             slug: slug.to_string(),
