@@ -19,6 +19,7 @@ from lxml import etree
 
 from . import content as C
 from . import tags as T
+from .omml import alternate_parts
 from .template import (
     FURNITURE_TYPES,
     describe_presentation,
@@ -40,6 +41,31 @@ _DECKS: list[Deck] = []
 
 def _short_hash(*parts: Any) -> str:
     return hashlib.sha1("\x1f".join(str(p) for p in parts).encode()).hexdigest()[:8]
+
+
+_MC_ALTERNATE = "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent"
+
+
+def _sync_fallback(choice: etree._Element, fallback: etree._Element) -> None:
+    """The fallback of an equation carries the choice shape's id, name, alt text and tags."""
+    nv_c, nv_f = choice.find(f"{{{P}}}nvSpPr"), fallback.find(f"{{{P}}}nvSpPr")
+    if nv_c is None or nv_f is None:
+        return
+    cnv_c, cnv_f = nv_c.find(f"{{{P}}}cNvPr"), nv_f.find(f"{{{P}}}cNvPr")
+    if cnv_c is not None and cnv_f is not None:
+        for k, v in cnv_c.attrib.items():
+            cnv_f.set(k, v)
+    pr_c, pr_f = nv_c.find(f"{{{P}}}nvPr"), nv_f.find(f"{{{P}}}nvPr")
+    if pr_c is not None and pr_f is not None:
+        for old in pr_f.findall(f"{{{P}}}custDataLst"):
+            pr_f.remove(old)
+        tags = pr_c.find(f"{{{P}}}custDataLst")
+        if tags is not None:
+            ext = pr_f.find(f"{{{P}}}extLst")
+            if ext is not None:
+                ext.addprevious(copy.deepcopy(tags))
+            else:
+                pr_f.append(copy.deepcopy(tags))
 
 
 def _kind_of(el: etree._Element) -> str:
@@ -300,6 +326,20 @@ class Slide:
             ph._adopt(shape._element, ph_el)
         C.set_alt(shape._element, description)
         self._register(shape._element, element_id, [])
+        # As PowerPoint stores an equation: the shape inside `mc:AlternateContent`, an `a14`
+        # choice holding the OMML and a fallback holding a picture of the equation (Matplotlib's
+        # mathtext) for viewers without Office 2010 math; the LaTeX as text without Matplotlib.
+        png = _render_latex_png(latex)
+        rid, size = None, None
+        if png is not None:
+            from PIL import Image
+
+            _, rid = self.raw.part.get_or_add_image_part(io.BytesIO(png))
+            with Image.open(io.BytesIO(png)) as im:
+                # Natural size in EMU at the resolution it was drawn at (_LATEX_DPI).
+                size = (round(im.size[0] * 914400 / _LATEX_DPI), round(im.size[1] * 914400 / _LATEX_DPI))
+        sp = shape._element
+        omml.wrap_equation_shape(sp, omml.fallback_shape(sp, rid, size, latex))
         return shape
 
     def _equation_fallback(self, latex: str, ph, ph_el, geom, alt: str, element_id: str | None, why: str):
@@ -413,6 +453,9 @@ def _equation_alt(cite: dict[str, Any]) -> str:
     return f"{cite.get('latex', '')} ({cite.get('qualname', '?')} in {cite.get('path', '?')})"
 
 
+_LATEX_DPI = 200
+
+
 def _render_latex_png(latex: str) -> bytes | None:
     """The equation drawn by Matplotlib's mathtext, when Matplotlib is installed and can draw it."""
     try:
@@ -425,7 +468,7 @@ def _render_latex_png(latex: str) -> bytes | None:
         FigureCanvasAgg(fig)
         fig.text(0, 0, f"${latex}$", fontsize=28)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", pad_inches=0.05, transparent=True)
+        fig.savefig(buf, format="png", dpi=_LATEX_DPI, bbox_inches="tight", pad_inches=0.05, transparent=True)
         return buf.getvalue()
     except Exception:
         return None
@@ -592,7 +635,12 @@ class Deck:
             known = {id(el): (eid, cites) for el, eid, cites in slide._elements}
             raw_n = 0
             T.set_slide_tags(slide.raw.part, {"present.slide": slide.id})
-            for el in slide.raw.shapes._spTree:
+            for top in slide.raw.shapes._spTree:
+                el, fallback = top, None
+                if top.tag == _MC_ALTERNATE:  # an equation: the a14 choice is the element
+                    el, fallback = alternate_parts(top)
+                    if el is None:
+                        continue
                 if el.tag not in _SHAPE_TAGS:
                     continue
                 ph = el.find(f".//{{{P}}}nvPr/{{{P}}}ph")
@@ -608,6 +656,8 @@ class Deck:
                 for n, c in enumerate(cites):
                     tags[f"present.cite.{n}"] = c
                 T.set_shape_tags(slide.raw.part, el, tags)
+                if fallback is not None:
+                    _sync_fallback(el, fallback)
                 cnv = el.find(f".//{{{P}}}cNvPr")
                 emap.append({
                     "slide_id": slide.id, "element_id": eid, "slide_index": index,

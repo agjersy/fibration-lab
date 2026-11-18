@@ -10,6 +10,8 @@ to a rendered image and records the fallback. Standard library and lxml only; no
 
 from __future__ import annotations
 
+import copy
+
 from lxml import etree
 
 M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
@@ -367,22 +369,107 @@ def latex_to_omath(latex: str) -> etree._Element:
     return omath
 
 
+R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+P = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+
 def equation_paragraph(latex: str) -> etree._Element:
     """An ``<a:p>`` holding the equation as PowerPoint writes one: ``a14:m`` around an
-    ``m:oMathPara``, inside markup-compatibility content whose fallback is the LaTeX as text
-    (for consumers that do not read Office 2010 math)."""
+    ``m:oMathPara``. It belongs in a shape inside the ``a14`` choice of :func:`wrap_equation_shape`,
+    which declares the ``a14`` namespace and holds the fallback for other consumers."""
     omath = latex_to_omath(latex)
-    p = etree.Element(f"{{{A}}}p", nsmap={"a": A})
+    p = etree.Element(f"{{{A}}}p", nsmap={"a": A, "a14": A14})
     ppr = etree.SubElement(p, f"{{{A}}}pPr", algn="ctr")
     etree.SubElement(ppr, f"{{{A}}}buNone")
-    ac = etree.SubElement(p, f"{{{MC}}}AlternateContent", nsmap={"mc": MC})
-    choice = etree.SubElement(ac, f"{{{MC}}}Choice", nsmap={"a14": A14}, Requires="a14")
-    m14 = etree.SubElement(choice, f"{{{A14}}}m")
+    m14 = etree.SubElement(p, f"{{{A14}}}m")
     para = etree.SubElement(m14, _m("oMathPara"), nsmap={"m": M})
     _prop(etree.SubElement(para, _m("oMathParaPr")), "jc", val="centerGroup")
     para.append(omath)
-    fallback = etree.SubElement(ac, f"{{{MC}}}Fallback")
-    r = etree.SubElement(fallback, f"{{{A}}}r")
-    etree.SubElement(r, f"{{{A}}}rPr", lang="en-US")
-    etree.SubElement(r, f"{{{A}}}t").text = latex
     return p
+
+
+def fallback_shape(sp: etree._Element, image_rid: str | None, image_size: tuple[int, int] | None,
+                   latex: str) -> etree._Element:
+    """The ``mc:Fallback`` copy of an equation shape, as PowerPoint writes it: the same shape (id,
+    name, position; not a placeholder) filled with a picture of the equation (``a:blipFill``; ``image_size`` is its
+    natural size in EMU, kept, centred, and only scaled down to fit) and an empty paragraph.
+    Without a picture the LaTeX is the text."""
+    fb = copy.deepcopy(sp)
+    # Not a placeholder: an empty placeholder is not drawn by some consumers (LibreOffice skips
+    # it in print and PDF), and the shape's position is explicit anyway.
+    for ph in fb.findall(f"{{{P}}}nvSpPr/{{{P}}}nvPr/{{{P}}}ph"):
+        ph.getparent().remove(ph)
+    body = fb.find(f"{{{P}}}txBody")
+    if body is not None:
+        body_pr = body.find(f"{{{A}}}bodyPr")
+        if body_pr is not None:  # the picture fixes the size: no text autofit
+            for fit in ("spAutoFit", "normAutofit", "noAutofit"):
+                for old in body_pr.findall(f"{{{A}}}{fit}"):
+                    body_pr.remove(old)
+        for old in body.findall(f"{{{A}}}p"):
+            body.remove(old)
+        para = etree.SubElement(body, f"{{{A}}}p")
+        if image_rid is None:
+            ppr = etree.SubElement(para, f"{{{A}}}pPr", algn="ctr")
+            etree.SubElement(ppr, f"{{{A}}}buNone")
+            r = etree.SubElement(para, f"{{{A}}}r")
+            etree.SubElement(r, f"{{{A}}}rPr", lang="en-US")
+            etree.SubElement(r, f"{{{A}}}t").text = latex
+        else:
+            etree.SubElement(para, f"{{{A}}}endParaRPr", lang="en-US")
+    if image_rid is None:
+        return fb
+    sppr = fb.find(f"{{{P}}}spPr")
+    if sppr is None:
+        sppr = etree.SubElement(fb, f"{{{P}}}spPr")
+    for fill in ("noFill", "solidFill", "gradFill", "blipFill", "pattFill", "grpFill"):
+        for old in sppr.findall(f"{{{A}}}{fill}"):
+            sppr.remove(old)
+    blip_fill = etree.Element(f"{{{A}}}blipFill", rotWithShape="1")
+    etree.SubElement(blip_fill, f"{{{A}}}blip", {f"{{{R}}}embed": image_rid}, nsmap={"r": R})
+    stretch = etree.SubElement(blip_fill, f"{{{A}}}stretch")
+    rect = etree.SubElement(stretch, f"{{{A}}}fillRect")
+    xfrm_ext = sppr.find(f"{{{A}}}xfrm/{{{A}}}ext")
+    if image_size and xfrm_ext is not None:
+        # The picture at its natural size (scaled down to fit), centred in the shape.
+        cx, cy = int(xfrm_ext.get("cx", "0")), int(xfrm_ext.get("cy", "0"))
+        w, h = image_size
+        if cx > 0 and cy > 0 and w > 0 and h > 0:
+            scale = min(1.0, cx / w, cy / h)
+            for side_a, side_b, room, used in (("l", "r", cx, w * scale), ("t", "b", cy, h * scale)):
+                inset = round((room - used) / 2 / room * 100000)
+                if inset > 0:
+                    rect.set(side_a, str(inset))
+                    rect.set(side_b, str(inset))
+    # Fill goes after the transform and the geometry (CT_ShapeProperties order).
+    anchor = None
+    for name in ("xfrm", "custGeom", "prstGeom"):
+        found = sppr.find(f"{{{A}}}{name}")
+        if found is not None:
+            anchor = found
+    if anchor is None:
+        sppr.insert(0, blip_fill)
+    else:
+        anchor.addnext(blip_fill)
+    return fb
+
+
+def wrap_equation_shape(sp: etree._Element, fallback: etree._Element) -> etree._Element:
+    """Puts ``sp`` (a shape whose text holds ``a14:m``) in place inside shape-level markup
+    compatibility content, the way PowerPoint stores an equation: ``mc:AlternateContent`` with an
+    ``mc:Choice Requires="a14"`` (declaring the ``a14`` namespace) holding the shape and an
+    ``mc:Fallback`` holding ``fallback``. Returns the ``mc:AlternateContent`` element."""
+    ac = etree.Element(f"{{{MC}}}AlternateContent", nsmap={"mc": MC})
+    sp.addprevious(ac)
+    choice = etree.SubElement(ac, f"{{{MC}}}Choice", nsmap={"a14": A14}, Requires="a14")
+    choice.append(sp)
+    etree.SubElement(ac, f"{{{MC}}}Fallback").append(fallback)
+    return ac
+
+
+def alternate_parts(ac: etree._Element) -> tuple[etree._Element | None, etree._Element | None]:
+    """The choice shape and the fallback shape of an equation's ``mc:AlternateContent``."""
+    choice = ac.find(f"{{{MC}}}Choice")
+    fallback = ac.find(f"{{{MC}}}Fallback")
+    first = lambda el: next(iter(el), None) if el is not None else None  # noqa: E731
+    return first(choice), first(fallback)

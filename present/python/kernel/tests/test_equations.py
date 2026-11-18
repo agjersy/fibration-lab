@@ -9,6 +9,7 @@ from corpus import make_project, slide
 from pptx import Presentation
 
 M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 
 
 def eq(eid, latex, tier="declared", status="agree", **extra):
@@ -36,8 +37,12 @@ def test_an_equation_exports_as_an_editable_powerpoint_equation(render):
     path, out, diags, k = render([slide(1, "Title and Content", "The decay model",
                                         placeholders={"body": eq("e-eq1", r"A e^{- \frac{t}{\tau}}")})])
     prs = Presentation(str(path))
-    maths = [m for s in prs.slides for sh in s.shapes for m in sh._element.iter(f"{{{M}}}oMath")]
+    # As PowerPoint stores it: the shape in mc:AlternateContent (an a14 choice with the OMML and a
+    # picture fallback), outside python-pptx's shape list, so the slide XML is searched.
+    maths = [m for s in prs.slides for m in s._element.iter(f"{{{M}}}oMath")]
     assert len(maths) == 1
+    ac = maths[0].xpath("ancestor::mc:AlternateContent", namespaces={"mc": MC})
+    assert ac and ac[0].getparent().tag.endswith("}spTree")
     assert maths[0].find(f".//{{{M}}}f") is not None and maths[0].find(f".//{{{M}}}sSup") is not None
     assert not [w for w in out["warnings"] if w["rule"] == "eq.omml-fallback"]
     assert not [d for d in diags if d["rule"].startswith("eq.")]
