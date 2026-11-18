@@ -56,6 +56,42 @@ describe("MockBackend decks", () => {
     await expect(b.invoke("deck_get", { session, deck: "missing" })).rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("places a run's figure on a slide with its run citation, and proposes slides in slides mode", async () => {
+    const b = fast();
+    const info = await b.invoke("session_create", { repo_abs: "/home/user/projects/decay-analysis", target: "local", init: true });
+    const session = info.id;
+    const events: SessionEvent[] = [];
+    await b.subscribe(session, (e) => events.push(e));
+    await waitFor(() => events.find((e) => e.type === "kernel_state" && e.state === "ready"));
+    const run = await b.invoke("run_start", { session, script: "scripts/decay_sim.py", args: ["--tau", "1.5"] });
+    await waitFor(() => events.find((e) => e.type === "run_done" && e.run.meta.run_id === run.meta.run_id));
+    const figures = await b.invoke("artifacts_list", { session, run_id: run.meta.run_id, kind: "figure" });
+    expect(figures.length).toBeGreaterThan(0);
+    const fig = figures[0]!;
+
+    await b.invoke("deck_create", { session, title: "Results", template_abs: "/t/corp.potx" });
+    const deck = "results";
+    const slide = await b.invoke("slide_create", { session, deck, layout: "Title and Content" });
+    const placed = await b.invoke("slide_place_figure", { session, deck, slide_id: slide.slide.id, run_id: fig.run_id, artifact: fig.path });
+    const image = placed.slide.placeholders.body;
+    expect(image).toMatchObject({ type: "image", run_cite: { run_id: fig.run_id, artifact: fig.path, script: "scripts/decay_sim.py", args: ["--tau", "1.5"] } });
+    await expect(b.invoke("slide_place_figure", { session, deck, slide_id: slide.slide.id, run_id: fig.run_id, artifact: fig.path })).rejects.toMatchObject({ code: "invalid" });
+
+    // Slides mode: the one chat proposes a slide change; accepting it writes the slide.
+    const conversation = info.active_conversation;
+    await b.invoke("chat_set_mode", { session, conversation, mode: "slides" });
+    await b.invoke("chat_send", { session, conversation, text: "Give slide 1 an action title" });
+    const proposed = await waitFor(() => events.find((e) => e.type === "proposal"));
+    if (proposed.type !== "proposal") throw new Error("unreachable");
+    expect(proposed.proposal).toMatchObject({ kind: "slide-update", deck, slide_ids: [slide.slide.id] });
+    await b.invoke("proposal_respond", { session, proposal_id: proposed.proposal.id, decision: { decision: "accept" } });
+    await waitFor(() => events.find((e) => e.type === "turn_done"));
+    const after = await b.invoke("deck_get", { session, deck });
+    const title = after.slides[0]!.slide.placeholders.title;
+    expect(title?.type === "text" ? title.text.paragraphs[0]!.runs[0]!.t : "").toBe("Decay constant recovered within 2% of the input");
+    expect(events.some((e) => e.type === "deck" && (e.event as Deck.DeckEvent).type === "deck_changed" && (e.event as { by: string }).by === "agent")).toBe(true);
+  });
+
   it("rejects deck commands on a closed session", async () => {
     const b = fast();
     const info = await b.invoke("session_create", { repo_abs: "/r", target: "local" });
