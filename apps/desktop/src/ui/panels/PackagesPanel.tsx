@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { backend } from "../../ipc";
 import { startTask } from "../../state/actions";
 import { ensurePackages, refreshPackages, usePackageList, usePackages } from "../../state/packages";
-import { useActiveSession, useSessionInfo } from "../../state/sessions";
+import { useActiveSession, useSessionInfo, useSessions } from "../../state/sessions";
 import { useSessionTasks } from "../../state/tasks";
 import { notifyError } from "../../state/ui";
 
@@ -12,16 +12,18 @@ export function PackagesPanel() {
   const packages = usePackageList(session);
   const stale = usePackages((s) => (session ? (s.stale[session] ?? false) : false));
   const loading = usePackages((s) => (session ? (s.loading[session] ?? false) : false));
+  const kernel = useSessions((s) => (session ? s.kernel[session]?.state : undefined));
   const [filter, setFilter] = useState("");
   const [toAdd, setToAdd] = useState("");
   const tasks = useSessionTasks(session);
   const latest = tasks[0];
 
   // The list is cached in the store: opening the panel fetches it only the
-  // first time, and again after `packages_changed` marked it stale.
+  // first time, and again after `packages_changed` marked it stale. The listing
+  // needs the kernel, so a panel shown while it starts asks again once it is ready.
   useEffect(() => {
-    if (session) ensurePackages(session).catch(notifyError);
-  }, [session, stale]);
+    if (session && kernel === "ready") ensurePackages(session).catch(notifyError);
+  }, [session, stale, kernel]);
 
   if (!session) return <div className="empty">No session</div>;
   const busy = tasks.some((t) => !t.done);
