@@ -4,10 +4,12 @@
 //! webview.
 
 pub mod agent_runner;
+pub mod decks;
 pub mod error;
 pub mod events;
 pub mod figures;
 pub mod fs;
+pub mod history;
 pub mod packages;
 pub mod runs;
 pub mod runtime;
@@ -15,6 +17,7 @@ pub mod tasks;
 pub mod terminal;
 
 pub use agent_runner::{ConversationRuntime, UiApprover};
+pub use decks::{DeckOptions, DeckServices};
 pub use error::{ServiceError, ServiceResult};
 pub use events::{EventHub, Subscription};
 pub use runs::{RunRecord, RunService, RunShared};
@@ -53,6 +56,8 @@ pub struct WorkbenchOptions {
     /// The kernel source bundled with a packaged app (a directory with `pyproject.toml`,
     /// `analyst_kernel/`, and `analyst_mpl/`). See [`Workbench::prepare_tooling`].
     pub kernel_source: Option<PathBuf>,
+    /// How deck kernels are started (engine, sandbox, interpreter).
+    pub deck: DeckOptions,
 }
 
 impl WorkbenchOptions {
@@ -66,6 +71,7 @@ impl WorkbenchOptions {
             dev_mode: cfg!(debug_assertions),
             init: crate::init::InitOptions::default(),
             kernel_source: None,
+            deck: DeckOptions::default(),
         }
     }
 }
@@ -188,6 +194,7 @@ impl Workbench {
             control_dir: self.control_dir(),
             mpl_dir: None,
             kernel_source: self.kernel_source(),
+            deck: self.opts.deck.clone(),
         }
     }
 

@@ -7,6 +7,8 @@ publish.workspace = true
 
 [dependencies]
 analyst-protocol = { path = "../protocol" }
+analyst-deck = { path = "../../present/crates/core" }
+analyst-deck-protocol = { path = "../../present/crates/protocol" }
 wb-net = { path = "../wb-net" }
 wb-providers = { path = "../wb-providers" }
 wb-transcript = { path = "../wb-transcript" }

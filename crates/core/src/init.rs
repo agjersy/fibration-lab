@@ -70,8 +70,9 @@ pub fn template_files(name: &str) -> Vec<(&'static str, String)> {
         (
             ".gitignore",
             // `data/*` (not `data/`) so the `.gitkeep` exception can apply: data files are
-            // never committed, checkpointed, or synced by default.
-            "out/*\n!out/.gitkeep\ndata/*\n!data/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.analyst/env.sh\n.ruff_cache/\n.env\n"
+            // never committed, checkpointed, or synced by default. Deck exports and the
+            // deck kernel's caches are derived files.
+            "out/*\n!out/.gitkeep\ndata/*\n!data/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.analyst/env.sh\n.ruff_cache/\n.env\ndecks/*/exports/\ndecks/*/.present/cache/\n"
                 .into(),
         ),
         (

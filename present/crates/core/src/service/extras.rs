@@ -1,10 +1,9 @@
-//! Commands of docs/IPC.md that sit beside the main editing loop: template thumbnails and
-//! replacement, preview images from the renderer, chart data, Personal Analyst imports,
-//! assets, and provider keys.
+//! Deck commands of docs/IPC.md that sit beside the main editing loop: template thumbnails
+//! and replacement, preview images from the renderer, chart data, and assets.
 
 use super::*;
 use analyst_deck_protocol::kernel::LayoutThumbnail;
-use analyst_deck_protocol::ui::{AnalystItem, AssetView};
+use analyst_deck_protocol::ui::AssetView;
 use base64::Engine;
 
 const ASSET_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "emf", "wmf"];
@@ -63,91 +62,7 @@ fn asset_view(root: &Path, path: &Path) -> Option<AssetView> {
     })
 }
 
-impl Workbench {
-    /// Store a provider's API key in the home `.env` file (mode 0600) under the variable the
-    /// provider's `key = "env:<VAR>"` names. The key is never returned or logged. A value
-    /// for the same variable in the process environment still takes precedence.
-    pub fn provider_set_key(&self, provider: &str, key: &str) -> R<()> {
-        let global = self.global();
-        let cfg = global
-            .providers
-            .iter()
-            .find(|p| p.name == provider)
-            .ok_or_else(|| {
-                IpcError::not_found(format!("no provider named {provider:?} in config.toml"))
-            })?;
-        let Some(reference) = cfg.key.as_deref() else {
-            return Err(IpcError::invalid(format!(
-                "provider {provider:?} has no key entry in config.toml; add key = \"env:<VAR>\" to name the variable its key is stored under"
-            )));
-        };
-        let reference = wb_providers::keys::KeyRef::parse(reference)
-            .map_err(|e| IpcError::invalid(format!("provider {provider:?}: {e}")))?;
-        if key.trim().is_empty() {
-            return Err(IpcError::invalid("the key is empty"));
-        }
-        wb_providers::keys::KeyStores::for_home(&self.home)
-            .set(&reference, key.trim())
-            .map_err(|e| IpcError::invalid(format!("the key could not be stored: {e}")))
-    }
-}
-
-impl Workbench {
-    /// Close every open project (app exit).
-    pub async fn shutdown(&self) {
-        let ids: Vec<String> = self
-            .open
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .keys()
-            .cloned()
-            .collect();
-        for id in ids {
-            let _ = self.project_close(&id).await;
-        }
-    }
-}
-
-impl ProjectRuntime {
-    /// Write a policy change into the project's `project.toml` so it outlives the session.
-    /// The file is rewritten from its parsed form: values are kept, comments are not.
-    pub fn persist_policy(&self, patch: &PolicyPatch) -> R<()> {
-        let path = self.ws.project.root.join(".present").join("project.toml");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(err(IpcErrorCode::Io, e)),
-        };
-        let mut doc: toml::Table = text
-            .parse()
-            .map_err(|e| IpcError::invalid(format!("project.toml: {e}")))?;
-        let policy = doc
-            .entry("policy")
-            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
-            .as_table_mut()
-            .ok_or_else(|| IpcError::invalid("project.toml: [policy] is not a table"))?;
-        for (key, value) in [
-            ("edits", &patch.edits),
-            ("code", &patch.code),
-            ("skills_scripts", &patch.skills_scripts),
-            ("code_mode", &patch.code_mode),
-            ("export", &patch.export),
-        ] {
-            if let Some(v) = value {
-                policy.insert(key.into(), toml::Value::String(v.clone()));
-            }
-        }
-        if let Some(n) = patch.max_steps {
-            policy.insert("max_steps".into(), toml::Value::Integer(i64::from(n)));
-        }
-        let updated =
-            toml::to_string_pretty(&doc).map_err(|e| IpcError::internal(e.to_string()))?;
-        // Refuse values the configuration does not accept before anything is written.
-        toml::from_str::<analyst_deck_protocol::config::ProjectConfig>(&updated)
-            .map_err(|e| IpcError::invalid(format!("not a valid policy: {e}")))?;
-        write_atomic(&path, updated.as_bytes()).map_err(|e| err(IpcErrorCode::Io, e))
-    }
-
+impl DeckService {
     /// One small image per template layout, for the layout picker.
     pub async fn template_thumbnails(&self) -> R<Vec<LayoutThumbnail>> {
         let deck = self.ws.deck().read_deck()?;
@@ -192,12 +107,8 @@ impl ProjectRuntime {
                 .call_value("template.inspect", json!({"path": probe_rel}))
                 .await?;
             let _ = std::fs::remove_file(rt.ws.project.root.join(&probe_rel));
-            rt.ws
-                .snapshot(
-                    analyst_deck_protocol::config::SnapshotReason::Manual,
-                    None,
-                    Some("before replacing the template"),
-                )
+            rt.host
+                .checkpoint("before replacing the template")
                 .map_err(internal)?;
             write_atomic(&target, &bytes).map_err(|e| err(IpcErrorCode::Io, e))?;
             let store = rt.ws.deck();
@@ -229,7 +140,7 @@ impl ProjectRuntime {
                 ),
             };
             if let Ok(info) = rt.info().await {
-                rt.emit(ProjectEvent::ProjectChanged {
+                rt.emit(DeckEvent::InfoChanged {
                     info: Box::new(info),
                 });
             }
@@ -271,56 +182,6 @@ impl ProjectRuntime {
             .call_value("chart.compute", json!({"source": source, "steps": steps}))
             .await?;
         Ok(out["table"].take())
-    }
-
-    /// Figures and tables a Personal Analyst repository offers for import.
-    pub async fn analyst_scan(&self, repo_abs: &str) -> R<Vec<AnalystItem>> {
-        let out = self
-            .ws
-            .kernel
-            .call_value("analyst.scan", json!({"repo_abs": repo_abs}))
-            .await?;
-        let mut items = Vec::new();
-        for (kind, key) in [("figure", "figures"), ("table", "tables")] {
-            for v in out[key].as_array().into_iter().flatten() {
-                let text = |k: &str| v[k].as_str().unwrap_or_default().to_string();
-                let id = text("item");
-                items.push(AnalystItem {
-                    thumb: (kind == "figure" && v["png"] == true)
-                        .then(|| Path::new(repo_abs).join(&id).to_string_lossy().into_owned()),
-                    id,
-                    kind: kind.into(),
-                    title: text("title"),
-                    run_id: text("run_id"),
-                    script: text("script"),
-                    args: v["args"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|a| a.as_str().map(str::to_string))
-                        .collect(),
-                    created: text("created"),
-                });
-            }
-        }
-        Ok(items)
-    }
-
-    /// Copy one Analyst figure or table into the project as a reference.
-    pub async fn analyst_import(&self, repo_abs: &str, item: &str) -> R<RefView> {
-        let entry = self
-            .ws
-            .add_analyst_reference(repo_abs, item)
-            .await
-            .map_err(|e| IpcError::invalid(format!("{e:#}")))?;
-        let refs = self.refs_list()?;
-        let view = refs
-            .iter()
-            .find(|r| r.id == entry.id.as_str())
-            .cloned()
-            .ok_or_else(|| IpcError::internal("the imported reference is not listed"))?;
-        self.emit(ProjectEvent::RefsChanged { refs });
-        Ok(view)
     }
 
     /// Images under `assets/` that slides can place.

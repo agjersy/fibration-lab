@@ -11,15 +11,41 @@ use wb_skills::{SkillRoot, SkillSet, SkillSource};
 /// Discover the skills visible to a session. Folders that cannot be read are reported in
 /// the log and skipped; a missing folder is not an error.
 pub fn discover(home: &Path, repo: &Path) -> SkillSet {
-    let roots = [
-        SkillRoot::new(SkillSource::User, home.join("skills")),
-        SkillRoot::new(SkillSource::Project, repo.join(".analyst").join("skills")),
-    ];
+    let mut roots = Vec::new();
+    // The deck skills that ship with the app (storyline, chart selection, ...) are offered
+    // in projects that have a deck.
+    if repo.join(crate::service::decks::DECKS_DIR).is_dir() {
+        if let Some(builtin) = builtin_deck_skills(home) {
+            roots.push(SkillRoot::new(SkillSource::Builtin, builtin));
+        }
+    }
+    roots.push(SkillRoot::new(SkillSource::User, home.join("skills")));
+    roots.push(SkillRoot::new(
+        SkillSource::Project,
+        repo.join(".analyst").join("skills"),
+    ));
+    let roots: Vec<SkillRoot> = roots
+        .into_iter()
+        .filter(|r| r.source != SkillSource::Builtin || r.path.is_dir())
+        .collect();
     let (set, diagnostics) = SkillSet::discover(&roots);
     for d in diagnostics.iter().filter(|d| d.skipped) {
         tracing::warn!("skill at {} skipped: {}", d.path.display(), d.message);
     }
     set
+}
+
+/// Where the built-in deck skills are: `PRESENT_SKILLS_DIR` for an installed app, the
+/// runtime under the home, or the repository in a development checkout.
+pub fn builtin_deck_skills(home: &Path) -> Option<std::path::PathBuf> {
+    std::env::var_os("PRESENT_SKILLS_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| Some(home.join("runtime").join("skills")).filter(|p| p.is_dir()))
+        .or_else(|| {
+            Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../present/skills"))
+                .filter(|p| p.is_dir())
+        })
 }
 
 /// The skills part of the system prompt for one turn: the list of skills by description,

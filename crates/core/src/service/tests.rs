@@ -1691,3 +1691,489 @@ async fn agent_and_ui_runs_produce_the_same_events() {
     assert!(listed.contains(&agent_run) && listed.contains(ui_id.as_ref().unwrap()));
     fx.wb.shutdown().await;
 }
+
+fn deck_template() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../present/evals/templates/plain/plain.pptx")
+}
+
+/// The deck kernel needs its Python environment (`present/python/kernel/.venv`); a checkout
+/// without it skips the deck tests.
+fn deck_runtime_available(home: &std::path::Path) -> bool {
+    let ok = analyst_deck::kernel::resolve_runtime_python(home, None).is_some();
+    if !ok {
+        eprintln!("skipped: no deck kernel interpreter (run `uv sync` in present/python/kernel)");
+    }
+    ok
+}
+
+fn deck_options(opts: &mut WorkbenchOptions) {
+    fake_kernel(opts);
+    opts.deck.engine = "none".into();
+    opts.deck.kernel_env = vec![(
+        "PRESENT_FONT_DIRS".into(),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../present/vendor/fonts")
+            .to_string_lossy()
+            .into_owned(),
+    )];
+}
+
+fn slide_doc(title: &str) -> Value {
+    json!({
+        "layout": "Title and Content",
+        "placeholders": {
+            "title": {"type": "text", "text": {"paragraphs": [{"runs": [{"t": title}]}]}},
+            "body": {"type": "text", "text": {"paragraphs": [{"runs": [{"t": "One point"}]}]}}
+        }
+    })
+}
+
+fn text(t: &str) -> Vec<ModelEvent> {
+    vec![
+        ModelEvent::Text { delta: t.into() },
+        ModelEvent::Stop {
+            reason: StopReason::End,
+            message: None,
+        },
+    ]
+}
+
+/// One control loop over both workbenches: a single turn declares one scope for a file and
+/// a new slide, writes a script, runs it, and proposes a slide; one checkpoint covers the
+/// whole turn, and one undo takes back the script and the slide together.
+#[tokio::test]
+async fn one_turn_changes_code_runs_it_and_adds_a_slide_and_one_undo_reverts_all() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    // A deck is created on request, from a template file; nothing starts.
+    assert!(fx.rt.decks_list().is_empty());
+    let deck = fx
+        .rt
+        .deck_create(None, "Q3 Review", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    assert_eq!(
+        (deck.slug.as_str(), deck.slides, deck.open),
+        ("q3-review", 0, false)
+    );
+    assert!(fx.rt.repo.join("decks/q3-review/deck/deck.json").is_file());
+    assert!(fx
+        .rt
+        .repo
+        .join("decks/q3-review/template/plain.pptx")
+        .is_file());
+    // The project template ignores deck exports and the deck kernel's caches.
+    let ignore = std::fs::read_to_string(fx.rt.repo.join(".gitignore")).unwrap();
+    assert!(ignore.contains("decks/*/exports/") && ignore.contains("decks/*/.present/cache/"));
+    // The user commits; from here on the turn's changes are what `git status` shows.
+    crate::checkpoint::git(&fx.rt.repo, &["add", "-A"], None).unwrap();
+    crate::checkpoint::git(&fx.rt.repo, &["commit", "-q", "-m", "deck"], None).unwrap();
+    let deck_json_before =
+        std::fs::read_to_string(fx.rt.repo.join("decks/q3-review/deck/deck.json")).unwrap();
+
+    // Auto within the declared scope; the fake kernel has no sandbox, so the run asks.
+    fx.rt
+        .set_policy(&PolicyPatch {
+            preset: Some(analyst_protocol::config::PolicyPreset::Auto),
+            ..Default::default()
+        })
+        .unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let script = "import sys\nprint('margin', 18, flush=True)\n";
+    let model = Arc::new(ScriptedModelClient::new(vec![
+        vec![
+            call(
+                "s1",
+                "declare_scope",
+                json!({"files": ["scripts/margin.py"], "new_slides": 1, "deck": "q3-review", "plan": "compute the margin and show it"}),
+            ),
+            call(
+                "e1",
+                "fs_propose_create",
+                json!({"path": "scripts/margin.py", "content": script}),
+            ),
+            call("r1", "run_script", json!({"script": "scripts/margin.py"})),
+            call(
+                "d1",
+                "slide_propose_create",
+                json!({"deck": "q3-review", "slide": slide_doc("Margin recovered to 18%")}),
+            ),
+            stop_tools(),
+        ],
+        text("Done: one script, one run, one slide."),
+    ]));
+    fx.rt.set_model_override(Some(model.clone()));
+    let conv_id = fx.rt.meta().active_conversation.unwrap();
+    let conv = fx.rt.conversation_runtime(&conv_id).unwrap();
+    let mut rx = fx.rt.subscribe();
+    let turn = agent_runner::start_turn(fx.rt.clone(), conv.clone(), "margin slide", vec![])
+        .await
+        .unwrap();
+    // The unsandboxed run is the only thing that asks.
+    let SessionEvent::Proposal { proposal } =
+        next_matching(&mut rx, |e| matches!(e, SessionEvent::Proposal { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(proposal.id, "r1");
+    fx.rt
+        .proposal_respond(&proposal.id, ProposalDecision::Accept { content: None })
+        .unwrap();
+    let done = next_matching(&mut rx, |e| {
+        matches!(
+            e,
+            SessionEvent::TurnDone { .. } | SessionEvent::TurnError { .. }
+        )
+    })
+    .await;
+    let SessionEvent::TurnDone { summary, .. } = done else {
+        panic!("the turn failed: {done:?}")
+    };
+    // The turn changed a script and a slide, and ran the script.
+    assert_eq!(summary.runs.len(), 1);
+    assert_eq!(
+        summary.files_changed.len(),
+        2,
+        "{:?}",
+        summary.files_changed
+    );
+    assert!(summary
+        .files_changed
+        .contains(&"scripts/margin.py".to_string()));
+    let slide_file = summary
+        .files_changed
+        .iter()
+        .find(|f| f.starts_with("decks/q3-review/deck/slides/"))
+        .expect("the slide is a file of the repository")
+        .clone();
+    assert!(fx.rt.repo.join(&slide_file).is_file());
+    assert_eq!(fx.rt.decks_list()[0].slides, 1);
+    assert!(
+        fx.rt.decks_list()[0].open,
+        "the deck kernel started on first use"
+    );
+
+    // One transcript: one checkpoint, the run, and the slide proposal with its shape.
+    let events = fx.rt.conversation_transcript(&conv_id).unwrap();
+    let checkpoints = events
+        .iter()
+        .filter(|e| matches!(e, analyst_protocol::transcript::Event::Checkpoint { .. }))
+        .count();
+    assert_eq!(checkpoints, 1, "one checkpoint covers the whole turn");
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, analyst_protocol::transcript::Event::Run { .. })));
+    let slide_proposal = events
+        .iter()
+        .find_map(|e| match e {
+            analyst_protocol::transcript::Event::Proposal {
+                kind: analyst_protocol::transcript::ProposalKind::SlideCreate,
+                deck,
+                targets,
+                before,
+                after,
+                ..
+            } => Some((deck.clone(), targets.clone(), before.clone(), after.clone())),
+            _ => None,
+        })
+        .expect("the slide proposal is in the transcript");
+    assert_eq!(slide_proposal.0.as_deref(), Some("q3-review"));
+    assert_eq!(slide_proposal.1, Some(vec![slide_file.clone()]));
+    assert!(slide_proposal.2.is_none(), "a new slide has no before");
+    assert_eq!(
+        slide_proposal.3.as_ref().unwrap()["layout"],
+        "Title and Content"
+    );
+    // The new slide was announced with `new_slides`, so the policy applied it on its own.
+    assert!(events.iter().any(|e| matches!(
+        e,
+        analyst_protocol::transcript::Event::Decision { proposal_id, decision: Decision::Auto, .. }
+            if proposal_id == "d1"
+    )));
+
+    // One undo timeline: the turn's checkpoint is listed with its turn, and reverting the
+    // turn takes back the script and the slide together.
+    let history = fx.rt.history_list(None).unwrap();
+    assert!(history
+        .iter()
+        .any(|c| c.turn.as_deref() == Some(turn.as_str())));
+    fx.rt.history_revert_turn(&turn).await.unwrap();
+    assert!(!fx.rt.repo.join("scripts/margin.py").exists());
+    assert!(!fx.rt.repo.join(&slide_file).exists());
+    assert_eq!(
+        std::fs::read_to_string(fx.rt.repo.join("decks/q3-review/deck/deck.json")).unwrap(),
+        deck_json_before
+    );
+    assert_eq!(fx.rt.decks_list()[0].slides, 0);
+    let status = crate::checkpoint::git(&fx.rt.repo, &["status", "--porcelain"], None).unwrap();
+    assert_eq!(
+        status.trim(),
+        "",
+        "the working tree is as it was before the turn"
+    );
+    // The restore itself can be undone: the state it replaced was checkpointed.
+    let history = fx.rt.history_list(None).unwrap();
+    let safety = history
+        .iter()
+        .find(|c| {
+            c.label
+                .as_deref()
+                .is_some_and(|l| l.starts_with("before restoring"))
+        })
+        .expect("a checkpoint of the state the restore replaced");
+    fx.rt.history_restore(&safety.id).await.unwrap();
+    assert!(fx.rt.repo.join("scripts/margin.py").is_file());
+    assert!(fx.rt.repo.join(&slide_file).is_file());
+    fx.wb.shutdown().await;
+}
+
+/// Modes are permission profiles over the one loop, enforced by the policy's mode rules:
+/// slides mode offers the deck tools and no code tools; polish may change and reorder
+/// slides but not add slides, citations, or elements; a locked slide is never changed.
+/// A slide proposal keeps its before/after shape for the user's decision.
+#[tokio::test]
+async fn deck_modes_are_enforced_by_policy_and_slide_proposals_keep_their_shape() {
+    use crate::agent::{Agent, AgentConfig, ApprovalDecision, ApprovalRequest, Approver};
+    use crate::tools::gate::Policy;
+    use analyst_protocol::evals::Mode;
+    use analyst_protocol::transcript::{Event, ProposalKind};
+
+    /// Accepts everything; edits the first slide proposal before accepting it.
+    struct EditingApprover {
+        seen: std::sync::Mutex<Vec<ApprovalRequest>>,
+    }
+    #[async_trait::async_trait]
+    impl Approver for EditingApprover {
+        async fn approve(&self, _req: &ApprovalRequest) -> bool {
+            true
+        }
+        async fn decide(&self, req: &ApprovalRequest) -> ApprovalDecision {
+            let first = {
+                let mut seen = self.seen.lock().unwrap();
+                seen.push(req.clone());
+                seen.len() == 1
+            };
+            let content = match (&req.deck, first) {
+                (Some(d), true) => {
+                    let mut slide = d.after.clone().unwrap();
+                    slide["placeholders"]["title"]["text"]["paragraphs"][0]["runs"][0]["t"] =
+                        json!("Edited by the user");
+                    Some(slide.to_string())
+                }
+                _ => None,
+            };
+            ApprovalDecision::Accept { content }
+        }
+    }
+
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(
+            Some("board"),
+            "Board",
+            &deck_template().to_string_lossy(),
+            false,
+        )
+        .unwrap();
+    let cited = {
+        let mut s = slide_doc("Now with a claim");
+        s["placeholders"]["body"]["text"]["paragraphs"][0]["runs"][0]["cite"] =
+            json!(["ref:r-12345678@abcdef123456#p1"]);
+        s
+    };
+    let model = Arc::new(ScriptedModelClient::new(vec![
+        // Turn 1, slides mode, review preset.
+        vec![
+            call(
+                "a1",
+                "slide_propose_create",
+                json!({"slide": slide_doc("Proposed title")}),
+            ),
+            call(
+                "a2",
+                "fs_propose_create",
+                json!({"path": "scripts/x.py", "content": "x = 1\n"}),
+            ),
+            call("a3", "run_script", json!({"script": "scripts/x.py"})),
+            stop_tools(),
+        ],
+        text("slide added"),
+    ]));
+    let project = fx.rt.project();
+    let conv = "c-modes";
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        conv,
+        project.clone(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.decks = fx.rt.decks.clone();
+    let approver = Arc::new(EditingApprover {
+        seen: Default::default(),
+    });
+    let policy = Policy::for_project(&fx.rt.repo, &project, Mode::Slides).unwrap();
+    let config = AgentConfig::new(Mode::Slides, "scripted/model", Default::default(), 10);
+    let mut agent = Agent::new(model, ctx, policy, approver.clone(), config);
+    let session = fx.rt.session_snapshot();
+    let results = |from: usize| -> std::collections::HashMap<String, (bool, Value)> {
+        session
+            .read_transcript(conv)
+            .unwrap()
+            .into_iter()
+            .skip(from)
+            .filter_map(|e| match e {
+                Event::ToolResult { id, ok, result, .. } => Some((id, (ok, result))),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // Turn 1: the deck tool is offered and reviewed; code tools are not part of the mode.
+    let s1 = agent.run_turn("add a slide").await.unwrap();
+    let r = results(0);
+    assert!(r["a1"].0, "{:?}", r["a1"]);
+    assert_eq!(r["a1"].1["user_modified"], true);
+    for id in ["a2", "a3"] {
+        assert!(!r[id].0);
+        assert!(
+            r[id].1["error"]
+                .as_str()
+                .unwrap()
+                .contains("not available in slides mode"),
+            "{:?}",
+            r[id]
+        );
+    }
+    assert_eq!(s1.files_changed.len(), 1);
+    let slide_file = s1.files_changed[0].clone();
+    let slide_id = slide_file
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .trim_end_matches(".json")
+        .to_string();
+    // The request the user saw keeps the proposal's shape, and what they edited was written.
+    let seen = approver.seen.lock().unwrap().clone();
+    let d = seen[0].deck.as_ref().expect("a deck proposal");
+    assert_eq!(
+        (d.deck.as_str(), d.kind),
+        ("board", ProposalKind::SlideCreate)
+    );
+    assert!(d.before.is_none() && d.after.as_ref().unwrap()["layout"] == "Title and Content");
+    assert_eq!(d.targets, vec![slide_file.clone()]);
+    let view = agent_runner::proposal_view(&fx.rt.repo, "a1", conv, &seen[0]);
+    assert_eq!(view.kind, ProposalKind::SlideCreate);
+    assert_eq!(view.deck.as_deref(), Some("board"));
+    assert_eq!(view.slide_ids, Some(vec![slide_id.clone()]));
+    assert!(view.before.is_none() && view.after.is_some() && view.proposed.is_some());
+    assert!(std::fs::read_to_string(fx.rt.repo.join(&slide_file))
+        .unwrap()
+        .contains("Edited by the user"));
+
+    // Turn 2: polish. The scripted calls name the slide the first turn created.
+    agent.model = Arc::new(ScriptedModelClient::new(vec![
+        vec![
+            call(
+                "b1",
+                "slide_propose_create",
+                json!({"slide": slide_doc("Another")}),
+            ),
+            call(
+                "b2",
+                "slide_propose_update",
+                json!({"slide_id": slide_id, "slide": cited}),
+            ),
+            // A patch keeps the element ids, so nothing new is added.
+            call(
+                "b3",
+                "slide_propose_update",
+                json!({"slide_id": slide_id, "patch": [{"op": "replace", "path": "/placeholders/title/text/paragraphs/0/runs/0/t", "value": "Sharper title"}]}),
+            ),
+            call("b4", "slide_propose_delete", json!({"slide_id": slide_id})),
+            stop_tools(),
+        ],
+        text("polished"),
+    ]));
+    agent.set_mode(Mode::Polish);
+    let before = session.read_transcript(conv).unwrap().len();
+    agent.run_turn("polish it").await.unwrap();
+    let r = results(before);
+    assert!(r["b1"].1["error"]
+        .as_str()
+        .unwrap()
+        .contains("not available in polish mode"));
+    let new_claim = r["b2"].1["error"].as_str().unwrap();
+    assert!(
+        new_claim.contains("polish mode does not allow `new-citation`"),
+        "{new_claim}"
+    );
+    assert!(
+        r["b3"].0,
+        "a wording change is what polish is for: {:?}",
+        r["b3"]
+    );
+    assert!(r["b4"].1["error"]
+        .as_str()
+        .unwrap()
+        .contains("not available in polish mode"));
+    assert!(std::fs::read_to_string(fx.rt.repo.join(&slide_file))
+        .unwrap()
+        .contains("Sharper title"));
+    // The update proposal carries the slide before and after.
+    let update = session
+        .read_transcript(conv)
+        .unwrap()
+        .into_iter()
+        .find_map(|e| match e {
+            Event::Proposal {
+                id,
+                kind: ProposalKind::SlideUpdate,
+                before,
+                after,
+                ..
+            } if id == "b3" => Some((before, after)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(update.0.unwrap().to_string().contains("Edited by the user"));
+    assert!(update.1.unwrap().to_string().contains("Sharper title"));
+
+    // Turn 3: the user locks the slide (a UI command of the deck service); the loop
+    // refuses to change it in any mode.
+    fx.rt
+        .deck("board")
+        .await
+        .unwrap()
+        .slide_lock(&slide_id, None, true)
+        .unwrap();
+    agent.model = Arc::new(ScriptedModelClient::new(vec![
+        vec![
+            call(
+                "c1",
+                "slide_propose_update",
+                json!({"slide_id": slide_id, "slide": slide_doc("Changed while locked")}),
+            ),
+            stop_tools(),
+        ],
+        text("could not"),
+    ]));
+    agent.set_mode(Mode::Slides);
+    let before = session.read_transcript(conv).unwrap().len();
+    agent.run_turn("change it").await.unwrap();
+    let r = results(before);
+    assert!(!r["c1"].0);
+    assert!(
+        r["c1"].1["error"].as_str().unwrap().contains("locked"),
+        "{:?}",
+        r["c1"]
+    );
+    assert_eq!(r["c1"].1["denied"], "locked");
+    fx.wb.shutdown().await;
+}

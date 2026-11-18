@@ -1,26 +1,24 @@
-//! Writes the TypeScript bindings of every UI-facing type to
-//! `apps/desktop/src/ipc/generated/`, plus an `index.ts` that re-exports them.
+//! Writes the TypeScript bindings of every UI-facing deck type to the one renderer's
+//! `apps/desktop/src/ipc/generated/deck/`, plus an `index.ts` that re-exports them. The
+//! analysis types next to them come from `analyst-protocol`.
 
-use analyst_deck_protocol::audit::AuditRecord;
 use analyst_deck_protocol::cite::{Cite, RefKind};
-use analyst_deck_protocol::config::{
-    ContractConfig, ExportPreset, PolicyConfig, SnapshotLogRecord, SnapshotManifest,
-};
+use analyst_deck_protocol::config::{ContractConfig, ExportPreset};
 use analyst_deck_protocol::deck::{Deck, Slide, Table};
-use analyst_deck_protocol::ids::{ElementId, RefId, SlideId, SnapshotId};
+use analyst_deck_protocol::ids::{ElementId, RefId, SlideId};
 use analyst_deck_protocol::kernel::{
     AnalystScanResult, ChartComputeResult, Chunk, Diagnostic, ElementMapEntry, HelloResult,
     ImageRef, LayoutThumbnail, Notification, OutlineNode, TableRef,
 };
 use analyst_deck_protocol::template::{TemplateDescription, TemplateSidecar};
-use analyst_deck_protocol::transcript::Event;
 use analyst_deck_protocol::ui;
 use std::path::Path;
 use ts_rs::TS;
 
 #[test]
 fn export_typescript_bindings() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/desktop/src/ipc/generated");
+    let dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/desktop/src/ipc/generated/deck");
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     // The directory holds ts-rs output only: start clean so stale files never linger.
@@ -42,7 +40,6 @@ fn export_typescript_bindings() {
     SlideId::export_all(&cfg).unwrap();
     ElementId::export_all(&cfg).unwrap();
     RefId::export_all(&cfg).unwrap();
-    SnapshotId::export_all(&cfg).unwrap();
     TemplateDescription::export_all(&cfg).unwrap();
     TemplateSidecar::export_all(&cfg).unwrap();
     Diagnostic::export_all(&cfg).unwrap();
@@ -56,33 +53,21 @@ fn export_typescript_bindings() {
     ChartComputeResult::export_all(&cfg).unwrap();
     AnalystScanResult::export_all(&cfg).unwrap();
     Notification::export_all(&cfg).unwrap();
-    PolicyConfig::export_all(&cfg).unwrap();
     ContractConfig::export_all(&cfg).unwrap();
     ExportPreset::export_all(&cfg).unwrap();
-    SnapshotManifest::export_all(&cfg).unwrap();
-    SnapshotLogRecord::export_all(&cfg).unwrap();
-    Event::export_all(&cfg).unwrap();
-    AuditRecord::export_all(&cfg).unwrap();
     // Desktop IPC (IPC.md).
     ui::IpcError::export_all(&cfg).unwrap();
-    ui::AppInfo::export_all(&cfg).unwrap();
-    ui::ProjectInfo::export_all(&cfg).unwrap();
-    ui::PolicyPatch::export_all(&cfg).unwrap();
+    ui::DeckInfo::export_all(&cfg).unwrap();
+    ui::SlideView::export_all(&cfg).unwrap();
     ui::DeckView::export_all(&cfg).unwrap();
     ui::RefView::export_all(&cfg).unwrap();
     ui::SourcePassage::export_all(&cfg).unwrap();
     ui::SearchHit::export_all(&cfg).unwrap();
-    ui::ProposalDecision::export_all(&cfg).unwrap();
     ui::ExportView::export_all(&cfg).unwrap();
-    ui::SnapshotView::export_all(&cfg).unwrap();
-    ui::ModelEntry::export_all(&cfg).unwrap();
-    ui::SkillView::export_all(&cfg).unwrap();
-    ui::AnalystItem::export_all(&cfg).unwrap();
     ui::AssetView::export_all(&cfg).unwrap();
     ui::FileContent::export_all(&cfg).unwrap();
     ui::WriteResult::export_all(&cfg).unwrap();
-    ui::ChatAttachments::export_all(&cfg).unwrap();
-    ui::ProjectEvent::export_all(&cfg).unwrap();
+    ui::DeckEvent::export_all(&cfg).unwrap();
 
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
@@ -117,7 +102,8 @@ fn export_typescript_bindings() {
         "SandboxInfo",
         "EngineInfo",
         "EmbeddingInfo",
-        "TranscriptEvent",
+        "DeckEvent",
+        "DeckInfo",
     ] {
         assert!(
             names.iter().any(|n| n == expected),

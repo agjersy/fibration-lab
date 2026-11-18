@@ -6,5 +6,5 @@ pub mod gate;
 pub mod proposals;
 pub mod registry;
 
-pub use dispatch::{ToolContext, ToolError, ToolOutcome};
+pub use dispatch::{Dispatched, ToolContext, ToolError, ToolOutcome};
 pub use registry::{tool_class, ToolClass, ToolSpec};

@@ -4,14 +4,12 @@
 
 mod common;
 
-use analyst_deck_protocol::audit::*;
 use analyst_deck_protocol::config::*;
 use analyst_deck_protocol::deck::{DeckMode, ThemeColor};
 use analyst_deck_protocol::evals::*;
 use analyst_deck_protocol::kernel::{RefKind, Severity};
 use analyst_deck_protocol::template::*;
-use analyst_deck_protocol::transcript::{DecidedBy, Decision, Event, ProposalKind};
-use common::{fixture, round_trip_json, round_trip_jsonl, round_trip_toml, round_trip_value};
+use common::{round_trip_json, round_trip_toml, round_trip_value};
 use serde_json::json;
 
 // ---- template ----
@@ -80,104 +78,6 @@ fn template_sidecar_round_trips() {
 }
 
 // ---- configuration ----
-
-#[test]
-fn global_config_round_trips() {
-    let c: GlobalConfig = round_trip_toml("config.toml");
-    assert_eq!(c.defaults.model.as_deref(), Some("gateway/claude-opus-5-5"));
-    assert_eq!(c.runtime_python, None);
-    let gateway = c.provider("gateway").unwrap();
-    assert_eq!(gateway.kind, ProviderKind::Anthropic);
-    assert_eq!(gateway.effective_auth(), AuthKind::Bearer);
-    assert_eq!(
-        gateway.key_source(),
-        Some(KeySource::Env("GATEWAY_API_KEY".into()))
-    );
-    assert_eq!(gateway.headers["X-Team"], "strategy");
-    assert_eq!(gateway.effective_location(), Location::Internal);
-    let gpu = c.provider("gpu").unwrap();
-    assert_eq!(gpu.kind, ProviderKind::OpenAiCompatible);
-    assert_eq!(gpu.auth, Some(AuthKind::None));
-    assert_eq!(gpu.key_source(), None);
-    assert_eq!(c.models[0].context_window, Some(1_000_000));
-    assert_eq!(c.models[0].vision, Some(true));
-    assert_eq!(c.models[0].max_output_tokens, Some(64_000));
-    assert_eq!(c.embedding.kind, EmbeddingSource::Bundled);
-    assert_eq!(c.render.engine, RenderEngine::Auto);
-    assert_eq!(c.render.libreoffice_path, "");
-    assert_eq!(c.ui.theme, UiTheme::System);
-}
-
-#[test]
-fn global_config_defaults_and_variants() {
-    let empty: GlobalConfig = toml::from_str("").unwrap();
-    assert_eq!(empty, GlobalConfig::default());
-    // Defaults survive a round trip through text.
-    let again: GlobalConfig = toml::from_str(&toml::to_string(&empty).unwrap()).unwrap();
-    assert_eq!(again, empty);
-
-    // A `[network]` table from an older file still parses; it is ignored and not written
-    // back.
-    let text = r#"
-runtime_python = "/opt/present/python/bin/python3"
-
-[network]
-proxy = "http://proxy.corp:8080"
-ca_bundle = "/etc/ssl/corp.pem"
-
-[[providers]]
-name = "direct"
-kind = "anthropic"
-key = "env:ANTHROPIC_API_KEY"
-
-[embedding]
-kind = "endpoint"
-provider = "gpu"
-model = "bge-m3"
-
-[render]
-engine = "none"
-
-[ui]
-theme = "dark"
-"#;
-    let c: GlobalConfig = toml::from_str(text).unwrap();
-    assert_eq!(
-        c.runtime_python.as_deref(),
-        Some("/opt/present/python/bin/python3")
-    );
-    let direct = c.provider("direct").unwrap();
-    assert_eq!(direct.effective_auth(), AuthKind::XApiKey);
-    assert_eq!(direct.effective_location(), Location::External);
-    assert_eq!(
-        direct.key_source(),
-        Some(KeySource::Env("ANTHROPIC_API_KEY".into()))
-    );
-    assert_eq!(c.embedding.kind, EmbeddingSource::Endpoint);
-    assert_eq!(c.embedding.model.as_deref(), Some("bge-m3"));
-    assert_eq!(c.render.engine, RenderEngine::None);
-    assert_eq!(c.ui.theme, UiTheme::Dark);
-    let written = toml::to_string(&c).unwrap();
-    assert!(!written.contains("network") && !written.contains("proxy"));
-    let again: GlobalConfig = toml::from_str(&written).unwrap();
-    assert_eq!(again, c);
-
-    for (auth, expected) in [
-        ("x-api-key", AuthKind::XApiKey),
-        ("bearer", AuthKind::Bearer),
-        ("none", AuthKind::None),
-    ] {
-        assert_eq!(
-            serde_json::from_value::<AuthKind>(json!(auth)).unwrap(),
-            expected
-        );
-    }
-    assert_eq!(KeySource::parse("keychain:gateway"), None);
-    assert_eq!(KeySource::parse("env:"), None);
-    assert_eq!(KeySource::parse("sk-secret"), None);
-    assert_eq!(KeySource::parse("file:/tmp/key"), None);
-    assert!(toml::from_str::<GlobalConfig>("[render]\nengine = \"keynote\"\n").is_err());
-}
 
 #[test]
 fn project_config_round_trips() {
@@ -288,142 +188,9 @@ fn reference_manifest_round_trips() {
     assert_eq!(toml::to_string(&empty).unwrap(), "");
 }
 
-#[test]
-fn snapshot_manifest_and_log_round_trip() {
-    let m: SnapshotManifest = round_trip_json("snapshot.json");
-    assert_eq!(m.snapshot_id.as_str(), "h-0a1b2c3d4e");
-    assert_eq!(m.parent.as_ref().unwrap().as_str(), "h-zzzzzzzzz9");
-    assert_eq!(m.mode, DeckMode::Structured);
-    assert_eq!(m.files[1].path, "deck/slides/s-7f3a.json");
-    assert_eq!(m.refs[0].id.as_str(), "r-q3rep");
-
-    let log: Vec<SnapshotLogRecord> = round_trip_jsonl("history_log.jsonl");
-    let reasons: Vec<SnapshotReason> = log.iter().map(|r| r.reason).collect();
-    assert_eq!(
-        reasons,
-        [
-            SnapshotReason::Manual,
-            SnapshotReason::Turn,
-            SnapshotReason::ModeSwitch,
-            SnapshotReason::Export,
-            SnapshotReason::Restore
-        ]
-    );
-    assert_eq!(log[0].parent, None);
-    assert_eq!(log[1].turn_id.as_deref(), Some("t-0001"));
-    assert_eq!(log[4].label.as_deref(), Some("back to turn 1"));
-    let pinned: Vec<bool> = reasons.iter().map(|r| r.is_pinned()).collect();
-    assert_eq!(pinned, [false, false, true, true, false]);
-    let bad = json!({ "ts": "t", "snapshot_id": "h-Short", "parent": null, "reason": "turn" });
-    assert!(serde_json::from_value::<SnapshotLogRecord>(bad).is_err());
-}
-
 // ---- transcript ----
 
-#[test]
-fn every_transcript_event_round_trips() {
-    let events: Vec<Event> = round_trip_jsonl("transcript.jsonl");
-    let mut types: Vec<&str> = events.iter().map(Event::type_name).collect();
-    for (event, line) in events.iter().zip(fixture("transcript.jsonl").lines()) {
-        let v: serde_json::Value = serde_json::from_str(line).unwrap();
-        assert_eq!(v["type"], json!(event.type_name()));
-        assert_eq!(v["ts"], json!(event.ts()));
-    }
-    types.dedup();
-    assert_eq!(
-        types,
-        [
-            "user",
-            "assistant",
-            "tool_call",
-            "tool_result",
-            "proposal",
-            "decision",
-            "run",
-            "checkpoint",
-            "snapshot",
-            "render",
-            "check",
-            "skill_loaded",
-            "export",
-            "summary",
-            "usage"
-        ]
-    );
-    assert!(matches!(
-        &events[6],
-        Event::Proposal { kind: ProposalKind::SlideCreate, slides: Some(s), diff: Some(_), .. } if s.len() == 1
-    ));
-    assert!(matches!(
-        &events[8],
-        Event::Decision {
-            decision: Decision::Accept,
-            by: DecidedBy::User,
-            ..
-        }
-    ));
-    assert!(
-        matches!(&events[11], Event::Checkpoint { snapshot_id, .. } if snapshot_id.as_str() == "h-zzzzzzzzz9")
-    );
-}
-
-#[test]
-fn proposal_kinds_and_decisions() {
-    let kinds = [
-        "slide-create",
-        "slide-update",
-        "slide-delete",
-        "slide-move",
-        "outline",
-        "code-edit",
-        "build",
-        "generated-slide",
-        "skill-script",
-        "mode-switch",
-        "export",
-    ];
-    for kind in kinds {
-        let k: ProposalKind = round_trip_value("proposal kind", &json!(kind));
-        assert_eq!(k.is_slide_change(), kind.starts_with("slide-"));
-    }
-    // Analyst's kinds are not Present's.
-    for kind in ["edit", "create", "delete", "package", "shell", "commit"] {
-        assert!(serde_json::from_value::<ProposalKind>(json!(kind)).is_err());
-    }
-    for (d, accepted) in [("accept", true), ("reject", false), ("auto", true)] {
-        let d: Decision = round_trip_value("decision", &json!(d));
-        assert_eq!(d.is_accepted(), accepted);
-    }
-    // The Analyst checkpoint shape (`ref`) is not accepted.
-    let old = json!({ "ts": "t", "type": "checkpoint", "ref": "refs/analyst/checkpoints/x" });
-    assert!(serde_json::from_value::<Event>(old).is_err());
-}
-
 // ---- audit ----
-
-#[test]
-fn audit_records_round_trip() {
-    let records: Vec<AuditRecord> = round_trip_jsonl("audit.jsonl");
-    assert_eq!(records.len(), 3);
-    assert_eq!(records[0].location, Location::Internal);
-    assert_eq!(records[0].refs[0].cite.loc_str(), "p11:c120-188");
-    assert_eq!(records[0].refs[1].chars, 410);
-    let sources: Vec<AuditImageSource> = records[0].images.iter().map(|i| i.source).collect();
-    assert_eq!(
-        sources,
-        [
-            AuditImageSource::Slide,
-            AuditImageSource::Ref,
-            AuditImageSource::Asset
-        ]
-    );
-    assert_eq!(records[0].status, AuditStatus::Ok);
-    assert_eq!(records[0].error, None);
-    assert_eq!(records[1].location, Location::External);
-    assert_eq!(records[1].status, AuditStatus::Error);
-    assert_eq!(records[1].error.as_deref(), Some("connect timeout"));
-    assert_eq!(records[2].status, AuditStatus::Refused);
-}
 
 // ---- evals ----
 

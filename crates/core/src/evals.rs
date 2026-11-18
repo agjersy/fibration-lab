@@ -1130,6 +1130,10 @@ count = 1
                     kind: ProposalKind::Edit,
                     summary: "".into(),
                     diff: None,
+                    targets: None,
+                    deck: None,
+                    before: None,
+                    after: None,
                 },
                 Event::Decision {
                     ts: "t".into(),

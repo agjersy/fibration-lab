@@ -1,17 +1,15 @@
-//! Personal Present core: projects, the deck store, snapshots, the reference index, the audit
-//! log, and the kernel client. The agent loop builds on these (BUILD-SPEC W10, W12).
+//! The deck workbench as a library of the one core (`analyst-core`): the deck store, the
+//! reference index, the deck kernel client, the deck tools the agent loop registers, and the
+//! deck service the UI commands call. It has no agent loop, no home directory, and no config
+//! of its own: the session that owns a deck supplies them.
 
-pub mod agent;
-pub mod audit;
-pub mod config;
+pub mod deck_config;
 pub mod deck_store;
-pub mod evals;
 pub mod index;
 pub mod kernel;
 pub mod project;
 pub mod refs;
 pub mod service;
-pub mod session;
-pub mod snapshots;
+pub mod tools;
 pub mod util;
 pub mod workspace;

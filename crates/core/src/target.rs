@@ -350,6 +350,11 @@ pub mod sync {
         dirs
     }
 
+    /// Directories that never leave this machine: decks are local-only (their references
+    /// and exports are the user's documents), so they are not part of the pushed tree and
+    /// a mirror never has them. They are part of checkpoints.
+    pub const LOCAL_ONLY_DIRS: &[&str] = &[crate::service::decks::DECKS_DIR];
+
     fn out_dir_for(repo: &Path, target_name: &str) -> String {
         let project = crate::config::load_project(repo).unwrap_or_default();
         crate::config::effective_project(&project, target_name).out_dir
@@ -357,9 +362,11 @@ pub mod sync {
 
     /// The tree a mirror of `repo` holds: the checkpoint tree (tracked and untracked files,
     /// not ignored, without data directories and large files) minus the repo's `.env` (keys
-    /// for the app, which never leave this machine) and the [`host_owned_dirs`].
+    /// for the app, which never leave this machine), the [`host_owned_dirs`], and the
+    /// [`LOCAL_ONLY_DIRS`] (decks).
     pub fn snapshot(repo: &Path, out_dir: &str) -> Result<crate::checkpoint::Snapshot> {
         let mut drop = host_owned_dirs(out_dir);
+        drop.extend(LOCAL_ONLY_DIRS.iter().map(|d| d.to_string()));
         let mut exclude = crate::checkpoint::excluded_dirs(repo);
         exclude.extend(drop.iter().cloned());
         drop.push(wb_net::secrets::ENV_FILE.to_string());
@@ -1244,22 +1251,47 @@ mod tests {
             (".analyst/session.json", "{}"),
             (".venv/pyvenv.cfg", "venv"),
             ("sub/.env", "nested files are ordinary files\n"),
+            ("decks/q3/deck/deck.json", "{}"),
+            ("decks/q3/references/report.pdf", "the user's document"),
         ] {
             std::fs::create_dir_all(root.join(p).parent().unwrap()).unwrap();
             std::fs::write(root.join(p), text).unwrap();
         }
         // Tracked, committed, and not ignored: still never part of the pushed tree.
-        git(root, &["add", "-f", ".env", "results", ".analyst", ".venv"]);
+        git(
+            root,
+            &[
+                "add",
+                "-f",
+                ".env",
+                "results",
+                ".analyst",
+                ".venv",
+                "decks/q3/deck",
+            ],
+        );
         git(root, &["commit", "-q", "-m", "tracked by mistake"]);
         let snap = snapshot(root, "results").unwrap();
         assert_eq!(
             tree_files(root, &snap.tree),
             vec![".gitignore", "scripts/a.py", "sub/.env", "untracked.md"]
         );
+        // Decks are local-only: tracked or not, they are never pushed, so a mirror never
+        // has them. Checkpoints do cover them (one undo for code and decks).
+        assert!(!tree_files(root, &snap.tree)
+            .iter()
+            .any(|p| p.starts_with("decks/")));
+        let checkpointed = crate::checkpoint::worktree_tree(root).unwrap();
+        let in_checkpoint = tree_files(root, &checkpointed);
+        assert!(in_checkpoint.contains(&"decks/q3/deck/deck.json".to_string()));
+        assert!(in_checkpoint.contains(&"decks/q3/references/report.pdf".to_string()));
         assert!(snap.skipped_large.is_empty());
         // The user's index and branch are untouched.
         let status = crate::checkpoint::git(root, &["status", "--porcelain"], None).unwrap();
-        assert_eq!(status.trim(), "?? sub/\n?? untracked.md");
+        assert_eq!(
+            status.trim(),
+            "?? decks/q3/references/\n?? sub/\n?? untracked.md"
+        );
         let refs = crate::checkpoint::git(root, &["for-each-ref"], None).unwrap();
         assert_eq!(refs.lines().count(), 1, "{refs}");
 

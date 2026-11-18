@@ -16,8 +16,6 @@ members = [
     # Deck workbench: analyst-deck-protocol and analyst-deck (library crates used by the core)
     "present/crates/protocol",
     "present/crates/core",
-    "present/crates/cli",
-    "present/apps/desktop/src-tauri",
 ]
 
 [workspace.package]

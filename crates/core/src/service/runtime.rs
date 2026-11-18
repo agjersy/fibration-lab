@@ -4,6 +4,7 @@
 //! tasks, output previews, filesystem operations, and diagnostics.
 
 use super::agent_runner::ConversationRuntime;
+use super::decks::{DeckOptions, DeckServices};
 use super::error::{ServiceError, ServiceResult};
 use super::events::{EventHub, Subscription};
 use super::figures::{self, ScannedRun};
@@ -122,6 +123,8 @@ pub struct RuntimeOptions {
     /// The kernel source bundled with a packaged app (used to build a wheel for remote
     /// targets when no development wheel exists).
     pub kernel_source: Option<PathBuf>,
+    /// How deck kernels are started (engine, sandbox, interpreter).
+    pub deck: DeckOptions,
 }
 
 /// `meta.json` in the session directory: workbench-level session state.
@@ -214,6 +217,9 @@ pub struct SessionRuntime {
     pub runs: Arc<RunService>,
     /// File access: shared with the agent's tools.
     pub files: fs::WorkspaceFiles,
+    /// The session's decks (`decks/<slug>/`): shared with the agent's tools. A deck's
+    /// kernel starts when the deck is first used.
+    pub decks: Arc<DeckServices>,
     index_cache: tokio::sync::RwLock<Option<IndexResult>>,
     conversations: Mutex<HashMap<String, Arc<ConversationRuntime>>>,
     pub(super) pending: Mutex<HashMap<ProposalId, PendingProposal>>,
@@ -294,6 +300,12 @@ impl SessionRuntime {
             shared.clone(),
             events.clone(),
         );
+        let decks = DeckServices::new(&repo, &session.home, &dir);
+        decks.set_events(events.clone());
+        decks.set_options(DeckOptions {
+            env_remove: opts.env_remove.clone(),
+            ..opts.deck.clone()
+        });
         let rt = Arc::new_cyclic(|weak| SessionRuntime {
             id: session.id().to_string(),
             repo: repo.clone(),
@@ -317,6 +329,7 @@ impl SessionRuntime {
             events,
             runs,
             files: fs::WorkspaceFiles::new(&repo).with_artifacts(session.artifacts_dir()),
+            decks,
             index_cache: tokio::sync::RwLock::new(None),
             conversations: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
@@ -1638,6 +1651,79 @@ impl SessionRuntime {
             .hits)
     }
 
+    // ---- decks ----
+
+    /// The decks in the session's repository (`decks/<slug>/`).
+    pub fn decks_list(&self) -> Vec<DeckSummary> {
+        self.decks.list()
+    }
+
+    /// Create a deck from a template file. Nothing is started; the deck's kernel starts
+    /// when the deck is first opened.
+    pub fn deck_create(
+        &self,
+        slug: Option<&str>,
+        title: &str,
+        template_abs: &str,
+        code_mode: bool,
+    ) -> ServiceResult<DeckSummary> {
+        let slug = match slug.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => s.to_string(),
+            None => super::decks::slug_for(title),
+        };
+        let mode = if code_mode {
+            analyst_deck_protocol::deck::DeckMode::Code
+        } else {
+            analyst_deck_protocol::deck::DeckMode::Structured
+        };
+        let created = self
+            .decks
+            .create(&slug, title, Path::new(template_abs), mode)?;
+        self.runs.mark_dirty();
+        Ok(created)
+    }
+
+    /// A deck's service, starting its kernel if it is not running.
+    pub async fn deck(&self, slug: &str) -> ServiceResult<Arc<analyst_deck::service::DeckService>> {
+        self.decks.open(slug).await
+    }
+
+    // ---- history: one undo timeline for code and decks ----
+
+    pub fn history_list(&self, limit: Option<u32>) -> ServiceResult<Vec<CheckpointView>> {
+        super::history::list(
+            &self.repo,
+            &self.session_snapshot(),
+            limit.map(|n| n as usize),
+        )
+    }
+
+    /// Restore a checkpoint: scripts and slide documents go back together.
+    pub async fn history_restore(&self, checkpoint: &str) -> ServiceResult<()> {
+        super::history::restore(&self.repo, checkpoint)?;
+        self.after_restore().await;
+        Ok(())
+    }
+
+    /// Undo a turn (`<conversation>-<n>`): everything it changed, code and slides.
+    pub async fn history_revert_turn(&self, turn: &str) -> ServiceResult<CheckpointView> {
+        let id = super::history::revert_turn(&self.repo, &self.session_snapshot(), turn)?;
+        self.after_restore().await;
+        self.history_list(None)?
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| ServiceError::internal("restored checkpoint not found"))
+    }
+
+    async fn after_restore(&self) {
+        self.runs.mark_dirty();
+        *self.index_cache.write().await = None;
+        self.decks.refresh("restore").await;
+        self.emit(SessionEvent::DecksChanged {
+            decks: self.decks.list(),
+        });
+    }
+
     // ---- conversations ----
 
     pub fn conversation(&self, id: &str) -> Option<Arc<ConversationRuntime>> {
@@ -2195,6 +2281,7 @@ impl SessionRuntime {
             *w = None;
         }
         self.shutdown_kernel().await;
+        self.decks.shutdown().await;
         let handles: Vec<JoinHandle<()>> = self
             .background
             .lock()

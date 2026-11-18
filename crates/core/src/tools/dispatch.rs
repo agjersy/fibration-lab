@@ -3,12 +3,18 @@
 //! `{truncated: true, artifact: "<path>"}`.
 
 use crate::kernel::KernelClient;
+use crate::service::decks::DeckServices;
 use crate::service::fs::{Page, WorkspaceFiles};
 use crate::service::packages;
 use crate::service::runs::RunService;
 use crate::session::Session;
 use crate::target::{self, Target};
+use crate::tools::registry::DeckKinds;
 use crate::util::{normalize_rel_path, now_rfc3339, tail_bytes, truncate_bytes};
+use analyst_deck::service::DeckService;
+use analyst_deck::tools::dispatch::{
+    self as deck_tools, Change, Prepared, ToolState as DeckToolState,
+};
 use analyst_protocol::config::ProjectConfig;
 use analyst_protocol::kernel::*;
 use analyst_protocol::transcript::Event;
@@ -66,6 +72,30 @@ pub struct ToolOutcome {
     pub ok: bool,
     pub result: Value,
     pub truncated: bool,
+    /// Images to show a vision-capable model next to the result (a rendered slide, a page
+    /// of a reference): `(media type, base64)`.
+    pub images: Vec<(String, String)>,
+    /// Slides (repo-relative documents) the model has now looked at.
+    pub viewed: Vec<String>,
+}
+
+/// What a tool produced before capping.
+#[derive(Debug, Clone, Default)]
+pub struct Dispatched {
+    pub value: Value,
+    /// The tool ran but reports failure in its result (a skill script that exited non-zero).
+    pub failed: bool,
+    pub images: Vec<(String, String)>,
+    pub viewed: Vec<String>,
+}
+
+impl From<Value> for Dispatched {
+    fn from(value: Value) -> Self {
+        Dispatched {
+            value,
+            ..Default::default()
+        }
+    }
 }
 
 /// Callback for live run output: `(stream, chunk)` with stream `stdout` or `stderr`.
@@ -88,6 +118,11 @@ pub struct ToolContext {
     owns_runs: bool,
     /// The session's workspace-files service, shared with the UI's `fs_*` commands.
     pub files: WorkspaceFiles,
+    /// The session's decks. A deck's kernel starts when a deck tool first needs it.
+    pub decks: Arc<DeckServices>,
+    /// Per-conversation state of the deck tools, by deck slug (template cache, checker
+    /// status, whether rendering is available).
+    deck_state: tokio::sync::Mutex<std::collections::HashMap<String, DeckToolState>>,
     /// User-approved external data directories (the global config's target `data_dirs`):
     /// `fs.read` may follow a repo symlink into them. Empty by default.
     pub data_roots: Vec<String>,
@@ -117,6 +152,8 @@ impl ToolContext {
             runs: RunService::standalone(&session_for_runs, Target::Local, project_for_runs),
             owns_runs: true,
             files: WorkspaceFiles::new(repo).with_artifacts(session_for_runs.artifacts_dir()),
+            decks: DeckServices::new(repo, home, &session_for_runs.dir),
+            deck_state: tokio::sync::Mutex::new(Default::default()),
             data_roots: vec![],
             skills: crate::skills::discover(home, repo),
         }
@@ -174,9 +211,180 @@ impl ToolContext {
         })
     }
 
+    /// Which kinds of decks the project has (reads the deck documents; starts nothing).
+    pub fn deck_kinds(&self) -> DeckKinds {
+        let decks = self.decks.list();
+        DeckKinds {
+            structured: decks.iter().any(|d| d.mode == "structured"),
+            code: decks.iter().any(|d| d.mode == "code"),
+        }
+    }
+
+    /// The slug a deck tool call means: its `deck` argument, or the only deck.
+    pub fn deck_slug(&self, args: &Value) -> Result<String, ToolError> {
+        if let Some(s) = args
+            .get("deck")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(s.to_string());
+        }
+        let decks = self.decks.list();
+        match decks.as_slice() {
+            [one] => Ok(one.slug.clone()),
+            [] => Err(ToolError::new(
+                "this project has no deck; the user creates one from a template",
+            )),
+            many => Err(ToolError::new(format!(
+                "this project has several decks; pass `deck` (one of: {})",
+                many.iter()
+                    .map(|d| d.slug.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        }
+    }
+
+    /// Run the first half of a deck tool: read tools finish here, edit tools come back as a
+    /// [`Change`] for the loop to gate. Starts the deck's kernel when needed.
+    pub async fn deck_prepare(
+        &self,
+        name: &str,
+        args: &Value,
+    ) -> Result<(Arc<DeckService>, Prepared), ToolError> {
+        let slug = self.deck_slug(args)?;
+        let svc = self.decks.open(&slug).await?;
+        let mut states = self.deck_state.lock().await;
+        let state = states.entry(slug).or_default();
+        if state.skills.is_none() {
+            state.skills = Some(self.skills.clone());
+        }
+        // The deck tools do not know the `deck` argument.
+        let mut inner = args.clone();
+        if let Some(o) = inner.as_object_mut() {
+            o.remove("deck");
+        }
+        let prepared = deck_tools::prepare(&svc.ws, state, name, &inner).await;
+        Ok((svc, prepared))
+    }
+
+    /// Write an accepted deck change and tell the deck's UI.
+    pub async fn deck_apply(
+        &self,
+        svc: &Arc<DeckService>,
+        change: &Change,
+    ) -> Result<Value, ToolError> {
+        let result = if matches!(change, Change::ModeSwitch { .. }) {
+            // Reversible: the deck service checkpoints the repository before the switch.
+            svc.switch_to_code()
+                .await
+                .map_err(|e| ToolError::new(e.message))?
+        } else {
+            let mut states = self.deck_state.lock().await;
+            let state = states.entry(svc.slug.clone()).or_default();
+            deck_tools::apply(&svc.ws, state, change)
+                .await
+                .map_err(ToolError::new)?
+        };
+        if matches!(change, Change::ModeSwitch { .. }) {
+            self.deck_state.lock().await.remove(&svc.slug);
+        }
+        let removed = match change {
+            Change::SlideDelete { before } => vec![before.id.to_string()],
+            _ => vec![],
+        };
+        let changed: Vec<String> = change
+            .slide_ids()
+            .into_iter()
+            .filter(|id| !removed.contains(id))
+            .collect();
+        svc.notify_changed(changed, removed, "agent");
+        Ok(result)
+    }
+
+    /// Run the deck checker on some slides of a deck (all when `None`) and return the
+    /// findings.
+    pub async fn deck_check(
+        &self,
+        svc: &Arc<DeckService>,
+        slides: Option<&[String]>,
+    ) -> Result<Vec<Value>, String> {
+        let mut states = self.deck_state.lock().await;
+        let state = states.entry(svc.slug.clone()).or_default();
+        deck_tools::check_slides(&svc.ws, state, slides).await
+    }
+
+    /// Whether slides of a deck can be rendered for self-review (an engine is installed).
+    pub async fn deck_render_available(&self, slug: &str) -> bool {
+        self.deck_state
+            .lock()
+            .await
+            .get(slug)
+            .map(|s| !s.render_unavailable)
+            .unwrap_or(true)
+    }
+
+    async fn deck_dispatch(&self, name: &str, args: &Value) -> Result<Dispatched, ToolError> {
+        let (svc, prepared) = self.deck_prepare(name, args).await?;
+        match prepared {
+            Prepared::Done(out) => {
+                if !out.ok {
+                    return Err(ToolError::new(
+                        out.result
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                            .unwrap_or_else(|| out.result.to_string()),
+                    ));
+                }
+                Ok(Dispatched {
+                    value: out.result,
+                    failed: false,
+                    images: out.images,
+                    viewed: out
+                        .viewed
+                        .iter()
+                        .map(|id| crate::service::decks::slide_rel(&svc.slug, id))
+                        .collect(),
+                })
+            }
+            Prepared::Denied { message, .. } => Err(ToolError::new(message)),
+            // Direct dispatch (the CLI, tests): the change is applied as it is; the agent
+            // loop gates changes itself before applying them.
+            Prepared::Change(change) => Ok(self.deck_apply(&svc, &change).await?.into()),
+        }
+    }
+
     /// Execute a tool by internal id. Edit tools are built and applied directly here; the agent
     /// builds proposals separately when it needs approval first.
     pub async fn dispatch(
+        &self,
+        call_id: &str,
+        name: &str,
+        args: &Value,
+    ) -> Result<Value, ToolError> {
+        self.dispatch_full(call_id, name, args)
+            .await
+            .map(|d| d.value)
+    }
+
+    /// [`ToolContext::dispatch`] with what a result carries besides its JSON (images).
+    pub async fn dispatch_full(
+        &self,
+        call_id: &str,
+        name: &str,
+        args: &Value,
+    ) -> Result<Dispatched, ToolError> {
+        if crate::tools::registry::is_deck_tool(name) {
+            return self.deck_dispatch(name, args).await;
+        }
+        self.dispatch_analysis(call_id, name, args)
+            .await
+            .map(Dispatched::from)
+    }
+
+    async fn dispatch_analysis(
         &self,
         call_id: &str,
         name: &str,
@@ -328,6 +536,8 @@ impl ToolContext {
                 ok,
                 result: value,
                 truncated: false,
+                images: vec![],
+                viewed: vec![],
             };
         }
         let full = render_for_paging(&value);
@@ -371,6 +581,8 @@ impl ToolContext {
                     ok,
                     result: out,
                     truncated: true,
+                    images: vec![],
+                    viewed: vec![],
                 };
             }
             // JSON escaping can inflate the head well past its raw size.

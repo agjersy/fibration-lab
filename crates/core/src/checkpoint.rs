@@ -328,13 +328,27 @@ pub fn create(repo: &Path, id: &str) -> Result<String> {
     create_from_tree(repo, id, &tree)
 }
 
+/// [`create`] with a label saying why the checkpoint was taken (`before switching the deck
+/// to code mode`, `export pptx`); [`history`] shows it.
+pub fn create_labeled(repo: &Path, id: &str, label: &str) -> Result<String> {
+    let tree = worktree_tree(repo)?;
+    commit_checkpoint(repo, id, &tree, Some(label))
+}
+
 /// [`create`] for a tree that was already written with [`worktree_tree`].
 pub fn create_from_tree(repo: &Path, id: &str, tree: &str) -> Result<String> {
+    commit_checkpoint(repo, id, tree, None)
+}
+
+fn commit_checkpoint(repo: &Path, id: &str, tree: &str, label: Option<&str>) -> Result<String> {
     let head = git(repo, &["rev-parse", "--verify", "-q", "HEAD"], None)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let msg = format!("analyst checkpoint {id}");
+    let msg = match label.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(l) => format!("analyst checkpoint {id}\n\n{}", l.replace('\n', " ")),
+        None => format!("analyst checkpoint {id}"),
+    };
     let mut args = vec!["commit-tree", tree, "-m", msg.as_str()];
     if let Some(h) = head.as_deref() {
         args.push("-p");
@@ -367,6 +381,78 @@ pub fn restore(repo: &Path, id: &str) -> Result<()> {
     load_worktree(repo, &env, &excluded_dirs(repo))?;
     git(repo, &["read-tree", "-u", "--reset", &tree], Some(&env))?;
     Ok(())
+}
+
+/// Restore only `paths` (repo-relative files or directories, literal) to a checkpoint: files
+/// under them that the checkpoint does not have are removed, the others are rewritten. The
+/// rest of the working tree and the user's index are untouched.
+pub fn restore_paths(repo: &Path, id: &str, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let tree = tree_of(repo, id)?;
+    let idx = TempIndex::new(repo)?;
+    let env = idx.env();
+    let mut env = with_env(&env);
+    env.push(("GIT_LITERAL_PATHSPECS", "1"));
+    // The temp index knows every current file, so files the checkpoint lacks are removed.
+    load_worktree(repo, &env, &excluded_dirs(repo))?;
+    let mut args = vec![
+        "restore",
+        "--no-overlay",
+        "--staged",
+        "--worktree",
+        "--source",
+        tree.as_str(),
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    git(repo, &args, Some(&env))?;
+    Ok(())
+}
+
+/// One checkpoint as the history shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointInfo {
+    pub id: String,
+    pub commit: String,
+    /// Seconds since the epoch.
+    pub created: u64,
+    /// Why it was taken, when the creator said (`create_labeled`).
+    pub label: Option<String>,
+}
+
+/// Every checkpoint, oldest first, with its date and label.
+pub fn history(repo: &Path) -> Result<Vec<CheckpointInfo>> {
+    let out = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=committerdate",
+            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(contents:body)%1e",
+            REF_PREFIX,
+        ],
+        None,
+    )?;
+    Ok(out
+        .split('\u{1e}')
+        .filter_map(|rec| {
+            let mut it = rec.trim_start_matches('\n').split('\0');
+            let r = it.next()?;
+            let commit = it.next()?.to_string();
+            let created = it.next().and_then(|d| d.trim().parse().ok()).unwrap_or(0);
+            let label = it
+                .next()
+                .map(|b| b.trim().to_string())
+                .filter(|b| !b.is_empty());
+            Some(CheckpointInfo {
+                id: r.strip_prefix(REF_PREFIX)?.to_string(),
+                commit,
+                created,
+                label,
+            })
+        })
+        .collect())
 }
 
 fn list_with_dates(repo: &Path) -> Result<Vec<(String, String, u64)>> {

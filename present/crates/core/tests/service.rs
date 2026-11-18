@@ -1,17 +1,16 @@
-//! D3 acceptance: the service layer the desktop shell calls, against the real kernel
-//! and a scripted model.
+//! The deck service the UI's deck commands call, against the real deck kernel. The agent
+//! side (proposals, modes, scope) is tested with the one loop in `analyst-core`.
 
-use analyst_deck::service::{ProjectRuntime, Workbench};
-use analyst_deck::session::ResolvedModel;
+use analyst_deck::project::Project;
+use analyst_deck::service::{DeckHost, DeckService};
+use analyst_deck::workspace::{OpenOptions, Workspace};
 use analyst_deck_protocol::deck::DeckMode;
-use analyst_deck_protocol::ui::{IpcErrorCode, ProjectEvent, ProposalDecision};
-use serde_json::{json, Value};
+use analyst_deck_protocol::ui::{DeckEvent, IpcErrorCode};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
-use wb_providers::model::{ModelEvent, StopReason};
-use wb_providers::ScriptedModelClient;
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -22,64 +21,57 @@ fn repo() -> PathBuf {
 
 struct Rig {
     tmp: tempfile::TempDir,
-    wb: Workbench,
-    rt: Arc<ProjectRuntime>,
+    rt: Arc<DeckService>,
+    host: Arc<CountingHost>,
 }
 
-fn scripted(scripts: Vec<Vec<ModelEvent>>) -> analyst_deck::service::ModelFactory {
-    let client = Arc::new(ScriptedModelClient::new(scripts));
-    Arc::new(move |_spec: Option<&str>| {
-        let client = client.clone();
-        Box::pin(async move {
-            Ok(ResolvedModel {
-                client,
-                caps: serde_json::from_value(
-                    json!({"context_window": 200000, "tools": "native", "vision": false, "probed_at": "2026-11-15T00:00:00Z"}),
-                )?,
-                name: "scripted/model".into(),
-                provider: serde_json::from_value(json!({"name": "scripted", "kind": "anthropic"}))?,
-                max_output_tokens: None,
-            })
-        })
-    })
+/// Counts the checkpoints the deck service asks its session for.
+#[derive(Default)]
+struct CountingHost {
+    labels: std::sync::Mutex<Vec<String>>,
 }
 
-async fn rig(scripts: Vec<Vec<ModelEvent>>) -> Option<Rig> {
-    let tmp = tempfile::tempdir().unwrap();
-    let wb = Workbench::new(&tmp.path().join("home"));
-    {
-        let mut o = wb.options.lock().unwrap();
-        o.engine = "none".into();
-        o.kernel_env = vec![(
-            "PRESENT_FONT_DIRS".into(),
-            repo().join("vendor/fonts").to_string_lossy().into_owned(),
-        )];
+impl DeckHost for CountingHost {
+    fn checkpoint(&self, label: &str) -> anyhow::Result<String> {
+        let mut l = self.labels.lock().unwrap();
+        l.push(label.to_string());
+        Ok(format!("cp-{}", l.len()))
     }
-    wb.set_model_factory(scripted(scripts));
+    fn restore_deck(&self, _checkpoint: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// A deck folder as a session holds it (`decks/<slug>/`), opened as a deck service with its
+/// per-user state in a separate directory.
+async fn rig() -> Option<Rig> {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo/decks/test");
     let template = repo().join("evals/templates/plain/plain.pptx");
-    let info = match wb
-        .project_create(
-            &tmp.path().join("p").to_string_lossy(),
-            "Service test",
-            &template.to_string_lossy(),
-            Some(DeckMode::Structured),
-        )
-        .await
-    {
-        Ok(i) => i,
-        Err(e) if e.message.contains("no kernel interpreter") => {
-            eprintln!("skipped: {}", e.message);
+    Project::create(&root, "Service test", &template, DeckMode::Structured).unwrap();
+    let state = tmp.path().join("session/decks/test");
+    let mut options = OpenOptions::new(&tmp.path().join("home"), &state.join("index.sqlite"));
+    options.engine = "none".into();
+    options.kernel_env = vec![(
+        "PRESENT_FONT_DIRS".into(),
+        repo().join("vendor/fonts").to_string_lossy().into_owned(),
+    )];
+    let ws = match Workspace::open(&root, &options).await {
+        Ok(ws) => ws,
+        Err(e) if format!("{e:#}").contains("no deck kernel interpreter") => {
+            eprintln!("skipped: {e:#}");
             return None;
         }
         Err(e) => panic!("{e:?}"),
     };
-    let rt = wb.project(&info.summary.id).unwrap();
-    Some(Rig { tmp, wb, rt })
+    let host = Arc::new(CountingHost::default());
+    let rt = DeckService::new("test", Arc::new(ws), &state, host.clone());
+    Some(Rig { tmp, rt, host })
 }
 
 async fn wait_for<T>(
-    rx: &mut Receiver<ProjectEvent>,
-    mut pick: impl FnMut(&ProjectEvent) -> Option<T>,
+    rx: &mut Receiver<DeckEvent>,
+    mut pick: impl FnMut(&DeckEvent) -> Option<T>,
 ) -> T {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
@@ -103,44 +95,9 @@ async fn wait_for<T>(
     }
 }
 
-fn slide_doc(title: &str) -> Value {
-    json!({
-        "layout": "Title and Content",
-        "placeholders": {
-            "title": {"type": "text", "text": {"paragraphs": [{"runs": [{"t": title}]}]}},
-            "body": {"type": "text", "text": {"paragraphs": [{"runs": [{"t": "One point"}]}]}}
-        }
-    })
-}
-
-fn call(id: &str, name: &str, args: Value) -> ModelEvent {
-    ModelEvent::ToolCall {
-        id: id.into(),
-        name: name.into(),
-        arguments: args,
-    }
-}
-
-fn stop_tools() -> ModelEvent {
-    ModelEvent::Stop {
-        reason: StopReason::ToolCalls,
-        message: None,
-    }
-}
-
-fn say(t: &str) -> Vec<ModelEvent> {
-    vec![
-        ModelEvent::Text { delta: t.into() },
-        ModelEvent::Stop {
-            reason: StopReason::End,
-            message: None,
-        },
-    ]
-}
-
 #[tokio::test]
-async fn manual_editing_history_and_registry() {
-    let Some(rig) = rig(vec![]).await else { return };
+async fn manual_editing_and_reopening() {
+    let Some(rig) = rig().await else { return };
     let rt = &rig.rt;
     let mut rx = rt.subscribe();
 
@@ -148,7 +105,7 @@ async fn manual_editing_history_and_registry() {
     let id = created.slide.id.to_string();
     assert_eq!(rt.deck_get().unwrap().slides.len(), 1);
     wait_for(&mut rx, |e| {
-        matches!(e, ProjectEvent::DeckChanged { by, .. } if by == "user").then_some(())
+        matches!(e, DeckEvent::DeckChanged { by, .. } if by == "user").then_some(())
     })
     .await;
 
@@ -197,180 +154,18 @@ async fn manual_editing_history_and_registry() {
     let bad = rt.slide_create(None, "No Such Layout").await.unwrap_err();
     assert_eq!(bad.code, IpcErrorCode::Invalid);
 
-    // The project is remembered and reopening returns the same runtime.
-    let listed = rig.wb.projects_list();
-    assert_eq!(listed.len(), 1);
-    let again = rig
-        .wb
-        .project_open(&rig.tmp.path().join("p").to_string_lossy())
-        .await
-        .unwrap();
-    assert_eq!(again.summary.id, rt.id);
-    assert_eq!(
-        again
-            .deck
-            .sections
-            .iter()
-            .map(|s| s.slides.len())
-            .sum::<usize>(),
-        1
-    );
-
-    // Layout and conversation state survive a close and reopen.
-    rt.layout_set(json!({"panels": ["chat"]}));
-    let conv = rt.conversation_new();
-    rig.wb.project_close(&rt.id).await.unwrap();
-    assert!(rig.wb.project(&rt.id).is_err());
-    let info = rig
-        .wb
-        .project_open(&rig.tmp.path().join("p").to_string_lossy())
-        .await
-        .unwrap();
-    let rt2 = rig.wb.project(&info.summary.id).unwrap();
-    assert_eq!(rt2.layout_get(), Some(json!({"panels": ["chat"]})));
-    assert_eq!(info.active_conversation, conv.id);
-    rig.wb.project_close(&rt2.id).await.unwrap();
-}
-
-#[tokio::test]
-async fn a_turn_streams_events_and_waits_for_the_users_decision() {
-    let scripts = vec![
-        vec![
-            ModelEvent::Text {
-                delta: "Adding a slide.".into(),
-            },
-            call(
-                "t1",
-                "slide_propose_create",
-                json!({"slide": slide_doc("Revenue grew")}),
-            ),
-            stop_tools(),
-        ],
-        vec![
-            call(
-                "t2",
-                "slide_propose_create",
-                json!({"slide": slide_doc("Costs fell")}),
-            ),
-            stop_tools(),
-        ],
-        say("One slide added; the second was declined."),
-        say("Nothing more to do."),
-    ];
-    let Some(rig) = rig(scripts).await else {
-        return;
-    };
-    let rt = &rig.rt;
-    let mut rx = rt.subscribe();
-
-    let turn = rt.chat_send("main", "Add two slides", None).await.unwrap();
-    assert_eq!(turn, "main-1");
-    // A second message while the turn runs is refused.
-    let busy = rt.chat_send("main", "And another", None).await.unwrap_err();
-    assert_eq!(busy.code, IpcErrorCode::Invalid);
-
-    let first = wait_for(&mut rx, |e| match e {
-        ProjectEvent::Proposal { proposal } => Some(proposal.clone()),
-        _ => None,
-    })
-    .await;
-    assert_eq!(first.turn, turn);
-    assert_eq!(first.slides.len(), 1);
-    assert!(first.slides[0].before.is_none() && first.slides[0].after.is_some());
-    // Nothing is written until the user decides.
-    assert_eq!(rt.deck_get().unwrap().slides.len(), 0);
-    rt.proposal_respond(&first.id, ProposalDecision::Accept)
-        .unwrap();
-    assert!(rt
-        .proposal_respond(&first.id, ProposalDecision::Accept)
-        .is_err());
-
-    let second = wait_for(&mut rx, |e| match e {
-        ProjectEvent::Proposal { proposal } => Some(proposal.clone()),
-        _ => None,
-    })
-    .await;
-    assert_eq!(rt.deck_get().unwrap().slides.len(), 1);
-    rt.proposal_respond(
-        &second.id,
-        ProposalDecision::Reject {
-            note: Some("Not this one".into()),
-        },
-    )
-    .unwrap();
-
-    let summary = wait_for(&mut rx, |e| match e {
-        ProjectEvent::TurnDone { summary, .. } => Some(summary.clone()),
-        ProjectEvent::TurnError { message, .. } => panic!("turn failed: {message}"),
-        _ => None,
-    })
-    .await;
-    assert_eq!(summary.slides_changed.len(), 1);
-    assert!(summary.text.contains("declined"));
-    assert_eq!(rt.deck_get().unwrap().slides.len(), 1);
-
-    // The turn is one checkpoint; reverting it empties the deck again.
-    let history = rt.history_list(None).unwrap();
-    assert!(
-        history.iter().any(|s| s.turn.as_deref() == Some("main-1")),
-        "{history:?}"
-    );
-    rt.history_revert_turn("main-1").await.unwrap();
-    assert_eq!(rt.deck_get().unwrap().slides.len(), 0);
-
-    // The transcript is readable and the conversation is free again.
-    let events = rt.conversation_transcript("main").unwrap();
-    assert!(events.iter().any(|e| e["type"] == "proposal"));
-    assert!(events.iter().any(|e| e["type"] == "decision"));
-    let next = rt.chat_send("main", "Thanks", None).await.unwrap();
-    assert_eq!(next, "main-2");
-    wait_for(&mut rx, |e| {
-        matches!(e, ProjectEvent::TurnDone { turn, .. } if turn == "main-2").then_some(())
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn cancelling_a_turn_drops_its_pending_proposal() {
-    let scripts = vec![
-        vec![
-            call(
-                "t1",
-                "slide_propose_create",
-                json!({"slide": slide_doc("Never applied")}),
-            ),
-            stop_tools(),
-        ],
-        say("Hello again."),
-    ];
-    let Some(rig) = rig(scripts).await else {
-        return;
-    };
-    let rt = &rig.rt;
-    let mut rx = rt.subscribe();
-    rt.chat_send("main", "Add a slide", None).await.unwrap();
-    let proposal = wait_for(&mut rx, |e| match e {
-        ProjectEvent::Proposal { proposal } => Some(proposal.clone()),
-        _ => None,
-    })
-    .await;
-    rt.chat_cancel("main");
-    assert!(rt
-        .proposal_respond(&proposal.id, ProposalDecision::Accept)
-        .is_err());
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(rt.deck_get().unwrap().slides.len(), 0);
-    // The conversation accepts a new message.
-    rt.chat_send("main", "Hello", None).await.unwrap();
-    wait_for(&mut rx, |e| {
-        matches!(e, ProjectEvent::TurnDone { .. }).then_some(())
-    })
-    .await;
+    // The deck's info is what `deck_open` returns: no network for the kernel is reported.
+    let info = rt.info().await.unwrap();
+    assert_eq!(info.slug, "test");
+    assert_eq!(info.slides, 1);
+    assert_eq!(info.deck_mode, DeckMode::Structured);
+    assert!(!info.kernel_network.is_empty());
+    rt.ws.close().await;
 }
 
 #[tokio::test]
 async fn references_exports_and_code_files() {
-    let Some(rig) = rig(vec![]).await else { return };
+    let Some(rig) = rig().await else { return };
     let rt = &rig.rt;
     let mut rx = rt.subscribe();
 
@@ -382,7 +177,7 @@ async fn references_exports_and_code_files() {
     .unwrap();
     let task = rt.refs_add(vec![note.to_string_lossy().into_owned()]);
     let ok = wait_for(&mut rx, |e| match e {
-        ProjectEvent::TaskDone {
+        DeckEvent::TaskDone {
             task_id,
             ok,
             message,
@@ -415,8 +210,8 @@ async fn references_exports_and_code_files() {
     rt.slide_create(None, "Title and Content").await.unwrap();
     let task = rt.export_run("pptx".into());
     let export = wait_for(&mut rx, |e| match e {
-        ProjectEvent::ExportDone { export } => Some(export.clone()),
-        ProjectEvent::TaskDone {
+        DeckEvent::ExportDone { export } => Some(export.clone()),
+        DeckEvent::TaskDone {
             task_id,
             ok: false,
             message,
@@ -464,10 +259,10 @@ const PIXEL: &[u8] = &[
 ];
 
 #[tokio::test]
-async fn assets_previews_analyst_imports_and_template_replacement() {
+async fn assets_previews_and_template_replacement() {
     use analyst_deck_protocol::ui::ThumbKind;
     use base64::Engine;
-    let Some(rig) = rig(vec![]).await else { return };
+    let Some(rig) = rig().await else { return };
     let rt = &rig.rt;
     let mut rx = rt.subscribe();
     let tmp = rig.tmp.path();
@@ -503,7 +298,10 @@ async fn assets_previews_analyst_imports_and_template_replacement() {
     let view = rt.deck_get().unwrap().slides.remove(0);
     assert_eq!(view.thumb.kind, ThumbKind::Preview);
     assert!(!view.thumb.stale);
-    assert!(tmp.join("p").join(view.thumb.path.unwrap()).is_file());
+    assert!(tmp
+        .join("repo/decks/test")
+        .join(view.thumb.path.unwrap())
+        .is_file());
     assert!(rt.slide_preview_png(&id, "bm90IGEgcG5n").is_err());
     assert!(rt.slide_preview_png("s-missing", &b64).is_err());
 
@@ -527,43 +325,14 @@ async fn assets_previews_analyst_imports_and_template_replacement() {
         .unwrap_err();
     assert!(!bad.message.is_empty());
 
-    // Analyst import: only the chosen item is copied, with its provenance.
-    let repo = tmp.join("analyst-repo");
-    let figs = repo.join("out/figures/fit/20261104-113207");
-    std::fs::create_dir_all(&figs).unwrap();
-    std::fs::write(figs.join("residuals.png"), PIXEL).unwrap();
-    std::fs::write(
-        figs.join("residuals.json"),
-        r#"{"run_id": "20261104-113207", "script": "scripts/fit.py", "args": ["--region", "north"], "title": "Residuals by week"}"#,
-    )
-    .unwrap();
-    std::fs::create_dir_all(repo.join("data")).unwrap();
-    std::fs::write(repo.join("data/secret.csv"), "a\n1\n").unwrap();
-    let repo_abs = repo.to_string_lossy().into_owned();
-    let items = rt.analyst_scan(&repo_abs).await.unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(
-        (items[0].kind.as_str(), items[0].title.as_str()),
-        ("figure", "Residuals by week")
-    );
-    assert_eq!(items[0].script, "scripts/fit.py");
-    let before = rt.refs_list().unwrap().len();
-    let imported = rt.analyst_import(&repo_abs, &items[0].id).await.unwrap();
-    assert_eq!(imported.title, "Residuals by week");
-    assert_eq!(rt.refs_list().unwrap().len(), before + 1);
-    // Importing the same item again adds nothing.
-    rt.analyst_import(&repo_abs, &items[0].id).await.unwrap();
-    assert_eq!(rt.refs_list().unwrap().len(), before + 1);
-    assert!(rt
-        .analyst_import(&repo_abs, "data/secret.csv")
-        .await
-        .is_err());
-
-    // Replacing the template keeps the slides and takes a snapshot first.
-    let corp = repo_root_template("corp/corp.potx");
+    // Replacing the template keeps the slides and asks the session for a checkpoint first.
+    let corp = repo()
+        .join("evals/templates/corp/corp.potx")
+        .to_string_lossy()
+        .into_owned();
     let task = rt.template_replace(corp);
     let done = wait_for(&mut rx, |e| match e {
-        ProjectEvent::TaskDone {
+        DeckEvent::TaskDone {
             task_id,
             ok,
             message,
@@ -577,122 +346,19 @@ async fn assets_previews_analyst_imports_and_template_replacement() {
     assert_eq!(deck.slides.len(), 1);
     // The preview was made for the old template.
     assert!(deck.slides[0].thumb.path.is_none());
-    assert!(rt
-        .history_list(None)
+    assert!(rig
+        .host
+        .labels
+        .lock()
         .unwrap()
         .iter()
-        .any(|s| s.label.as_deref() == Some("before replacing the template")));
+        .any(|l| l == "before replacing the template"));
     let bad_task = rt.template_replace(exe.to_string_lossy().into_owned());
     let refused = wait_for(&mut rx, |e| match e {
-        ProjectEvent::TaskDone { task_id, ok, .. } if *task_id == bad_task => Some(*ok),
+        DeckEvent::TaskDone { task_id, ok, .. } if *task_id == bad_task => Some(*ok),
         _ => None,
     })
     .await;
     assert!(!refused);
-
-    // A persisted policy change survives; an invalid one is refused and writes nothing.
-    use analyst_deck_protocol::ui::PolicyPatch;
-    let patch = PolicyPatch {
-        edits: Some("auto".into()),
-        max_steps: Some(12),
-        ..Default::default()
-    };
-    rt.persist_policy(&patch).unwrap();
-    let view = rt.set_policy(PolicyPatch::default());
-    assert_eq!((view.edits.as_str(), view.max_steps), ("auto", 12));
-    let invalid = PolicyPatch {
-        code: Some("whenever".into()),
-        ..Default::default()
-    };
-    assert_eq!(
-        rt.persist_policy(&invalid).unwrap_err().code,
-        IpcErrorCode::Invalid
-    );
-    let saved = std::fs::read_to_string(tmp.join("p/.present/project.toml")).unwrap();
-    assert!(
-        saved.contains("max_steps = 12") && !saved.contains("whenever"),
-        "{saved}"
-    );
-
-    // Keys: unknown providers are reported, nothing is stored.
-    assert_eq!(
-        rig.wb.provider_set_key("nope", "sk-x").unwrap_err().code,
-        IpcErrorCode::NotFound
-    );
-}
-
-fn repo_root_template(rel: &str) -> String {
-    repo()
-        .join("evals/templates")
-        .join(rel)
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Keys are written to the home `.env` under the provider's variable; nothing else stores
-/// them, and a leftover `keychain:` reference is refused with the way out.
-#[test]
-fn provider_keys_are_stored_in_the_home_env_file() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path().join("home");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(
-        home.join("config.toml"),
-        r#"
-[network]
-proxy = "http://proxy.corp:8080"
-
-[[providers]]
-name = "gateway"
-kind = "anthropic"
-base_url = "https://llm-gateway.corp.example"
-key = "env:PRESENT_TEST_SERVICE_GATEWAY_KEY"
-
-[[providers]]
-name = "old"
-kind = "anthropic"
-key = "keychain:old"
-
-[[providers]]
-name = "bare"
-kind = "openai-compatible"
-"#,
-    )
-    .unwrap();
-    let wb = Workbench::new(&home);
-    // Starting the service points the egress ledger into a home directory.
-    assert_eq!(
-        wb_net::gate()
-            .ledger_path()
-            .and_then(|p| p.file_name().map(|n| n.to_owned())),
-        Some("egress.jsonl".into())
-    );
-
-    wb.provider_set_key("gateway", "  sk-secret  ").unwrap();
-    let env_file = home.join(".env");
-    let text = std::fs::read_to_string(&env_file).unwrap();
-    assert_eq!(text, "PRESENT_TEST_SERVICE_GATEWAY_KEY=\"sk-secret\"\n");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&env_file).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-    // The stored key is what the provider layer resolves.
-    let keys = wb_providers::keys::KeyStores::for_home(&home);
-    let reference = wb_providers::keys::KeyRef::parse("env:PRESENT_TEST_SERVICE_GATEWAY_KEY");
-    assert_eq!(keys.get(&reference.unwrap()).as_deref(), Some("sk-secret"));
-
-    let empty = wb.provider_set_key("gateway", "   ").unwrap_err();
-    assert_eq!(empty.code, IpcErrorCode::Invalid);
-    let old = wb.provider_set_key("old", "sk-x").unwrap_err();
-    assert_eq!(old.code, IpcErrorCode::Invalid);
-    assert!(
-        old.message.contains("env:<VAR>") && old.message.contains(".env"),
-        "{}",
-        old.message
-    );
-    let bare = wb.provider_set_key("bare", "sk-x").unwrap_err();
-    assert_eq!(bare.code, IpcErrorCode::Invalid);
-    assert_eq!(std::fs::read_to_string(&env_file).unwrap(), text);
+    rt.ws.close().await;
 }

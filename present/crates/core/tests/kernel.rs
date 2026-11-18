@@ -25,6 +25,7 @@ async fn connect(project: &Path, home: &Path) -> Option<KernelClient> {
             "PRESENT_FONT_DIRS".into(),
             repo().join("vendor/fonts").to_string_lossy().into_owned(),
         )],
+        env_remove: vec![],
     };
     Some(KernelClient::connect(&launch).await.expect("kernel starts"))
 }
@@ -154,6 +155,7 @@ async fn the_kernel_runs_without_network_and_still_nests_its_sandbox() {
             engine: "none".into(),
             sandbox: sandbox.into(),
             env: vec![],
+            env_remove: vec![],
         };
         let kernel = KernelClient::connect(&launch).await.expect("kernel starts");
         assert!(kernel.network_isolation().is_isolated());

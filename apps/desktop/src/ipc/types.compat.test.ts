@@ -91,5 +91,11 @@ describe("IPC types match the ts-rs export", () => {
     expectTypeOf<Gen.Mode>().toExtend<Hand.Mode>();
     expectTypeOf<Hand.KernelState>().toExtend<Gen.KernelState>();
     expectTypeOf<Gen.KernelState>().toExtend<Hand.KernelState>();
+    expectTypeOf<Hand.ProposalKind>().toExtend<Gen.ProposalKind>();
+    expectTypeOf<Gen.ProposalKind>().toExtend<Hand.ProposalKind>();
+    expectTypeOf<Hand.DeckSummary>().toExtend<Gen.DeckSummary>();
+    expectTypeOf<Gen.DeckSummary>().toExtend<Hand.DeckSummary>();
+    expectTypeOf<Hand.CheckpointView>().toExtend<Gen.CheckpointView>();
+    expectTypeOf<Gen.CheckpointView>().toExtend<Hand.CheckpointView>();
   });
 });

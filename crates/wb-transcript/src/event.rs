@@ -70,6 +70,15 @@ pub enum Event {
         /// Ids or paths the proposal changes. Reads Present's `slides` key too.
         #[serde(default, alias = "slides", skip_serializing_if = "Option::is_none")]
         targets: Option<Vec<String>>,
+        /// The deck a deck change belongs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deck: Option<String>,
+        /// The changed document before and after, for proposals that keep their shape
+        /// (slides).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<serde_json::Value>,
     },
     Decision {
         ts: String,
@@ -184,6 +193,9 @@ impl Event {
             summary: summary.into(),
             diff,
             targets,
+            deck: None,
+            before: None,
+            after: None,
         }
     }
 
@@ -358,6 +370,9 @@ mod tests {
                 summary: "edit a.py".into(),
                 diff: Some("--- a\n+++ b\n".into()),
                 targets: None,
+                deck: None,
+                before: None,
+                after: None,
             },
             Event::Decision {
                 ts: "t".into(),

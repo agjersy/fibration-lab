@@ -24,7 +24,10 @@ async fn references_search_render_check_export() {
         DeckMode::Structured,
     )
     .unwrap();
-    let mut options = OpenOptions::new(&tmp.path().join("home"));
+    let mut options = OpenOptions::new(
+        &tmp.path().join("home"),
+        &tmp.path().join("session/index.sqlite"),
+    );
     options.engine = "none".into();
     options.kernel_env = vec![(
         "PRESENT_FONT_DIRS".into(),
@@ -32,7 +35,7 @@ async fn references_search_render_check_export() {
     )];
     let ws = match Workspace::open(&project.root, &options).await {
         Ok(ws) => ws,
-        Err(e) if e.to_string().contains("no kernel interpreter") => {
+        Err(e) if e.to_string().contains("no deck kernel interpreter") => {
             eprintln!("skipped: {e}");
             return;
         }
@@ -94,18 +97,27 @@ async fn references_search_render_check_export() {
     ws.deck()
         .create_slide(&slide, &Position::default())
         .unwrap();
-    let exported = ws.export("pptx", None).await.unwrap();
+    let exported = ws.export("pptx", None, "").await.unwrap();
     assert_eq!(exported.path, "exports/workspace-test.pptx");
     assert!(project.root.join(&exported.path).is_file());
     assert_eq!(
         exported.errors, 0,
         "the citation resolves through the manifest"
     );
-    let md = ws.export("md", None).await.unwrap();
+    let md = ws.export("md", None, "").await.unwrap();
     let outline = std::fs::read_to_string(project.root.join(md.path)).unwrap();
     assert!(outline.contains("Sourced slide") && outline.contains(&cite));
-    let log = ws.snapshots().log().unwrap();
-    assert_eq!(log.len(), 2);
-    assert!(ws.export("odp", None).await.is_err());
+    // The index is per-user state outside the deck folder; a second session that opens
+    // the same deck finds the references and indexes them again.
+    assert!(tmp.path().join("session/index.sqlite").is_file());
+    assert!(!project.root.join(".present/cache/index.sqlite").exists());
+    assert!(!project.root.join(".present/history").exists());
+    assert!(ws.export("odp", None, "").await.is_err());
     ws.close().await;
+    let mut other = options.clone();
+    other.index_path = tmp.path().join("session2/index.sqlite");
+    let again = Workspace::open(&project.root, &other).await.unwrap();
+    assert_eq!(again.reference_rows().unwrap().len(), rows.len());
+    assert!(!again.search("revenue", None, 3).await.unwrap().is_empty());
+    again.close().await;
 }

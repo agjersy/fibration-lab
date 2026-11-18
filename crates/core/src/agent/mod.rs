@@ -16,15 +16,18 @@ pub mod approver;
 pub mod prompt;
 
 pub use approver::{
-    ApprovalDecision, ApprovalRequest, Approver, AutoApprover, RecordingApprover, RejectAllApprover,
+    ApprovalDecision, ApprovalRequest, Approver, AutoApprover, DeckProposal, RecordingApprover,
+    RejectAllApprover,
 };
 
 use crate::checkpoint;
+use crate::service::decks::{deck_rel, slide_rel};
 use crate::tools::gate::{Decision as PolicyDecision, Policy, ScopeChange};
 use crate::tools::proposals::Proposal;
-use crate::tools::registry::{self, ToolClass};
+use crate::tools::registry::{self, DeckKinds, ToolClass};
 use crate::tools::ToolContext;
 use crate::util::{estimate_tokens, now_rfc3339, truncate_bytes};
+use analyst_deck::tools::dispatch::{Change, Prepared};
 use analyst_protocol::config::DEFAULT_MAX_OUTPUT_TOKENS;
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::{Diagnostic, Severity};
@@ -128,6 +131,12 @@ pub struct Agent {
     /// Tool-call ids used so far in this conversation. Providers may repeat ids between
     /// responses; the transcript and the history need them unique.
     used_call_ids: HashSet<String>,
+    /// Which kinds of decks the project has (read at the start of each turn).
+    deck_kinds: DeckKinds,
+    /// New slides the scope declaration of this turn still covers.
+    new_slides_left: u32,
+    /// Slides (repo-relative documents) changed this turn that the model has not looked at.
+    slides_unseen: BTreeSet<String>,
     pub on_text: Option<TextSink>,
     pub on_event: Option<EventSink>,
 }
@@ -173,6 +182,9 @@ impl Agent {
             declarations: 0,
             compact_floor: 0,
             used_call_ids: HashSet::new(),
+            deck_kinds: DeckKinds::default(),
+            new_slides_left: 0,
+            slides_unseen: BTreeSet::new(),
             on_text: None,
             on_event: None,
         }
@@ -312,15 +324,37 @@ impl Agent {
         self.ctx.session.append_event(&self.ctx.conv_id, &event)
     }
 
+    /// The one system prompt: the shared base, then a section per workbench this turn can
+    /// use, then the mode, the policy, the project map, pinned facts, and skills.
     fn system_prompt(&self) -> String {
+        let mode = self.config.mode;
+        let decks = self.deck_kinds;
         let mut s = String::new();
         s.push_str(prompt::SYSTEM_ROLE);
+        if decks.any() {
+            s.push(' ');
+            s.push_str(prompt::DECK_ROLE);
+        }
         s.push_str("\n\n");
-        s.push_str(&prompt::contract_rules(&self.ctx.project));
-        s.push_str("\n\n");
+        if prompt::mode_uses_analysis(mode) {
+            s.push_str(&prompt::contract_rules(&self.ctx.project));
+            s.push_str("\n\n");
+        }
+        if decks.any() {
+            s.push_str(prompt::DECK_GUIDE);
+            if decks.code {
+                s.push_str(prompt::CODE_MODE_DECK);
+                s.push('\n');
+            }
+            s.push('\n');
+        }
         s.push_str(prompt::OUTPUT_CONVENTIONS);
         s.push_str("\n\n");
-        s.push_str(prompt::mode_instructions(self.config.mode));
+        s.push_str(prompt::mode_instructions(mode));
+        if mode == Mode::Build && decks.any() {
+            s.push(' ');
+            s.push_str(prompt::BUILD_WITH_DECKS);
+        }
         s.push_str("\n\nPOLICY: ");
         s.push_str(&self.policy.summary());
         s.push_str("\n\n");
@@ -346,7 +380,7 @@ impl Agent {
             model: self.model.model_id().to_string(),
             system: Some(self.system_prompt()),
             messages: self.history.clone(),
-            tools: registry::defs_for_mode(self.config.mode),
+            tools: registry::defs_for(self.config.mode, self.deck_kinds),
             max_tokens: Some(self.config.effective_max_tokens()),
             audit_tag: None,
         }
@@ -407,6 +441,9 @@ impl Agent {
         self.mid_turn = true;
         self.touched.clear();
         self.declarations = 0;
+        self.new_slides_left = 0;
+        self.slides_unseen.clear();
+        self.deck_kinds = self.ctx.deck_kinds();
         // The declared scope lasts one turn (G5).
         self.policy.begin_turn();
         self.pinned.remove_prefixed("Declared scope:");
@@ -467,8 +504,10 @@ impl Agent {
     }
 
     async fn turn_body(&mut self, user_text: &str, st: &mut TurnState) -> Result<()> {
-        if self.config.mode == Mode::Build {
-            // Unique across conversations and processes; an existing ref is never replaced.
+        if crate::tools::gate::mode_changes_files(self.config.mode) {
+            // One checkpoint covers the whole turn, code and decks alike: undoing the turn
+            // restores both. Unique across conversations and processes; an existing ref is
+            // never replaced.
             let id = checkpoint::new_id(&self.ctx.conv_id);
             match checkpoint::create(&self.ctx.repo, &id) {
                 Ok(r) => {
@@ -486,7 +525,13 @@ impl Agent {
             .session
             .files_changed_since_last_turn()
             .unwrap_or_default();
-        self.project_map = prompt::project_map(&self.ctx, &user_changed).await;
+        self.project_map = if prompt::mode_uses_analysis(self.config.mode) {
+            prompt::project_map(&self.ctx, &user_changed).await
+        } else {
+            String::from("PROJECT MAP\n")
+        };
+        self.project_map
+            .push_str(&prompt::deck_map(&self.ctx, self.config.mode).await);
 
         self.record(Event::User {
             ts: now_rfc3339(),
@@ -503,6 +548,7 @@ impl Agent {
         self.history.push(Message::user_text(text));
 
         let mut fix_rounds = 0u32;
+        let mut review_prompted = false;
         loop {
             if st.summary.steps >= self.config.max_steps {
                 st.summary.stopped_by_max_steps = true;
@@ -596,6 +642,12 @@ impl Agent {
                         .open_issues
                         .push("the model hit its output token limit".into());
                 }
+                // Self-review: every slide the turn created or changed is looked at once
+                // before the turn ends (when the model can see and an engine can render).
+                if let Some(note) = self.self_review_note(&mut review_prompted).await {
+                    self.history.push(Message::user_text(note));
+                    continue;
+                }
                 return Ok(());
             }
 
@@ -626,6 +678,17 @@ impl Agent {
                     content: serde_json::to_string(&outcome.result).unwrap_or_default(),
                     is_error: !outcome.ok,
                 });
+                if self.config.caps.vision {
+                    for (media_type, data) in &outcome.images {
+                        result_parts.push(ContentPart::Image {
+                            media_type: media_type.clone(),
+                            data: data.clone(),
+                        });
+                    }
+                }
+                for seen in &outcome.viewed {
+                    self.slides_unseen.remove(seen);
+                }
                 if let Err(e) = self.record(Event::ToolResult {
                     ts: now_rfc3339(),
                     id: id.clone(),
@@ -641,7 +704,14 @@ impl Agent {
                 }
             }
             if !edited_this_round.is_empty() {
-                if let Some(feedback) = self.post_edit_checks(&edited_this_round).await {
+                let mut feedback = self.post_edit_checks(&edited_this_round).await;
+                if let Some(deck) = self.post_deck_checks(&edited_this_round).await {
+                    feedback = Some(match feedback {
+                        Some(f) => format!("{f}{deck}"),
+                        None => deck,
+                    });
+                }
+                if let Some(feedback) = feedback {
                     if fix_rounds < self.config.auto_fix_iterations {
                         fix_rounds += 1;
                         result_parts.push(ContentPart::Text {
@@ -678,7 +748,16 @@ impl Agent {
     /// `declare_scope`: the first declaration of a turn is free; one that only repeats or
     /// narrows the scope is free; one that adds files goes through the approver (G5).
     async fn declare_scope(&mut self, id: &str, args: &Value) -> crate::tools::ToolOutcome {
-        let files = str_array(args.get("files"));
+        let mut files = str_array(args.get("files"));
+        // Slides are files of the repository: one scope covers code and decks.
+        let slides = str_array(args.get("slides"));
+        let new_slides = args.get("new_slides").and_then(Value::as_u64).unwrap_or(0) as u32;
+        if !slides.is_empty() {
+            match self.ctx.deck_slug(args) {
+                Ok(slug) => files.extend(slides.iter().map(|id| slide_rel(&slug, id))),
+                Err(e) => return self.tool_error(id, e.message),
+            }
+        }
         let change = self.policy.scope_change(&files);
         let mut widened = false;
         if let ScopeChange::Widens(added) = &change {
@@ -707,6 +786,7 @@ impl Agent {
                 reason: reason.clone(),
                 proposal: None,
                 call_id: id.to_string(),
+                deck: None,
             };
             match self.approver.decide(&req).await {
                 ApprovalDecision::Accept { .. } => widened = true,
@@ -727,6 +807,7 @@ impl Agent {
         }
         self.policy.declare_scope(files);
         self.declarations += 1;
+        self.new_slides_left = new_slides;
         let scope = self
             .policy
             .scope()
@@ -745,6 +826,7 @@ impl Agent {
             Ok(json!({
                 "ok": true,
                 "scope": scope,
+                "new_slides": new_slides,
                 "declaration": self.declarations,
                 "widened_with_approval": widened,
             })),
@@ -789,6 +871,11 @@ impl Agent {
             _ => {}
         }
         let class = registry::tool_class(name);
+        if class == Some(ToolClass::Edit) && registry::is_deck_tool(name) {
+            return self
+                .execute_deck_change(id, name, args, summary, edited)
+                .await;
+        }
         let eval = self.policy.evaluate(name, args);
         let is_edit = class == Some(ToolClass::Edit);
         let mut proposal: Option<Proposal> = None;
@@ -801,6 +888,10 @@ impl Agent {
                         kind: p.kind,
                         summary: p.summary.clone(),
                         diff: Some(p.diff.clone()),
+                        targets: None,
+                        deck: None,
+                        before: None,
+                        after: None,
                     });
                     proposal = Some(p);
                 }
@@ -821,6 +912,10 @@ impl Agent {
                             args.get("path").and_then(Value::as_str).unwrap_or("")
                         ),
                         diff: None,
+                        targets: None,
+                        deck: None,
+                        before: None,
+                        after: None,
                     });
                     let _ = self.record(Event::Decision {
                         ts: now_rfc3339(),
@@ -838,6 +933,7 @@ impl Agent {
                     reason: eval.reason.clone(),
                     proposal: proposal.clone(),
                     call_id: id.to_string(),
+                    deck: None,
                 };
                 let decision = self.approver.decide(&req).await;
                 let ok = decision.accepted();
@@ -848,6 +944,10 @@ impl Agent {
                         kind: pk,
                         summary: format!("{name} {} ({})", compact_args(args), eval.reason),
                         diff: None,
+                        targets: None,
+                        deck: None,
+                        before: None,
+                        after: None,
                     });
                 }
                 let _ = self.record(Event::Decision {
@@ -912,7 +1012,12 @@ impl Agent {
             });
             return self.ctx.cap_result(id, r.map_err(Into::into));
         }
-        let result = self.ctx.dispatch(id, name, args).await;
+        let dispatched = self.ctx.dispatch_full(id, name, args).await;
+        let (images, viewed) = match &dispatched {
+            Ok(d) => (d.images.clone(), d.viewed.clone()),
+            Err(_) => (vec![], vec![]),
+        };
+        let result = dispatched.map(|d| d.value);
         if name == "run.script" {
             if let Ok(v) = &result {
                 if let Some(r) = v.get("run_id").and_then(Value::as_str) {
@@ -926,16 +1031,363 @@ impl Agent {
                 }
             }
         }
-        self.ctx.cap_result(id, result)
+        let mut outcome = self.ctx.cap_result(id, result);
+        outcome.images = images;
+        outcome.viewed = viewed;
+        outcome
+    }
+
+    /// A deck change (`outline.propose`, `slide.propose_*`, `code.propose_edit`,
+    /// `deck.switch_mode`, `asset.import`): prepared by the deck service, gated by the one
+    /// policy with the slide documents as its targets, recorded as a proposal that keeps its
+    /// before/after shape, decided, and applied.
+    async fn execute_deck_change(
+        &mut self,
+        id: &str,
+        name: &str,
+        args: &Value,
+        summary: &mut TurnSummary,
+        edited: &mut Vec<String>,
+    ) -> crate::tools::ToolOutcome {
+        if !self.policy.tool_available(name) {
+            return self.tool_error(
+                id,
+                format!(
+                    "denied by policy: tool `{name}` is not available in {} mode",
+                    self.config.mode
+                ),
+            );
+        }
+        if self.policy.edits_denied() {
+            return self.tool_error(
+                id,
+                "denied by policy: edits policy is deny (read-only): no edit is applied",
+            );
+        }
+        let (svc, prepared) = match self.ctx.deck_prepare(name, args).await {
+            Ok(p) => p,
+            Err(e) => return self.tool_error(id, e.message),
+        };
+        let slug = svc.slug.clone();
+        let kind = deck_proposal_kind(name);
+        let change = match prepared {
+            // `asset.import` copies an image into the deck's assets and is done.
+            Prepared::Done(out) => {
+                let result = if out.ok {
+                    Ok(out.result)
+                } else {
+                    Err(crate::tools::ToolError::new(
+                        out.result
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("the deck tool failed"),
+                    ))
+                };
+                let mut outcome = self.ctx.cap_result(id, result);
+                outcome.images = out.images;
+                return outcome;
+            }
+            // A locked slide or element: refused before policy, and recorded.
+            Prepared::Denied { reason, message } => {
+                let _ = self.record(Event::Proposal {
+                    ts: now_rfc3339(),
+                    id: id.to_string(),
+                    kind,
+                    summary: message.clone(),
+                    diff: None,
+                    targets: None,
+                    deck: Some(slug),
+                    before: None,
+                    after: None,
+                });
+                let _ = self.record(Event::Decision {
+                    ts: now_rfc3339(),
+                    proposal_id: id.to_string(),
+                    decision: Decision::Reject,
+                    by: DecidedBy::Policy,
+                });
+                let mut outcome = self.tool_error(id, message);
+                outcome.result["denied"] = json!(reason);
+                return outcome;
+            }
+            Prepared::Change(c) => c,
+        };
+        let targets: Vec<String> = change
+            .paths()
+            .iter()
+            .map(|p| format!("{}/{p}", deck_rel(&slug)))
+            .collect();
+        // A new slide announced with `new_slides`, and a deck's single outline or build
+        // script, are in scope without being named.
+        let announced = matches!(change, Change::SlideCreate { .. }) && self.new_slides_left > 0;
+        let single = matches!(change, Change::Outline { .. } | Change::CodeEdit { .. })
+            && self.policy.scope().is_none();
+        if announced || single {
+            for t in &targets {
+                self.policy.add_to_scope(t);
+            }
+        }
+        let mut action = wb_policy::Action::edit(name, targets.clone())
+            // The storyline is always the user's call unless edits are fully automatic.
+            .creates_new(change.creates_new() || matches!(change, Change::Outline { .. }))
+            .always_ask(matches!(change, Change::ModeSwitch { .. }));
+        for flag in change.flags() {
+            action = action.flag(flag);
+        }
+        let eval = self.policy.evaluate_action(&action);
+        let (before, after) = change.before_after();
+        let proposal = DeckProposal {
+            deck: slug.clone(),
+            kind,
+            summary: change.summary(),
+            diff: change.diff(),
+            slide_ids: change.slide_ids(),
+            targets: targets.clone(),
+            before,
+            after,
+        };
+        let _ = self.record(Event::Proposal {
+            ts: now_rfc3339(),
+            id: id.to_string(),
+            kind,
+            summary: proposal.summary.clone(),
+            diff: Some(proposal.diff.clone()),
+            targets: Some(targets.clone()),
+            deck: Some(slug.clone()),
+            before: proposal.before.clone(),
+            after: proposal.after.clone(),
+        });
+        let mut change = change;
+        let mut user_modified = false;
+        let decided_by = match eval.decision {
+            PolicyDecision::Deny => {
+                let _ = self.record(Event::Decision {
+                    ts: now_rfc3339(),
+                    proposal_id: id.to_string(),
+                    decision: Decision::Reject,
+                    by: DecidedBy::Policy,
+                });
+                return self.tool_error(id, format!("denied by policy: {}", eval.reason));
+            }
+            PolicyDecision::Allow => DecidedBy::Policy,
+            PolicyDecision::Ask => {
+                let req = ApprovalRequest {
+                    tool: name.to_string(),
+                    args: args.clone(),
+                    reason: eval.reason.clone(),
+                    proposal: None,
+                    call_id: id.to_string(),
+                    deck: Some(proposal.clone()),
+                };
+                match self.approver.decide(&req).await {
+                    ApprovalDecision::Reject { reason } => {
+                        let _ = self.record(Event::Decision {
+                            ts: now_rfc3339(),
+                            proposal_id: id.to_string(),
+                            decision: Decision::Reject,
+                            by: DecidedBy::User,
+                        });
+                        let why = match reason {
+                            Some(r) if !r.trim().is_empty() => {
+                                format!("{}; user says: {r}", eval.reason)
+                            }
+                            _ => eval.reason.clone(),
+                        };
+                        return self.tool_error(id, format!("rejected by the user ({why})"));
+                    }
+                    ApprovalDecision::Accept { content } => {
+                        // The user may have edited the slide before accepting it.
+                        if let Some(text) = content {
+                            match apply_user_edit(&mut change, &text) {
+                                Ok(changed) => user_modified = changed,
+                                Err(e) => {
+                                    let _ = self.record(Event::Decision {
+                                        ts: now_rfc3339(),
+                                        proposal_id: id.to_string(),
+                                        decision: Decision::Reject,
+                                        by: DecidedBy::User,
+                                    });
+                                    return self.tool_error(
+                                        id,
+                                        format!("the user's edited version could not be used: {e}"),
+                                    );
+                                }
+                            }
+                        }
+                        DecidedBy::User
+                    }
+                }
+            }
+        };
+        let in_scope = targets.iter().all(|t| self.policy.in_scope(t));
+        match self.ctx.deck_apply(&svc, &change).await {
+            Ok(mut result) => {
+                let _ = self.record(Event::Decision {
+                    ts: now_rfc3339(),
+                    proposal_id: id.to_string(),
+                    decision: if decided_by == DecidedBy::User {
+                        Decision::Accept
+                    } else {
+                        Decision::Auto
+                    },
+                    by: decided_by,
+                });
+                if matches!(change, Change::SlideCreate { .. }) {
+                    self.new_slides_left = self.new_slides_left.saturating_sub(1);
+                }
+                if matches!(change, Change::ModeSwitch { .. }) {
+                    self.deck_kinds = self.ctx.deck_kinds();
+                }
+                if !in_scope {
+                    summary.unwanted_edits += 1;
+                }
+                edited.extend(targets.iter().cloned());
+                for sid in change.slide_ids() {
+                    let rel = slide_rel(&slug, &sid);
+                    if matches!(change, Change::SlideDelete { .. }) {
+                        self.slides_unseen.remove(&rel);
+                    } else if !matches!(change, Change::SlideMove { .. }) {
+                        self.slides_unseen.insert(rel);
+                    }
+                }
+                result["applied"] = json!(true);
+                result["deck"] = json!(slug);
+                if decided_by == DecidedBy::User {
+                    result["decided_by"] = json!("user");
+                    if let Change::SlideUpdate { after, .. }
+                    | Change::SlideCreate { slide: after, .. } = &change
+                    {
+                        result["slide_as_accepted"] =
+                            json!(analyst_deck::tools::dispatch::slide_text(after));
+                    }
+                }
+                if user_modified {
+                    result["user_modified"] = json!(true);
+                    result["note"] = json!("the user edited your proposal before accepting it; the slide on disk is their version, so read it again before changing it");
+                }
+                self.ctx.cap_result(id, Ok(result))
+            }
+            Err(e) => {
+                let _ = self.record(Event::Decision {
+                    ts: now_rfc3339(),
+                    proposal_id: id.to_string(),
+                    decision: Decision::Reject,
+                    by: DecidedBy::Policy,
+                });
+                self.tool_error(id, e.message)
+            }
+        }
+    }
+
+    /// The deck checker on the slides changed in this round: errors go back to the model
+    /// before the user sees a "done". Nothing when no slide changed.
+    async fn post_deck_checks(&mut self, edited: &[String]) -> Option<String> {
+        let mut by_deck: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for path in edited {
+            let Some(rest) = path.strip_prefix("decks/") else {
+                continue;
+            };
+            let Some((slug, inner)) = rest.split_once('/') else {
+                continue;
+            };
+            let slides = by_deck.entry(slug.to_string()).or_default();
+            if let Some(id) = inner
+                .strip_prefix("deck/slides/")
+                .and_then(|f| f.strip_suffix(".json"))
+            {
+                slides.push(id.to_string());
+            }
+        }
+        let mut out = String::new();
+        for (slug, slides) in by_deck {
+            let Ok(svc) = self.ctx.decks.open(&slug).await else {
+                continue;
+            };
+            let code_mode = svc
+                .ws
+                .deck()
+                .read_deck()
+                .map(|d| d.mode == analyst_deck_protocol::deck::DeckMode::Code)
+                .unwrap_or(false);
+            let existing: Vec<String> = slides
+                .into_iter()
+                .filter(|s| svc.ws.deck().slide_path_exists(s))
+                .collect();
+            let scope = if code_mode {
+                None
+            } else if existing.is_empty() {
+                continue;
+            } else {
+                Some(existing.as_slice())
+            };
+            match self.ctx.deck_check(&svc, scope).await {
+                Ok(diags) => {
+                    for d in diags.iter().filter(|d| d["severity"] == "error").take(20) {
+                        let place = [d["slide_id"].as_str(), d["element_id"].as_str()]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let hint = d["fix_hint"]
+                            .as_str()
+                            .map(|h| format!(" (hint: {h})"))
+                            .unwrap_or_default();
+                        out.push_str(&format!(
+                            "- error {} deck {slug} {place}: {}{hint}\n",
+                            d["rule"].as_str().unwrap_or(""),
+                            d["message"].as_str().unwrap_or("")
+                        ));
+                    }
+                }
+                Err(e) => out.push_str(&format!(
+                    "- error build deck {slug}: the deck could not be built: {e}\n"
+                )),
+            }
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
+    }
+
+    /// The reminder to look at changed slides that were never rendered, once per turn.
+    async fn self_review_note(&mut self, prompted: &mut bool) -> Option<String> {
+        if *prompted || !self.config.caps.vision || self.slides_unseen.is_empty() {
+            return None;
+        }
+        let mut unseen = Vec::new();
+        for rel in &self.slides_unseen {
+            let Some((slug, id)) = rel
+                .strip_prefix("decks/")
+                .and_then(|r| r.split_once("/deck/slides/"))
+                .and_then(|(s, f)| Some((s, f.strip_suffix(".json")?)))
+            else {
+                continue;
+            };
+            if self.ctx.repo.join(rel).is_file() && self.ctx.deck_render_available(slug).await {
+                unseen.push(format!("{id} (deck {slug})"));
+            }
+        }
+        if unseen.is_empty() {
+            return None;
+        }
+        *prompted = true;
+        Some(format!(
+            "[self-review] You changed {} but have not looked at {}. Call slide_render on each, fix anything that looks wrong, then finish.",
+            if unseen.len() == 1 { "a slide" } else { "slides" },
+            unseen.join(", ")
+        ))
     }
 
     /// Lint + contract check (including similarity) on edited files; returns feedback text when
     /// there are diagnostics. Silently skipped when the kernel is unavailable.
     async fn post_edit_checks(&self, edited: &[String]) -> Option<String> {
         let kernel = self.ctx.kernel.as_ref()?;
+        // A deck's build script is not an analysis script: the deck checker covers it.
         let py: Vec<String> = edited
             .iter()
-            .filter(|p| p.ends_with(".py"))
+            .filter(|p| p.ends_with(".py") && !p.starts_with("decks/"))
             .cloned()
             .collect();
         if py.is_empty() {
@@ -978,7 +1430,7 @@ impl Agent {
     /// Tokens the request spends before any history: system prompt plus tool definitions.
     fn overhead_tokens(&self) -> usize {
         let mut n = estimate_tokens(&self.system_prompt());
-        for d in registry::defs_for_mode(self.config.mode) {
+        for d in registry::defs_for(self.config.mode, self.deck_kinds) {
             n += estimate_tokens(&d.description) + estimate_tokens(&d.parameters.to_string()) + 10;
         }
         n
@@ -1037,6 +1489,58 @@ fn proposal_kind_for(tool: &str) -> ProposalKind {
         "shell.run" | "run.script" | "exec.snippet" => ProposalKind::Shell,
         "git.commit" => ProposalKind::Commit,
         _ => ProposalKind::Edit,
+    }
+}
+
+fn deck_proposal_kind(tool: &str) -> ProposalKind {
+    match tool {
+        "outline.propose" => ProposalKind::Outline,
+        "slide.propose_create" => ProposalKind::SlideCreate,
+        "slide.propose_delete" => ProposalKind::SlideDelete,
+        "slide.propose_move" => ProposalKind::SlideMove,
+        "code.propose_edit" => ProposalKind::DeckCode,
+        "deck.switch_mode" => ProposalKind::DeckMode,
+        _ => ProposalKind::SlideUpdate,
+    }
+}
+
+/// Replace the proposed content of a deck change with the user's edited version: a slide
+/// document (JSON) for slide proposals, the script text for a build script edit. Returns
+/// whether anything changed.
+fn apply_user_edit(change: &mut Change, text: &str) -> std::result::Result<bool, String> {
+    use analyst_deck_protocol::deck::Slide;
+    let parse = |id: &analyst_deck_protocol::ids::SlideId| -> std::result::Result<Slide, String> {
+        let mut v: Value =
+            serde_json::from_str(text).map_err(|e| format!("not a slide document: {e}"))?;
+        v["id"] = json!(id);
+        serde_json::from_value(v).map_err(|e| format!("not a valid slide: {e}"))
+    };
+    match change {
+        Change::SlideCreate { slide, .. } => {
+            let edited = parse(&slide.id)?;
+            let changed = edited != **slide;
+            **slide = edited;
+            Ok(changed)
+        }
+        Change::SlideUpdate { after, .. } => {
+            let edited = parse(&after.id)?;
+            let changed = edited != **after;
+            **after = edited;
+            Ok(changed)
+        }
+        Change::CodeEdit { proposed, .. } => {
+            let changed = proposed != text;
+            *proposed = text.to_string();
+            Ok(changed)
+        }
+        Change::Outline { rows } => {
+            let edited: Vec<analyst_deck::tools::dispatch::OutlineRow> =
+                serde_json::from_str(text).map_err(|e| format!("not an outline: {e}"))?;
+            let changed = &edited != rows;
+            *rows = edited;
+            Ok(changed)
+        }
+        _ => Ok(false),
     }
 }
 

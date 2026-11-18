@@ -6,10 +6,30 @@ use ts_rs::TS;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
+    /// Read-only: investigate and plan.
     Plan,
+    /// Everything, subject to policy: code, runs, and slides in one turn.
     #[default]
     Build,
+    /// Run existing scripts; no edits.
     Run,
+    /// Deck storyline only: propose the outline, no slide changes.
+    Outline,
+    /// Create and change slides; no code edits, script runs, packages, shell, or git.
+    Slides,
+    /// Improve existing slides: no new slides, no deletions, no new claims or citations.
+    Polish,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 6] = [
+        Mode::Plan,
+        Mode::Build,
+        Mode::Run,
+        Mode::Outline,
+        Mode::Slides,
+        Mode::Polish,
+    ];
 }
 
 impl std::str::FromStr for Mode {
@@ -19,7 +39,12 @@ impl std::str::FromStr for Mode {
             "plan" => Ok(Mode::Plan),
             "build" => Ok(Mode::Build),
             "run" => Ok(Mode::Run),
-            other => Err(format!("unknown mode `{other}` (expected plan|build|run)")),
+            "outline" | "storyline" => Ok(Mode::Outline),
+            "slides" => Ok(Mode::Slides),
+            "polish" => Ok(Mode::Polish),
+            other => Err(format!(
+                "unknown mode `{other}` (expected plan|build|run|outline|slides|polish)"
+            )),
         }
     }
 }
@@ -30,6 +55,9 @@ impl std::fmt::Display for Mode {
             Mode::Plan => "plan",
             Mode::Build => "build",
             Mode::Run => "run",
+            Mode::Outline => "outline",
+            Mode::Slides => "slides",
+            Mode::Polish => "polish",
         })
     }
 }

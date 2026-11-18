@@ -1,17 +1,10 @@
-//! W10 acceptance: deck store, snapshots, references, index, audit.
+//! The deck store, references, and the reference index.
 
-use analyst_deck::audit::AuditLog;
 use analyst_deck::deck_store::{DeckError, Position};
 use analyst_deck::index::{ChunkRow, Index, RefRow};
 use analyst_deck::project::Project;
 use analyst_deck::refs::{self, Added};
-use analyst_deck::snapshots::{Prune, SnapshotStore};
-use analyst_deck_protocol::audit::{AuditRecord, AuditStatus};
-use analyst_deck_protocol::config::{Location, SnapshotReason};
 use analyst_deck_protocol::deck::{DeckMode, Slide};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
-use std::collections::BTreeMap;
 use std::path::Path;
 
 fn template(dir: &Path) -> std::path::PathBuf {
@@ -37,22 +30,6 @@ fn slide(id: &str, title: &str) -> Slide {
         "elements": []
     }))
     .unwrap()
-}
-
-fn deck_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
-    let mut out = BTreeMap::new();
-    for entry in walkdir::WalkDir::new(root.join("deck"))
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if entry.file_type().is_file() {
-            out.insert(
-                analyst_deck::util::rel_slash(root, entry.path()),
-                std::fs::read(entry.path()).unwrap(),
-            );
-        }
-    }
-    out
 }
 
 #[test]
@@ -122,157 +99,6 @@ fn project_skeleton_and_slide_operations() {
         Err(DeckError::NotFound(_))
     ));
     assert!(Project::open(tmp.path()).is_err());
-}
-
-#[test]
-fn snapshots_restore_exact_bytes_and_revert_turns() {
-    let tmp = tempfile::tempdir().unwrap();
-    let p = project(tmp.path());
-    let store = p.deck();
-    let snaps = SnapshotStore::new(&p.root);
-    store
-        .create_slide(&slide("s-aaaa", "A"), &Position::default())
-        .unwrap();
-    let first = snaps
-        .take(SnapshotReason::Turn, Some("t-1"), None, vec![], vec![])
-        .unwrap();
-    let before = deck_bytes(&p.root);
-    store
-        .create_slide(&slide("s-bbbb", "B"), &Position::default())
-        .unwrap();
-    store.update_slide(&slide("s-aaaa", "A2"), None).unwrap();
-    std::fs::write(p.root.join("deck/build.py"), "print('x')\n").unwrap();
-    snaps
-        .take(SnapshotReason::Turn, Some("t-2"), None, vec![], vec![])
-        .unwrap();
-    let restored = snaps.restore(&first).unwrap();
-    assert_eq!(
-        deck_bytes(&p.root),
-        before,
-        "restore reproduces the exact files, removing later ones"
-    );
-    let log = snaps.log().unwrap();
-    assert_eq!(log.len(), 3);
-    assert_eq!(log[2].snapshot_id, restored);
-    assert_eq!(log[2].reason, SnapshotReason::Restore);
-    assert_eq!(log[2].parent.as_ref(), Some(&log[1].snapshot_id));
-    // Reverting turn 2 returns to the state captured before it ran.
-    store
-        .create_slide(&slide("s-dddd", "D"), &Position::default())
-        .unwrap();
-    let pre = snaps
-        .take(SnapshotReason::Turn, Some("t-3"), None, vec![], vec![])
-        .unwrap();
-    let state = deck_bytes(&p.root);
-    store.delete_slide(&"s-dddd".parse().unwrap()).unwrap();
-    snaps.revert_turn("t-3").unwrap();
-    assert_eq!(deck_bytes(&p.root), state);
-    assert_eq!(snaps.manifest(&pre).unwrap().files.len(), 3);
-    assert!(snaps.revert_turn("t-missing").is_err());
-}
-
-#[test]
-fn random_edit_snapshot_restore_prune_sequences_never_lose_pinned_state() {
-    for seed in 0..12u64 {
-        let tmp = tempfile::tempdir().unwrap();
-        let p = project(tmp.path());
-        let store = p.deck();
-        let snaps = SnapshotStore::new(&p.root);
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut live: Vec<String> = Vec::new();
-        let mut saved: Vec<(
-            analyst_deck_protocol::ids::SnapshotId,
-            BTreeMap<String, Vec<u8>>,
-            SnapshotReason,
-        )> = Vec::new();
-        let mut counter = 0;
-        for step in 0..60 {
-            match rng.gen_range(0..10) {
-                0..=3 => {
-                    counter += 1;
-                    let id = format!("s-r{seed}x{counter}");
-                    store
-                        .create_slide(
-                            &slide(&id, &format!("slide {counter}")),
-                            &Position::default(),
-                        )
-                        .unwrap();
-                    live.push(id);
-                }
-                4 if !live.is_empty() => {
-                    let id = live[rng.gen_range(0..live.len())].clone();
-                    store
-                        .update_slide(&slide(&id, &format!("edited at {step}")), None)
-                        .unwrap();
-                }
-                5 if !live.is_empty() => {
-                    let id = live.remove(rng.gen_range(0..live.len()));
-                    store.delete_slide(&id.parse().unwrap()).unwrap();
-                }
-                6 | 7 => {
-                    let reason = [
-                        SnapshotReason::Turn,
-                        SnapshotReason::Export,
-                        SnapshotReason::ModeSwitch,
-                        SnapshotReason::Manual,
-                    ][rng.gen_range(0..4)];
-                    let id = snaps
-                        .take(reason, Some(&format!("t-{step}")), None, vec![], vec![])
-                        .unwrap();
-                    saved.push((id, deck_bytes(&p.root), reason));
-                }
-                8 if !saved.is_empty() => {
-                    let (id, bytes, _) = saved[rng.gen_range(0..saved.len())].clone();
-                    if snaps.manifest(&id).is_ok() {
-                        snaps.restore(&id).unwrap();
-                        assert_eq!(deck_bytes(&p.root), bytes, "seed {seed} step {step}");
-                        live = store
-                            .read_deck()
-                            .unwrap()
-                            .slide_ids()
-                            .map(|s| s.to_string())
-                            .collect();
-                    }
-                }
-                9 => {
-                    // Aggressive policy with a clock far in the future, so age never protects.
-                    let future = chrono::Utc::now() + chrono::Duration::days(400);
-                    snaps
-                        .prune(
-                            Prune {
-                                keep_turns: 2,
-                                keep_days: 1,
-                            },
-                            future,
-                        )
-                        .unwrap();
-                }
-                _ => {}
-            }
-        }
-        let future = chrono::Utc::now() + chrono::Duration::days(400);
-        snaps
-            .prune(
-                Prune {
-                    keep_turns: 1,
-                    keep_days: 1,
-                },
-                future,
-            )
-            .unwrap();
-        for (id, bytes, reason) in &saved {
-            if reason.is_pinned() {
-                snaps
-                    .restore(id)
-                    .unwrap_or_else(|e| panic!("seed {seed}: pinned snapshot {id} lost: {e}"));
-                assert_eq!(
-                    &deck_bytes(&p.root),
-                    bytes,
-                    "seed {seed}: pinned snapshot {id}"
-                );
-            }
-        }
-    }
 }
 
 #[test]
@@ -471,80 +297,4 @@ fn hybrid_search_finds_expected_chunks() {
     assert_eq!(index.unembedded(10).unwrap().len(), 1);
     index.remove_ref("r-risks").unwrap();
     assert_eq!(index.refs().unwrap().len(), 2);
-}
-
-#[test]
-fn audit_log_holds_metadata_only_and_exports_csv() {
-    let tmp = tempfile::tempdir().unwrap();
-    let log = AuditLog::new(tmp.path());
-    let record = |ts: &str, status| AuditRecord {
-        ts: ts.to_string(),
-        project: "Q3 review".into(),
-        conversation: "c-1".into(),
-        turn: "t-1".into(),
-        provider: "gateway".into(),
-        location: Location::Internal,
-        base_url_host: "llm-gateway.corp.example".into(),
-        model: "claude-opus-5-5".into(),
-        input_tokens: 1200,
-        output_tokens: 300,
-        refs: vec![analyst_deck_protocol::audit::AuditRef {
-            cite: "ref:r-q3rep@3f9a1c2b7e01#p11:c120-188".parse().unwrap(),
-            chars: 68,
-        }],
-        images: vec![],
-        status,
-        error: None,
-    };
-    log.append(&record("2026-11-15T10:00:00.000Z", AuditStatus::Ok))
-        .unwrap();
-    log.append(&record("2026-12-01T09:00:00.000Z", AuditStatus::Error))
-        .unwrap();
-    assert!(
-        tmp.path().join("audit/2026-11.jsonl").is_file()
-            && tmp.path().join("audit/2026-12.jsonl").is_file()
-    );
-    assert_eq!(log.read("2026-11-01", "2026-12-01").unwrap().len(), 1);
-    let csv = tmp.path().join("out.csv");
-    assert_eq!(log.export_csv("2026-01-01", "2027-01-01", &csv).unwrap(), 2);
-    let text = std::fs::read_to_string(csv).unwrap();
-    assert!(
-        text.lines().count() == 3
-            && text.contains("llm-gateway.corp.example")
-            && text.contains(",68,")
-    );
-    // The record type has no field that could carry prompt or response text.
-    let fields: Vec<String> = serde_json::to_value(record("x", AuditStatus::Ok))
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
-    for forbidden in ["content", "prompt", "text", "messages", "key", "headers"] {
-        assert!(!fields.iter().any(|f| f == forbidden));
-    }
-}
-
-#[test]
-fn built_in_skills_load_without_diagnostics() {
-    let tmp = tempfile::tempdir().unwrap();
-    let set = analyst_deck::session::discover_skills(&tmp.path().join("home"), tmp.path());
-    let mut names = set.names();
-    names.sort();
-    assert_eq!(
-        names,
-        [
-            "chart-selection",
-            "deck-contract",
-            "executive-summary",
-            "storyline"
-        ]
-    );
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
-    let (_, diagnostics) = wb_skills::SkillSet::discover(&[wb_skills::SkillRoot::new(
-        wb_skills::SkillSource::Builtin,
-        root,
-    )]);
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
 }
