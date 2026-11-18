@@ -103,3 +103,38 @@ def test_a_bound_number_must_show_the_recorded_value(kernel_for, tmp_path):
     assert not [d for d in diags if d["rule"] == "src.coverage"]
     plain = k.dispatcher.call("check.run", {"pptx": "exports/deck.pptx", "engine": False})
     assert not [d for d in plain if d["rule"] == "num.bound"]
+
+
+def bound_table(eid, text, name="margin"):
+    def cell(runs):
+        return {"text": {"paragraphs": [{"runs": runs}]}}
+
+    return {"type": "table", "id": eid, "table": {"columns": 2, "header_row": True, "banded_rows": False, "rows": [
+        {"cells": [cell([{"t": "Metric"}]), cell([{"t": "Value"}])]},
+        {"cells": [cell([{"t": "Margin"}]), cell([{"t": text, "run_cite": {
+            "run_id": "r1", "result_name": name, "script": "scripts/m.py", "args": []}}])]},
+    ]}}  # fmt: skip
+
+
+def test_a_bound_number_in_a_table_cell_must_show_the_recorded_value(kernel_for, tmp_path):
+    free = {"id": "e-ft", "x": 600000, "y": 1800000, "cx": 4000000, "cy": 1200000, "content": bound_table("e-ft", "21%")}
+    slides = [
+        slide(1, "Title and Content", "Right", placeholders={"body": bound_table("e-tr", "18.3%")}),
+        slide(2, "Title and Content", "Wrong", placeholders={"body": bound_table("e-tw", "0.25")}),
+        slide(3, "Title Only", "Free table", elements=[free]),
+        slide(4, "Title and Content", "Missing", placeholders={"body": bound_table("e-tm", "5", name="gone")}),
+    ]
+    p = make_project(tmp_path / "p", "plain", slides, None)
+    k = kernel_for(p)
+    k.dispatcher.call("deck.render", {"out": "exports/deck.pptx", "snapshot_id": "h-1"})
+    results = {"r1/margin": {"name": "margin", "value": 0.18312}, "r1/gone": None}
+    diags = k.dispatcher.call("check.run", {"pptx": "exports/deck.pptx", "engine": False, "results": results})
+    found = {d["element_id"]: (d["severity"], d["pointer"]) for d in diags if d["rule"] == "num.bound"}
+    cell = "table/rows/1/cells/1/text/paragraphs/0/runs/0"
+    assert found == {
+        "e-tw": ("error", f"/placeholders/body/{cell}"),
+        "e-ft": ("error", f"/elements/0/content/{cell}"),
+        "e-tm": ("warn", f"/placeholders/body/{cell}"),
+    }, diags
+    # A table with a bound number counts as cited.
+    assert not [d for d in diags if d["rule"] == "src.coverage"], diags

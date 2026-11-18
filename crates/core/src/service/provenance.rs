@@ -253,7 +253,8 @@ pub fn format_value(value: f64, decimals: Option<usize>) -> String {
 /// Insert a number bound to a named result of a run into a text placeholder of a slide: a new
 /// paragraph `before` + the formatted value (and unit) + `after`, the number's text run carrying
 /// a result citation (run id, result name, script, arguments, tree identity) the checker
-/// verifies against the recorded value.
+/// verifies against the recorded value. With `cell` (row, column; from 0) the placeholder must
+/// hold a table, and that cell's text becomes the paragraph.
 #[allow(clippy::too_many_arguments)]
 pub fn bind_result(
     runs: &super::runs::RunService,
@@ -267,6 +268,7 @@ pub fn bind_result(
     decimals: Option<usize>,
     before: Option<&str>,
     after: Option<&str>,
+    cell: Option<(usize, usize)>,
 ) -> ServiceResult<super::artifacts::PlacedElement> {
     use analyst_protocol::kernel::ArtifactKind;
     let entry = super::artifacts::list(runs, session, repo, Some(run_id), Some(ArtifactKind::Results), Some(1))
@@ -330,6 +332,22 @@ pub fn bind_result(
     }
     let paragraph = json!({"runs": runs_json});
     let slot = &mut doc["placeholders"][placeholder];
+    if let Some((row, col)) = cell {
+        if slot["type"] != "table" {
+            return Err(ServiceError::invalid(format!(
+                "placeholder `{placeholder}` holds no table; `row` and `column` address a table cell"
+            )));
+        }
+        let target = slot
+            .pointer_mut(&format!("/table/rows/{row}/cells/{col}"))
+            .ok_or_else(|| {
+                ServiceError::invalid(format!(
+                    "the table in `{placeholder}` has no cell at row {row}, column {col} (from 0)"
+                ))
+            })?;
+        target["text"] = json!({"paragraphs": [paragraph]});
+        return Ok(super::artifacts::PlacedElement { slide: doc, hash });
+    }
     match slot["type"].as_str() {
         Some("text") => {
             let paras = slot["text"]["paragraphs"]

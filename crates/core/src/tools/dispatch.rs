@@ -315,6 +315,18 @@ impl ToolContext {
                 .map(|d| d as usize),
             args.get("before").and_then(Value::as_str),
             args.get("after").and_then(Value::as_str),
+            match (
+                args.get("row").and_then(Value::as_u64),
+                args.get("column").and_then(Value::as_u64),
+            ) {
+                (Some(r), Some(c)) => Some((r as usize, c as usize)),
+                (None, None) => None,
+                _ => {
+                    return Err(ToolError::new(
+                        "`row` and `column` go together: both address one table cell",
+                    ))
+                }
+            },
         )?;
         Ok(json!({"deck": slug, "slide_id": slide_id, "slide": placed.slide}))
     }

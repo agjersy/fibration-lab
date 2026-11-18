@@ -688,18 +688,35 @@ pub fn slide_items(v: &Value) -> Vec<(String, &Value)> {
     placeholders.chain(elements).collect()
 }
 
-/// The text runs of an element (a text placeholder, or a free text or shape element), with
-/// their pointer below the element.
+/// The text runs of an element (a text placeholder, a free text or shape element, or the
+/// cells of a table), with their pointer below the element.
 pub fn text_runs(item: &Value) -> Vec<(String, &Value)> {
+    fn runs_of<'a>(text: &'a Value, base: &str, out: &mut Vec<(String, &'a Value)>) {
+        for (pi, p) in text["paragraphs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            for (ri, r) in p["runs"].as_array().into_iter().flatten().enumerate() {
+                out.push((format!("{base}/paragraphs/{pi}/runs/{ri}"), r));
+            }
+        }
+    }
     let mut out = Vec::new();
-    for (pi, p) in item["text"]["paragraphs"]
+    runs_of(&item["text"], "/text", &mut out);
+    for (ri, row) in item["table"]["rows"]
         .as_array()
         .into_iter()
         .flatten()
         .enumerate()
     {
-        for (ri, r) in p["runs"].as_array().into_iter().flatten().enumerate() {
-            out.push((format!("/text/paragraphs/{pi}/runs/{ri}"), r));
+        for (ci, cell) in row["cells"].as_array().into_iter().flatten().enumerate() {
+            runs_of(
+                &cell["text"],
+                &format!("/table/rows/{ri}/cells/{ci}/text"),
+                &mut out,
+            );
         }
     }
     out

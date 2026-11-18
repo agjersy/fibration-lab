@@ -199,27 +199,19 @@ async fn refresh_element(
         }
     }
 
-    // Numbers bound to named results.
-    let mut bound: Vec<(usize, usize, Value, String)> = Vec::new();
-    for (pi, p) in el["text"]["paragraphs"]
-        .as_array()
+    // Numbers bound to named results, in text and in table cells.
+    let bound: Vec<(String, Value, String)> = analyst_deck::workspace::text_runs(el)
         .into_iter()
-        .flatten()
-        .enumerate()
-    {
-        for (ri, r) in p["runs"].as_array().into_iter().flatten().enumerate() {
-            let rc = &r["run_cite"];
-            if rc.is_object() && changed_tree(rc) {
-                bound.push((
-                    pi,
-                    ri,
-                    rc.clone(),
-                    r["t"].as_str().unwrap_or("").to_string(),
-                ));
-            }
-        }
-    }
-    for (pi, ri, rc, text) in bound {
+        .filter(|(_, r)| r["run_cite"].is_object() && changed_tree(&r["run_cite"]))
+        .map(|(ptr, r)| {
+            (
+                ptr,
+                r["run_cite"].clone(),
+                r["t"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    for (ptr, rc, text) in bound {
         let script = rc["script"].as_str().unwrap_or("").to_string();
         let args: Vec<String> = serde_json::from_value(rc["args"].clone()).unwrap_or_default();
         let name = rc["result_name"].as_str().unwrap_or("").to_string();
@@ -239,7 +231,9 @@ async fn refresh_element(
             })?;
         let entry = entry.expect("checked above");
         let shown = format_result(&result, shown_decimals(&text));
-        let run = &mut el["text"]["paragraphs"][pi]["runs"][ri];
+        let Some(run) = el.pointer_mut(&ptr) else {
+            continue;
+        };
         run["t"] = json!(shown);
         run["run_cite"] = json!({
             "run_id": entry.run_id,

@@ -2744,6 +2744,173 @@ json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name
     fx.wb.shutdown().await;
 }
 
+/// A number bound to a named result can sit in a table cell: placed there by
+/// `slide.insert_result` with `row` and `column`, checked by `num.bound`, reported `stale` when
+/// the code changes, and brought up to date by a refresh.
+#[tokio::test]
+async fn a_bound_number_in_a_table_cell_is_checked_and_refreshed() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    let script = r#"import json, os
+out = os.environ["ANALYST_OUT_DIR"]
+os.makedirs(out, exist_ok=True)
+json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"}]}, open(os.path.join(out, "results.json"), "w"))
+"#;
+    std::fs::write(fx.rt.repo.join("scripts/tab.py"), script).unwrap();
+    fx.rt.ensure_kernel().await.unwrap();
+    let run = fx.rt.run_start("scripts/tab.py", vec![]).await.unwrap();
+    let run_id = run.meta.run_id.clone();
+    fx.rt
+        .runs
+        .wait(&run_id, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let deck = fx.rt.deck("q3").await.unwrap();
+    let slide = deck.slide_create(None, "Title and Content").await.unwrap();
+    let slide_id = slide.slide.id.to_string();
+    let mut doc = serde_json::to_value(&slide.slide).unwrap();
+    let cell = |t: &str| json!({"text": {"paragraphs": [{"runs": [{"t": t}]}]}});
+    doc["placeholders"]["body"] = json!({
+        "type": "table",
+        "id": "e-tab",
+        "table": {
+            "columns": 2,
+            "header_row": true,
+            "banded_rows": false,
+            "rows": [
+                {"cells": [cell("Parameter"), cell("Value")]},
+                {"cells": [cell("Decay time"), cell("")]},
+            ],
+        },
+    });
+    let (_, hash) = deck
+        .ws
+        .deck()
+        .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+        .unwrap();
+    deck.slide_update(serde_json::from_value(doc).unwrap(), Some(&hash))
+        .unwrap();
+
+    // The agent's tool places the number in the cell.
+    let mut ctx = crate::tools::ToolContext::new(
+        &fx.rt.repo,
+        &fx.rt.home,
+        fx.rt.session_snapshot(),
+        "c-tab",
+        fx.rt.project(),
+    );
+    ctx.use_runs(fx.rt.runs.clone());
+    ctx.decks = fx.rt.decks.clone();
+    let half = ctx
+        .dispatch(
+            "t0",
+            "slide.insert_result",
+            &json!({"slide_id": slide_id, "placeholder": "body", "row": 1, "run_id": run_id, "result_name": "tau"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(half.message.contains("go together"), "{}", half.message);
+    ctx.dispatch(
+        "t1",
+        "slide.insert_result",
+        &json!({"slide_id": slide_id, "placeholder": "body", "row": 1, "column": 1, "run_id": run_id, "result_name": "tau"}),
+    )
+    .await
+    .unwrap();
+    let path = fx
+        .rt
+        .repo
+        .join(crate::service::decks::slide_rel("q3", &slide_id));
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let ptr = "/placeholders/body/table/rows/1/cells/1/text/paragraphs/0/runs/0";
+    let bound_run = doc.pointer(ptr).unwrap();
+    assert_eq!(bound_run["t"], "1.823 s");
+    assert_eq!(bound_run["run_cite"]["result_name"], "tau");
+    let relevant = |diags: &[Value]| -> Vec<Value> {
+        diags
+            .iter()
+            .filter(|d| d["rule"] == "num.bound" || d["rule"] == "stale")
+            .cloned()
+            .collect()
+    };
+    // Recorded and matching: no finding (in particular no "no recorded result" warning).
+    let diags = deck.run_checks(None).await.unwrap();
+    assert!(relevant(&diags).is_empty(), "{diags:?}");
+
+    // A wrong number typed into the cell is an error naming the recorded value.
+    let mut edited = doc.clone();
+    *edited.pointer_mut(&format!("{ptr}/t")).unwrap() = json!("2.1 s");
+    let (_, hash) = deck
+        .ws
+        .deck()
+        .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+        .unwrap();
+    deck.slide_update(serde_json::from_value(edited).unwrap(), Some(&hash))
+        .unwrap();
+    let found = relevant(&deck.run_checks(None).await.unwrap());
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0]["rule"], "num.bound");
+    assert_eq!(found[0]["severity"], "error");
+    assert!(found[0]["message"].as_str().unwrap().contains("1.8234"));
+    deck.slide_update(
+        serde_json::from_value(doc.clone()).unwrap(),
+        Some(
+            &deck
+                .ws
+                .deck()
+                .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+                .unwrap()
+                .1,
+        ),
+    )
+    .unwrap();
+
+    // The code changes: the cell is stale, and a refresh updates it.
+    std::fs::write(
+        fx.rt.repo.join("scripts/tab.py"),
+        script.replace("1.8234", "1.9"),
+    )
+    .unwrap();
+    let stale = relevant(&deck.run_checks(None).await.unwrap());
+    assert_eq!(stale.len(), 1, "{stale:?}");
+    assert_eq!(stale[0]["rule"], "stale");
+    assert_eq!(stale[0]["pointer"], ptr);
+    let mut rx = fx.rt.subscribe();
+    let proposal = crate::service::refresh::refresh_slide(&fx.rt, "q3", &slide_id, None)
+        .await
+        .unwrap()
+        .expect("a proposal");
+    assert!(
+        proposal
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("tau: 1.823 s → 1.900 s"),
+        "{:?}",
+        proposal.message
+    );
+    fx.rt
+        .proposal_respond(
+            &proposal.id,
+            analyst_protocol::ui::ProposalDecision::Accept { content: None },
+        )
+        .unwrap();
+    next_matching(&mut rx, |e| {
+        matches!(e, SessionEvent::ProposalResolved { proposal_id, decision, .. }
+            if proposal_id == &proposal.id && *decision == analyst_protocol::transcript::Decision::Accept)
+    })
+    .await;
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(doc.pointer(ptr).unwrap()["t"], "1.900 s");
+    assert!(relevant(&deck.run_checks(None).await.unwrap()).is_empty());
+    fx.wb.shutdown().await;
+}
+
 /// The verification ledger: the user verifies an item for its current content; a change to the
 /// content resets it to unverified (stale); the agent can record machine_checked but never
 /// human verification; every change is an event and a line in `.analyst/verification.jsonl`.
@@ -2933,6 +3100,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
         "tau",
         None,
         Some("Decay time "),
+        None,
         None,
     )
     .unwrap();
