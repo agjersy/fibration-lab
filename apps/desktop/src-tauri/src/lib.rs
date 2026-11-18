@@ -22,6 +22,8 @@ pub struct AppState {
     pub subscriptions: Mutex<HashMap<String, Subscription>>,
     /// Folders already added to the asset protocol scope (deck caches, assets, references).
     pub asset_dirs: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// Per open session, the task that widens the asset scope when its decks change.
+    pub asset_watchers: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
 }
 
 impl AppState {
@@ -30,6 +32,7 @@ impl AppState {
             workbench,
             subscriptions: Mutex::new(HashMap::new()),
             asset_dirs: Mutex::new(Default::default()),
+            asset_watchers: Mutex::new(HashMap::new()),
         }
     }
 
