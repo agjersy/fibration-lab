@@ -5,14 +5,12 @@
 //! - [`config`]: global and project configuration files (PROTOCOL 2.1, 2.2).
 //! - [`session`]: session store records (PROTOCOL 2.3).
 //! - [`transcript`]: conversation transcript events (PROTOCOL 5).
-//! - [`model`]: model provider types, `ModelEvent`, `ChatRequest` (PROTOCOL 4).
 //! - [`evals`]: evaluation task and scorecard types (PROTOCOL 8).
 //! - [`ui`]: desktop IPC types with TypeScript export (docs/IPC.md).
 
 pub mod config;
 pub mod evals;
 pub mod kernel;
-pub mod model;
 pub mod rpc;
 pub mod session;
 pub mod transcript;

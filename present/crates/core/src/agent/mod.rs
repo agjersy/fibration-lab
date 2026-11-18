@@ -21,9 +21,9 @@ use std::sync::Arc;
 use tools::Mode;
 use wb_policy::{Action, Decision, Policy, Reason, Scope};
 use wb_providers::model::{
-    ChatRequest, ContentPart, Message, ModelCapabilities, ModelEvent, Role, StopReason, ToolSupport,
+    ChatRequest, ContentPart, Message, ModelCapabilities, ModelEvent, Role, StopReason,
 };
-use wb_providers::{text_protocol, ModelClient};
+use wb_providers::ModelClient;
 use wb_transcript::{
     CompactionConfig, ContextEstimate, DecidedBy, Event, ModelSummarizer, ProposalDecision,
     ResultCap, TranscriptStore,
@@ -163,6 +163,9 @@ fn reason_str(reason: Reason) -> &'static str {
         Reason::Locked => "locked",
         Reason::AlwaysAsk => "always_ask",
         Reason::Mode => "mode",
+        Reason::Network => "network",
+        Reason::Unsandboxed => "unsandboxed",
+        Reason::Path => "path",
     }
 }
 
@@ -217,10 +220,7 @@ impl Agent {
             return Ok(());
         }
         let events = self.store.read(&self.conv_id)?;
-        let options = wb_transcript::ReplayOptions {
-            text_protocol: self.uses_text_protocol(),
-            ..Default::default()
-        };
+        let options = wb_transcript::ReplayOptions::default();
         self.history = wb_transcript::to_messages(&events, &options);
         self.turn_counter = events.iter().filter(|e| e.type_name() == "user").count() as u32;
         if let Ok(pinned) = self.store.load_pinned(&self.conv_id) {
@@ -235,10 +235,6 @@ impl Agent {
 
     pub fn history(&self) -> &[Message] {
         &self.history
-    }
-
-    fn uses_text_protocol(&self) -> bool {
-        self.config.caps.tools != ToolSupport::Native
     }
 
     fn code_mode(&self) -> bool {
@@ -265,6 +261,7 @@ impl Agent {
                 wb_policy::EditGate::Review => "reviewed by the user one at a time",
                 wb_policy::EditGate::AutoNew => "applied directly for new slides and reviewed for changes to existing ones",
                 wb_policy::EditGate::Auto => "applied directly when inside the declared scope",
+                wb_policy::EditGate::Deny => "denied: this project is read-only",
             },
             level(tools::CLASS_CODE),
             level(tools::CLASS_SKILLS),
@@ -301,13 +298,6 @@ impl Agent {
                 s.push_str(fact);
                 s.push('\n');
             }
-        }
-        if self.uses_text_protocol() {
-            s.push_str("\n\n");
-            s.push_str(&text_protocol::instructions(&tools::defs_for(
-                self.config.mode,
-                code_mode,
-            )));
         }
         s
     }
@@ -353,13 +343,8 @@ impl Agent {
             model: self.model.model_id().to_string(),
             system: Some(self.system_prompt()),
             messages: self.history.clone(),
-            tools: if self.uses_text_protocol() {
-                Vec::new()
-            } else {
-                tools::defs_for(self.config.mode, self.code_mode())
-            },
+            tools: tools::defs_for(self.config.mode, self.code_mode()),
             max_tokens: self.config.max_tokens,
-            temperature: None,
             audit_tag: Some(format!("{}:{}", self.conv_id, self.turn_counter)),
         }
     }
@@ -556,35 +541,15 @@ impl Agent {
                 return Err(anyhow!("model error: {msg}"));
             }
 
-            let (clean_text, mut calls) = if self.uses_text_protocol() {
-                let (text, parsed) = text_protocol::parse_tool_calls(&c.text);
-                let calls = parsed
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        (
-                            format!("tc-{}-{}-{i}", self.turn_counter, summary.steps),
-                            p.name,
-                            p.arguments,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                (text, calls)
-            } else {
-                (c.text.clone(), Vec::new())
-            };
-            calls.extend(c.calls.clone());
+            let clean_text = c.text.clone();
+            let calls = c.calls.clone();
 
             let mut assistant_parts = Vec::new();
             if !clean_text.trim().is_empty() {
                 self.record(Event::assistant(clean_text.clone()))?;
                 last_text = clean_text.clone();
             }
-            if self.uses_text_protocol() {
-                assistant_parts.push(ContentPart::Text {
-                    text: c.text.clone(),
-                });
-            } else if !clean_text.is_empty() {
+            if !clean_text.is_empty() {
                 assistant_parts.push(ContentPart::Text {
                     text: clean_text.clone(),
                 });
@@ -592,13 +557,11 @@ impl Agent {
             for (id, name, args) in &calls {
                 let internal = tools::internal_name(name).unwrap_or(name.as_str());
                 self.record(Event::tool_call(id.clone(), internal, args.clone()))?;
-                if !self.uses_text_protocol() {
-                    assistant_parts.push(ContentPart::ToolCall {
-                        id: id.clone(),
-                        name: name.clone(),
-                        arguments: args.clone(),
-                    });
-                }
+                assistant_parts.push(ContentPart::ToolCall {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                });
             }
             if assistant_parts.is_empty() {
                 assistant_parts.push(ContentPart::Text {
@@ -656,17 +619,11 @@ impl Agent {
                 pending_images.extend(outcome.viewed.iter().cloned());
                 viewed.extend(outcome.viewed.iter().cloned());
                 let content = serde_json::to_string(&capped.value).unwrap_or_default();
-                if self.uses_text_protocol() {
-                    result_parts.push(ContentPart::Text {
-                        text: text_protocol::format_result(model_name, &capped.value),
-                    });
-                } else {
-                    result_parts.push(ContentPart::ToolResult {
-                        tool_call_id: id.clone(),
-                        content,
-                        is_error: !outcome.ok,
-                    });
-                }
+                result_parts.push(ContentPart::ToolResult {
+                    tool_call_id: id.clone(),
+                    content,
+                    is_error: !outcome.ok,
+                });
                 if self.config.caps.vision {
                     for (media_type, data) in outcome.images {
                         result_parts.push(ContentPart::Image { media_type, data });

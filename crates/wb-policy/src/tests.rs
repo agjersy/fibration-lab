@@ -258,38 +258,6 @@ fn scope_helpers() {
 }
 
 #[test]
-fn mcp_levels_per_server_then_class() {
-    let p = Policy::new()
-        .with_class("mcp", Level::Ask)
-        .with_mcp_server("wolfram", Level::Auto)
-        .with_mcp_server("evil", Level::Deny);
-    let s = Scope::undeclared();
-    let call = |tool: &str| Action::new(tool, CLASS_MCP);
-    assert_eq!(call("mcp.wolfram.query").mcp_server(), Some("wolfram"));
-    assert_eq!(p.evaluate(&call("mcp.wolfram.query"), &s), Decision::Allow);
-    assert_eq!(p.evaluate(&call("mcp.evil.run"), &s), DENY_POLICY);
-    assert_eq!(
-        p.explain(&call("mcp.evil.run"), &s).message,
-        "MCP server `evil` is deny"
-    );
-    assert_eq!(p.evaluate(&call("mcp.other.tool"), &s), ASK_POLICY);
-    // The class level denies servers that are not listed.
-    let strict = p.clone().with_class("mcp", Level::Deny);
-    assert_eq!(strict.evaluate(&call("mcp.other.tool"), &s), DENY_POLICY);
-    assert_eq!(
-        strict.evaluate(&call("mcp.wolfram.query"), &s),
-        Decision::Allow
-    );
-    // No level at all: ask.
-    assert_eq!(Policy::new().evaluate(&call("mcp.a.b"), &s), ASK_POLICY);
-    // The server table is only consulted for the mcp class.
-    assert_eq!(
-        p.evaluate(&Action::new("mcp.wolfram.query", "shell"), &s),
-        ASK_POLICY
-    );
-}
-
-#[test]
 fn denied_tools_are_denied_even_when_read() {
     let mut p = Policy::new();
     p.denied_tools.insert("refs.read".into());
@@ -396,7 +364,6 @@ fn session_overrides_layer_over_base() {
         edits: Some(EditGate::Auto),
         max_steps: Some(10),
         classes: BTreeMap::from([("export".to_string(), Level::Ask)]),
-        mcp: BTreeMap::from([("wolfram".to_string(), Level::Auto)]),
         lock: vec!["s3".into()],
         unlock: vec!["s1".into()],
         deny_tools: vec!["export.run".into()],
@@ -407,7 +374,6 @@ fn session_overrides_layer_over_base() {
     assert_eq!(p.max_steps, 10);
     assert_eq!(p.level("export"), Level::Ask);
     assert_eq!(p.level("code"), Level::Ask);
-    assert_eq!(p.mcp["wolfram"], Level::Auto);
     assert!(!p.is_locked("s1") && p.is_locked("s2") && p.is_locked("s3"));
     assert!(p.denied_tools.contains("export.run"));
     // The base is untouched and an empty patch changes nothing.
@@ -465,7 +431,6 @@ fn policy_and_decision_serde() {
     let p = Policy::new()
         .with_edits(EditGate::AutoNew)
         .with_class("export", Level::Auto)
-        .with_mcp_server("w", Level::Deny)
         .with_locked(["s1", "data/**"]);
     let json = serde_json::to_string(&p).unwrap();
     assert_eq!(serde_json::from_str::<Policy>(&json).unwrap(), p);
@@ -536,7 +501,6 @@ build_timeout_s = 60
         p.evaluate(&Action::new("export.run", "export"), &s),
         Decision::Allow
     );
-    assert_eq!(p.evaluate(&Action::new("mcp.a.b", "mcp"), &s), ASK_POLICY);
     let switch = edit("deck.switch_mode", &[]).always_ask(true);
     assert_eq!(
         p.evaluate(&switch, &s),
@@ -549,7 +513,8 @@ build_timeout_s = 60
         ASK_POLICY
     );
 
-    // Non-default values, the ARCHITECTURE 13 `locked_slides`, and a per-server mcp table.
+    // Non-default values, the ARCHITECTURE 13 `locked_slides`, and a leftover `[mcp]` table
+    // from an older file, which is ignored.
     let text = r#"
 edits = "auto-new-slides"
 code = "auto"
@@ -586,15 +551,8 @@ wolfram = "auto"
         p.evaluate(&edit("slide.propose_update", &["s-002"]), &s),
         DENY_LOCKED
     );
-    assert_eq!(
-        p.evaluate(&Action::new("mcp.wolfram.q", "mcp"), &s),
-        Decision::Allow
-    );
-    assert_eq!(
-        p.evaluate(&Action::new("mcp.other.q", "mcp"), &s),
-        DENY_POLICY
-    );
-    assert!(!p.mcp.contains_key("default"));
+    assert!(!p.classes.contains_key("mcp"));
+    assert!(!serde_json::to_string(&p).unwrap().contains("mcp"));
     // The table round-trips.
     let back: PresentPolicyConfig = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
     assert_eq!(back, cfg);
@@ -604,6 +562,9 @@ wolfram = "auto"
         PresentPolicyConfig::default()
     );
     assert!(toml::from_str::<PresentPolicyConfig>("edits = \"yolo\"").is_err());
+    // The `mcp` key of older files (above) is ignored: there is no such class any more.
+    assert_eq!(p.level("mcp"), Level::Ask);
+    assert!(!toml::to_string(&cfg).unwrap().contains("mcp"));
 }
 
 #[test]
@@ -629,7 +590,8 @@ wolfram = "ask"
         policy: AnalystPolicyConfig,
     }
     let cfg = toml::from_str::<Project>(text).unwrap().policy;
-    assert_eq!(cfg.mcp["wolfram"], Level::Ask);
+    // `network`, `max_run_seconds` and `[policy.mcp]` are keys of older files: ignored.
+    assert_eq!(cfg.preset, None);
     let p = cfg.to_policy().unwrap();
     let s = Scope::undeclared();
     assert_eq!(p.max_steps, 40);
@@ -663,17 +625,10 @@ wolfram = "ask"
         Decision::Allow
     );
     assert_eq!(
-        p.evaluate(&Action::new("run.script", "network"), &s),
-        DENY_POLICY
-    );
-    assert_eq!(
         p.evaluate(&Action::new("declare_scope", "meta"), &s),
         Decision::Allow
     );
-    assert_eq!(
-        p.evaluate(&Action::new("mcp.wolfram.q", "mcp"), &s),
-        ASK_POLICY
-    );
+    assert!(!p.classes.contains_key("network") && !p.classes.contains_key("mcp"));
 
     let cfg: AnalystPolicyConfig = toml::from_str(
         "edits = \"auto-new-files\"\nruns = \"ask\"\nnetwork = \"allow\"\nshell = \"deny\"\n",
@@ -685,9 +640,9 @@ wolfram = "ask"
         p.evaluate(&Action::new("run.script", "run"), &s),
         ASK_POLICY
     );
-    assert_eq!(
-        p.evaluate(&Action::new("run.script", "network"), &s),
-        Decision::Allow
+    assert!(
+        !p.classes.contains_key("network"),
+        "a leftover `network = \"allow\"` grants nothing"
     );
     assert_eq!(
         p.evaluate(&Action::new("shell.run", "shell"), &s),
@@ -744,4 +699,194 @@ fn normalize_paths() {
     assert!(normalize_rel_path("~/x").is_err());
     assert!(normalize_rel_path("").is_err());
     assert_eq!(normalize_rel_path("a/./b").unwrap(), "a/b");
+}
+
+#[test]
+fn presets_expand_and_detailed_keys_override() {
+    use crate::preset::{Preset, PresetKind};
+    // The three presets, kind by kind.
+    let f = Preset::Review.fields();
+    assert_eq!(
+        (f.edits, f.runs, f.packages, f.shell, f.git),
+        (
+            EditGate::Review,
+            Level::Auto,
+            Level::Ask,
+            Level::Ask,
+            Level::Ask
+        )
+    );
+    let f = Preset::Auto.fields();
+    assert_eq!(
+        (f.edits, f.runs, f.packages, f.shell, f.git),
+        (
+            EditGate::Auto,
+            Level::Auto,
+            Level::Ask,
+            Level::Ask,
+            Level::Ask
+        )
+    );
+    let f = Preset::ReadOnly.fields();
+    assert_eq!(
+        (f.edits, f.runs, f.packages, f.shell, f.git),
+        (
+            EditGate::Deny,
+            Level::Auto,
+            Level::Deny,
+            Level::Deny,
+            Level::Deny
+        )
+    );
+    for p in Preset::ALL {
+        assert_eq!(Preset::matching(&p.fields()), Some(p));
+        assert_eq!(
+            serde_json::from_value::<Preset>(serde_json::json!(p.as_str())).unwrap(),
+            p
+        );
+    }
+    assert_eq!(Preset::ReadOnly.level(PresetKind::Runs), Level::Auto);
+
+    // Analysis table: the preset expands, a detailed key in the same table overrides it.
+    let s = Scope::undeclared();
+    let ro: AnalystPolicyConfig = toml::from_str("preset = \"read-only\"").unwrap();
+    assert_eq!(ro, AnalystPolicyConfig::for_preset(Preset::ReadOnly));
+    assert_eq!(ro.effective_preset(), Some(Preset::ReadOnly));
+    let p = ro.to_policy().unwrap();
+    assert_eq!(
+        p.evaluate(&edit("fs.propose_edit", &["a.py"]), &s),
+        DENY_POLICY
+    );
+    assert_eq!(
+        p.evaluate(&edit("fs.propose_create", &["b.py"]).creates_new(true), &s),
+        DENY_POLICY
+    );
+    // Deny is not softened by scope or by always-ask.
+    assert_eq!(
+        p.evaluate(
+            &edit("fs.propose_edit", &["a.py"]).always_ask(true),
+            &Scope::declared(["a.py"])
+        ),
+        DENY_POLICY
+    );
+    for (tool, class) in [
+        ("pkg.add", "package"),
+        ("shell.run", "shell"),
+        ("git.commit", "git"),
+    ] {
+        assert_eq!(p.evaluate(&Action::new(tool, class), &s), DENY_POLICY);
+    }
+    assert_eq!(
+        p.evaluate(&Action::new("run.script", "run"), &s),
+        Decision::Allow
+    );
+    assert_eq!(p.evaluate(&Action::read("fs.read"), &s), Decision::Allow);
+    assert!(p.summary(None, &s).contains("denied (read-only)"));
+    assert!(!p.summary(None, &s).contains("No scope declared"));
+
+    let over: AnalystPolicyConfig =
+        toml::from_str("preset = \"read-only\"\ngit = \"ask\"\nprotected = [\"data/**\"]\n")
+            .unwrap();
+    assert_eq!(over.preset, Some(Preset::ReadOnly));
+    assert_eq!(over.git, Level::Ask);
+    assert_eq!(over.shell, Level::Deny);
+    assert_eq!(over.edits, AnalystEdits::Deny);
+    assert_eq!(over.effective_preset(), None, "no longer one of the three");
+    // The written table reads back the same.
+    let back: AnalystPolicyConfig = toml::from_str(&toml::to_string(&over).unwrap()).unwrap();
+    assert_eq!(back, over);
+
+    let auto: AnalystPolicyConfig = toml::from_str("preset = \"auto\"").unwrap();
+    let p = auto.to_policy().unwrap();
+    assert_eq!(
+        p.evaluate(
+            &edit("fs.propose_edit", &["a.py"]),
+            &Scope::declared(["a.py"])
+        ),
+        Decision::Allow
+    );
+    assert_eq!(
+        p.evaluate(
+            &edit("fs.propose_edit", &["b.py"]),
+            &Scope::declared(["a.py"])
+        ),
+        ASK_SCOPE
+    );
+    // No preset: the table defaults, which are the review preset.
+    let d: AnalystPolicyConfig = toml::from_str("").unwrap();
+    assert_eq!(d.preset, None);
+    assert_eq!(d.effective_preset(), Some(Preset::Review));
+    let mut c = AnalystPolicyConfig {
+        protected: vec!["data/**".into()],
+        max_steps: 7,
+        ..Default::default()
+    };
+    c.apply_preset(Preset::ReadOnly);
+    assert_eq!(
+        (c.edits, c.max_steps, c.protected.len()),
+        (AnalystEdits::Deny, 7, 1)
+    );
+    assert!(toml::from_str::<AnalystPolicyConfig>("preset = \"yolo\"").is_err());
+}
+
+/// The same presets gate deck actions: slide and element edits are edits, deck builds and
+/// skill scripts are runs.
+#[test]
+fn presets_gate_deck_actions() {
+    use crate::preset::Preset;
+    let s = Scope::undeclared();
+    let build = Action::new("deck.build", "code");
+    let script = Action::new("skill.run_script", "skills_scripts");
+    let slide = edit("slide.propose_update", &["s-001"]);
+    let element = edit("element.propose_update", &["s-001/e-2"]);
+
+    let review: PresentPolicyConfig = toml::from_str("preset = \"review\"").unwrap();
+    let p = review.to_policy();
+    assert_eq!(p.evaluate(&slide, &s), ASK_POLICY);
+    assert_eq!(p.evaluate(&build, &s), Decision::Allow);
+    assert_eq!(p.evaluate(&script, &s), Decision::Allow);
+
+    let auto: PresentPolicyConfig = toml::from_str("preset = \"auto\"").unwrap();
+    let p = auto.to_policy();
+    assert_eq!(
+        p.evaluate(&slide, &Scope::declared(["s-001"])),
+        Decision::Allow
+    );
+    assert_eq!(p.evaluate(&element, &Scope::declared(["s-001"])), ASK_SCOPE);
+    assert_eq!(p.evaluate(&build, &s), Decision::Allow);
+
+    let ro: PresentPolicyConfig =
+        toml::from_str("preset = \"read-only\"\nlocked_slides = [\"s-009\"]").unwrap();
+    let p = ro.to_policy();
+    assert_eq!(p.evaluate(&slide, &s), DENY_POLICY);
+    assert_eq!(p.evaluate(&element, &s), DENY_POLICY);
+    assert_eq!(
+        p.evaluate(&edit("slide.propose_create", &[]).creates_new(true), &s),
+        DENY_POLICY
+    );
+    assert_eq!(p.evaluate(&build, &s), Decision::Allow);
+    assert_eq!(p.evaluate(&script, &s), Decision::Allow);
+    assert_eq!(
+        p.evaluate(&edit("deck.switch_mode", &[]).always_ask(true), &s),
+        DENY_POLICY
+    );
+    assert_eq!(
+        p.evaluate(&Action::new("export.run", "export"), &s),
+        Decision::Allow
+    );
+    assert!(p.is_locked("s-009"));
+
+    // Detailed keys still override; without a preset the deck defaults are unchanged.
+    let over: PresentPolicyConfig = toml::from_str("preset = \"review\"\ncode = \"ask\"").unwrap();
+    assert_eq!((over.code, over.skills_scripts), (Level::Ask, Level::Auto));
+    assert_eq!(
+        toml::from_str::<PresentPolicyConfig>("").unwrap().code,
+        Level::Ask
+    );
+    let back: PresentPolicyConfig = toml::from_str(&toml::to_string(&over).unwrap()).unwrap();
+    assert_eq!(back, over);
+    // The generic form, for any class table.
+    let p = Policy::new().with_preset(Preset::ReadOnly, present_class::PRESET_CLASSES);
+    assert_eq!(p.edits, EditGate::Deny);
+    assert_eq!(p.level("code"), Level::Auto);
 }

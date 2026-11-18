@@ -149,6 +149,11 @@ impl ModelSummarizer {
             audit_tag: None,
         }
     }
+
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = max_tokens;
+        self
+    }
 }
 
 #[async_trait]
@@ -162,14 +167,15 @@ impl Summarizer for ModelSummarizer {
             ))],
             tools: vec![],
             max_tokens: Some(self.max_tokens),
-            temperature: Some(0.0),
             audit_tag: self.audit_tag.clone(),
         };
         let c = wb_providers::collect(self.client.stream(req)).await;
-        if c.stop == Some(StopReason::Error) {
+        // Only a completed response is a summary: an error, or a stream that never
+        // reported a stop, is a failure.
+        if !matches!(c.stop, Some(StopReason::End) | Some(StopReason::MaxTokens)) {
             return Err(anyhow!(
                 "model error: {}",
-                c.stop_message.unwrap_or_else(|| "unknown".into())
+                c.stop_message.unwrap_or_else(|| "no response".into())
             ));
         }
         Ok(c.text)
@@ -692,7 +698,6 @@ mod tests {
         let req = &client.recorded()[0];
         assert_eq!(req.system.as_deref(), Some(SUMMARIZER_SYSTEM));
         assert!(req.tools.is_empty());
-        assert_eq!(req.temperature, Some(0.0));
         assert!(req.messages[0]
             .text()
             .starts_with("Summarize this conversation segment:\n\nUSER: first task"));

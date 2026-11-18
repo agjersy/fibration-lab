@@ -14,14 +14,14 @@
 | P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
 | P7 | Skills | Full Anthropic Agent Skills (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every endpoint; scripts in the code sandbox, ask by default | Decided (OQ-P7) |
 | P8 | References | Always copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML, and Personal Analyst outputs. Hybrid search: SQLite FTS5 plus a bundled offline embedding model (endpoint optional). No OCR and no web access in v1. Per-element citations | Decided (OQ-P8) |
-| P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Decided (shared) |
+| P9 | Edit gating | The shared policy engine (`wb-policy`) applied per slide: review (default), auto-new-slides, auto, deny; the three presets `review`, `auto`, `read-only`; locked slides and elements; scope declaration | Decided (shared) |
 | P10 | Checkpoints | App-owned content-addressed snapshot store in `.present/history/`; no git dependency or integration (a user may still version the folder with git) | Decided (OQ-P10) |
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
 | P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, a network gate that allows only configured model endpoints (no proxy or custom CA support), local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
 | P13 | Persistence | SQLite for indexes, JSONL for transcripts, TOML for config, as in Analyst (D13) | Decided (shared) |
 | P14 | Code sharing with Analyst | A third repository of shared Rust crates and a UI package, consumed by both apps as pinned git dependencies, extracted gradually starting with the provider layer and policy engine. One skill format (Agent Skills `SKILL.md`) across both apps | Decided (OQ-P11) |
 | P15 | Name | "Personal Present": binary `present`, config `~/.present` (`%APPDATA%\Present` on Windows), bundle id `dev.personal-present.app` | Decided (OQ-P12) |
-| P16 | Model baseline | Tool calling, streaming, >=128k context, vision; models below it run as a flagged degraded tier | Decided (OQ-P13) |
+| P16 | Model baseline | Tool calling (required: a model without it is rejected), streaming, >=128k context, vision; models below the context or vision baseline run as a flagged degraded tier | Decided (OQ-P13) |
 
 ## 2. System overview
 
@@ -208,7 +208,7 @@ A project is in one of two modes, chosen at creation and switchable later.
 
 ## 7. Agent loop
 
-**(shared)** Structure, pause-on-ask semantics, compaction, pinned facts, capability probing, and the text-protocol fallback follow Analyst section 5.7. Deck-specific parts:
+**(shared)** Structure, pause-on-ask semantics, compaction, pinned facts, and capability probing follow Analyst section 5.7. Deck-specific parts:
 
 ### 7.1 Context assembly
 
@@ -334,7 +334,7 @@ Features that differ by platform are probed or configured, not assumed. Relevant
 - **Provider-hosted skills and code execution are not used.** Anthropic's server-side Agent Skills, code execution, Files API, and web tools exist only on Anthropic's own API (and not on Bedrock, Vertex, or Azure-hosted Foundry); gateways and open-weight servers have none of them. Running skills in the app (section 12) is what makes the same behavior possible on every endpoint.
 - **Document blocks with citations, prompt caching, and structured outputs** are used when the endpoint supports them, as probed; the loop works without them.
 
-**Capability baseline (decided, OQ-P13):** native tool calling, streaming, a context window of at least 128k tokens, and vision (image input). Checked by the capability probe on first use. A model below the baseline can still be selected but runs as a flagged, degraded tier (no self-review without vision, aggressive compaction below 128k, the text-protocol fallback without native tools), which the evaluation suite does not certify; a managed configuration can forbid it. Certification targets for the evaluation suite: Claude through the Anthropic API or your internal gateway, and at least one open-weight model on your internal servers that meets the baseline.
+**Capability baseline (decided, OQ-P13):** native tool calling, streaming, a context window of at least 128k tokens, and vision (image input). Checked by the capability probe on first use. Native tool calling is required: a model that fails the tool-calling probe is rejected with a clear error. A model below the context or vision baseline can still be selected but runs as a flagged, degraded tier (no self-review without vision, aggressive compaction below 128k), which the evaluation suite does not certify; a managed configuration can forbid it. Certification targets for the evaluation suite: Claude through the Anthropic API or your internal gateway, and at least one open-weight model on your internal servers that meets the baseline.
 
 **Locality and audit.** The chat header names the provider, region, and whether the endpoint is internal or external. Every request writes an audit record locally: time, provider, model, token counts, and the list of reference excerpts and images included (by reference id and location, not content). The audit log can be exported for compliance review.
 
@@ -373,14 +373,15 @@ Where the isolation primitive is unavailable (for example AppContainer blocked b
 
 ```toml
 [policy]
-edits    = "review"          # review | auto-new-slides | auto
+preset   = "review"          # optional: review | auto | read-only
+edits    = "review"          # review | auto-new-slides | auto | deny
 skills_scripts = "ask"       # ask | auto | deny
-mcp      = "ask"             # reserved; there is no MCP client
 export   = "auto"
 locked_slides = []           # also set from the UI
 max_steps = 60
 ```
 
+- **Presets.** `preset` is the same key as in the analysis workbench and expands to the detailed keys, which still override: slide and element edits are "edits", deck builds (`code`) and skill scripts (`skills_scripts`) are "runs". `review`: edits reviewed, builds and skill scripts start on their own. `auto`: edits inside the declared scope applied, outside it asked. `read-only`: no edit is applied and the switch to code generation mode is refused; builds and skill scripts still run. Without `preset` the defaults above apply. There is no `mcp` key; a project file that still has one loads and the key is ignored.
 - **Review** pauses on each slide proposal; the card shows before/after thumbnails and a text diff, with accept, reject, or "accept with my edits".
 - **Conflict detection** by content hash per slide, as in Analyst.
 - **Locks** on slides and on individual elements; proposals touching them are denied.

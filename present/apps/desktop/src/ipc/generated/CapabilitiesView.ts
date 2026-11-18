@@ -2,6 +2,6 @@
 
 export type CapabilitiesView = { context_window: number, 
 /**
- * `native` | `text-protocol` | `none`.
+ * `native` | `none` (a model without native tool calling cannot be used).
  */
 tools: string, vision: boolean, documents: boolean, caching: boolean, probed_at: string | null, };

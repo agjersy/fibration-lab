@@ -233,7 +233,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 provider = "ollama-lab"
 id = "some-model"
 context_window = 65536                 # optional override; otherwise probed or default 32768
-tools = "native"                       # optional override: native | text-protocol | none
+tools = "native"                       # optional override: native (required for use) | none
 vision = false                         # optional override
 
 [[targets]]
@@ -276,7 +276,8 @@ script_allowed_functions = ["main", "build_parser", "parse_args"]
 "lib.near-duplicate" = "warn"
 
 [policy]
-edits = "review"                       # review | auto-new-files | auto
+preset = "review"                      # optional: review | auto | read-only (expands to the five keys below; they still override)
+edits = "review"                       # review | auto-new-files | auto | deny
 runs = "auto"                          # auto | ask
 packages = "ask"                       # ask | auto | deny
 shell = "ask"                          # ask | auto | deny
@@ -328,7 +329,7 @@ Rule ids are stable strings. Defaults below; `[contract.severity]` overrides.
 
 ## 4. Model provider wire mapping
 
-Model-facing tool names must match `^[a-zA-Z0-9_-]{1,64}$`. Internal ids use dots; the mapping is `.` to `_` and `mcp.<server>.<tool>` to `mcp__<server>__<tool>`.
+Model-facing tool names must match `^[a-zA-Z0-9_-]{1,64}$`. Internal ids use dots; the mapping is `.` to `_`.
 
 | internal | model-facing |
 |---|---|
@@ -350,9 +351,9 @@ type ModelEvent =
   | { type: "stop", reason: "end"|"tool_calls"|"max_tokens"|"error", message?: string }
 ```
 
-**Capability probe.** A tool-calling probe sends one message with a single tool `echo_probe {token: string}` and the instruction to call it with a given token; `tools: "native"` if a tool_call event with the right token arrives, else `"text-protocol"`. Context window comes from the model info endpoint when available, else the config override, else 32768. Results are cached in `~/.analyst/capabilities.json` keyed by `provider/model`.
+**Capability probe.** A tool-calling probe sends one message with a single tool `echo_probe {token: string}` and the instruction to call it with a given token; `tools: "native"` if a tool_call event with the right token arrives, else `"none"`. Native tool calling is required: a model whose record would be `none` is rejected with an error naming the model and the `[[models]] tools = "native"` override, and nothing is cached for it. A probe that fails (request or provider error) is an error too and is not cached. Old cache entries and config files that say `text-protocol` load as `none`; such a cache entry is probed again. Context window comes from the model info endpoint when available, else the config override, else 32768. Results are cached in `~/.analyst/capabilities.json` keyed by `provider/model`.
 
-**Text protocol** (degraded tier): the system prompt instructs the model to emit tool calls as a fenced block starting with ` ```tool_call ` containing `{"name": ..., "arguments": {...}}`; the core parses these from text and feeds results back as user messages prefixed `tool_result <name>:`.
+There is no text-protocol tier: tool calls are only ever taken from the provider's native tool-calling interface.
 
 ## 5. Transcript events
 
@@ -399,7 +400,7 @@ Arguments and results are JSON. Every tool result is capped at 16 KiB in the mod
 | `git.status` / `git.diff` | `{}` / `{path?}` | read | local git |
 | `git.commit` | `{message}` | git | local git |
 
-`doc.*` tools are phase 3. MCP tools are removed from the plan.
+`skill.load` `{name}` (read, core) returns the full instructions of a skill listed in the system prompt. `doc.*` tools are phase 3. There are no MCP tools, and `[policy]` has no `mcp` key; a project file that still carries one loads and the key is ignored.
 
 ## 7. Repo sync (remote targets)
 
@@ -508,3 +509,12 @@ Protocol version stays 1; every change is additive or tightens validation. Where
 **Providers (section 4 amendments).** `max_tokens` defaults to 16384 and is configurable per model (`max_output_tokens`). No `temperature` is sent. A stream that ends before a terminal event is `stop: error`. Tool-call arguments cut off by the output limit produce a tool error telling the model to split the edit. Requests retry with backoff on 429, 5xx, and overload before the first byte; a 400 or 422 mentioning `stream_options` is retried once without it. A failed capability probe is not cached, and config overrides always win over the cache.
 
 **Evaluation (section 8 amendments).** Checks count only runs and artifacts the agent produced during the task; `no_edits` diffs the tree against the fixture commit; `edits_within_scope` evaluates each edit against the scope in force when it was decided; `unwanted_edits` counts only accepted out-of-scope edits. Each task runs with a temporary `ANALYST_HOME`.
+
+## 10. Shared core (November 2026)
+
+The analysis core no longer has its own provider, policy, transcript or skills code; it uses the crates it shares with the deck workbench. What that changes in this contract:
+
+- **Providers (section 4).** `wb-providers` is the only provider layer. `~/.analyst/config.toml` is read as before (`api_key_env`, the `<PROVIDER>_API_KEY` default, lookup order environment, `$ANALYST_HOME/.env`, the repo's untracked `.env`) and mapped onto the shared configuration. The capability record in `capabilities.json` gains `documents`, `caching`, `unsupported_fields`, `degraded` and `degraded_reasons`; older records load. The probe also sends a vision probe (one extra request the first time a model is used). An endpoint that answers 400 or 422 naming an optional request field (`stream_options`, `cache_control`) is retried once without it and the field is remembered.
+- **Policy (sections 2.2 and 6).** `wb-policy` is the only engine. `[policy] preset` is described in section 2.2; `edits = "deny"` exists; comment-marker locked regions (`# analyst: lock`) are gone and such comments are ordinary text; there is no `mcp` key.
+- **Transcript (section 5).** Conversation files are written and read by `wb-transcript` in the same place and the same line format, so existing sessions replay (a test replays a fixture in the earlier format). The event shapes above are unchanged and remain the IPC type; the store also accepts the shared crate's other event types (`compaction`, deck events), which the analysis UI does not show. History for a reopened conversation is rebuilt by the shared replay, compaction is `wb_transcript::staged` (the three stages of section 9), and pinned facts are capped at 100 facts of 1000 bytes each.
+- **Skills.** Agent Skills folders under `$ANALYST_HOME/skills/` and `<repo>/.analyst/skills/`, loaded by `wb-skills` (ARCHITECTURE 5.16), with the read-class tool `skill.load`.

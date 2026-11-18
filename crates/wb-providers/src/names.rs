@@ -1,12 +1,8 @@
 // Ported from Personal Analyst `crates/core/src/providers/names.rs` at commit f229e4d.
-//! Model-facing tool name mapping (Analyst PROTOCOL 4, Present PROTOCOL 6.1): `.` to `_`, `mcp.<server>.<tool>` to
-//! `mcp__<server>__<tool>`.
+//! Model-facing tool name mapping (Analyst PROTOCOL 4, Present PROTOCOL 6.1): `.` to `_`.
 
 /// Internal id to model-facing name.
 pub fn to_model_name(internal: &str) -> String {
-    if let Some(rest) = internal.strip_prefix("mcp.") {
-        return format!("mcp__{}", rest.replacen('.', "__", 1));
-    }
     internal.replace('.', "_")
 }
 
@@ -37,7 +33,6 @@ mod tests {
         assert_eq!(to_model_name("fs.read"), "fs_read");
         assert_eq!(to_model_name("fs.propose_edit"), "fs_propose_edit");
         assert_eq!(to_model_name("contract.check"), "contract_check");
-        assert_eq!(to_model_name("mcp.wolfram.query"), "mcp__wolfram__query");
         assert_eq!(
             to_internal_name("fs_propose_edit", &["fs.read", "fs.propose_edit"]),
             Some("fs.propose_edit")

@@ -24,7 +24,7 @@ One Cargo workspace and one pnpm workspace cover everything; `.github/workflows/
 - Desktop app (Tauri 2, macOS and Linux): session tabs, project and scripts sidebar with run forms, library and runs views, CodeMirror editor with diagnostics and per-hunk proposal review, agent chat with tool, proposal, and run cards, figures panel with run history and comparison, equations panel, packages panel, terminal, run output and diagnostics docks, Zed keymap subset and command palette
 
 - `analyst` CLI: `init`, `index`, `check`, `run`, `eq`, `env`, `target`, `chat`, `eval`
-- Rust core: policy engine with review-gated edits and scope declaration, OpenAI-compatible and Anthropic streaming adapters with capability probing, kernel client over local stdio or SSH, repo sync and remote bootstrap, git checkpoints, agent loop with plan/build/run modes
+- Rust core: review-gated edits and scope declaration with three policy presets (shared `wb-policy`), OpenAI-compatible and Anthropic streaming adapters with capability probing (shared `wb-providers`; native tool calling required), transcripts and compaction (shared `wb-transcript`), Agent Skills (shared `wb-skills`), kernel client over local stdio or SSH, repo sync and remote bootstrap, git checkpoints, agent loop with plan/build/run modes
 - Python kernel: sandboxed detached runs with figure capture, script and library indexes, equation extraction (derived from code, or declared and numerically checked), the script contract checker with duplicate-logic detection, Ruff integration
 - Evaluation suite: four model-agnostic tasks with declarative graders and a scripted model server that drives the whole stack in CI
 

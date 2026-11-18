@@ -30,7 +30,7 @@
 | OQ-P10 Checkpoints | App-owned, append-only, content-addressed snapshot store in `.present/history/` (per turn, per mode switch, per export); no git dependency or integration. | ARCHITECTURE.md P10, section 13 |
 | OQ-P11 Code sharing and skill format | A third repository of shared Rust crates (`wb-providers`, `wb-policy`, `wb-transcript`, `wb-skills`, `wb-sandbox`) and a UI package (`@wb/ui`), consumed by both apps as tag-pinned git dependencies and extracted gradually, provider layer and policy engine first. Both apps use the Agent Skills `SKILL.md` format; Analyst keeps reading its legacy front matter during a transition. | ARCHITECTURE.md P14, section 18 |
 | OQ-P12 Name | "Personal Present": binary `present`, config `~/.present` (`%APPDATA%\Present` on Windows), bundle id `dev.personal-present.app`. | ARCHITECTURE.md P15 |
-| OQ-P13 Model baseline | Native tool calling, streaming, at least 128k context, and vision required. Models below it run as a flagged degraded tier the evaluation suite does not certify. Certification targets: Claude through the Anthropic API or the internal gateway, and at least one baseline-meeting open-weight model on internal servers. | ARCHITECTURE.md P16, sections 7.4, 11 |
+| OQ-P13 Model baseline | Native tool calling, streaming, at least 128k context, and vision required. A model without native tool calling is rejected; models below the context or vision baseline run as a flagged degraded tier the evaluation suite does not certify. Certification targets: Claude through the Anthropic API or the internal gateway, and at least one baseline-meeting open-weight model on internal servers. | ARCHITECTURE.md P16, sections 7.4, 11 |
 
 ## 3. Evidence to gather in phase 0
 

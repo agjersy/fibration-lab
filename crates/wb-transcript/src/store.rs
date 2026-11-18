@@ -234,6 +234,19 @@ fn summarize(id: &str, events: &[Event]) -> ConversationSummary {
     }
 }
 
+/// One lock per JSONL file, shared by every writer in the process.
+fn file_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(path.to_path_buf()).or_default().clone()
+}
+
+/// Append one JSON line. The line and its newline go out in a single `write` on an
+/// `O_APPEND` handle while holding the file's process-wide lock, so concurrent writers never
+/// interleave (Analyst REVIEW A7). A previous torn line is closed off first.
 fn append_line<T: Serialize>(path: &Path, value: &T, fsync: bool) -> Result<()> {
     let line = serde_json::to_string(value)?;
     if line.contains('\n') {
@@ -243,6 +256,8 @@ fn append_line<T: Serialize>(path: &Path, value: &T, fsync: bool) -> Result<()> 
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
+    let lock = file_lock(path);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .read(true)
@@ -291,6 +306,26 @@ pub fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>>
         let v: T = serde_json::from_str(line)
             .with_context(|| format!("{}:{}: bad JSONL line", path.display(), i + 1))?;
         out.push(v);
+    }
+    Ok(out)
+}
+
+/// Read a JSONL file leniently: lines that do not parse (torn writes, records from a newer
+/// version) are skipped with a warning instead of making the whole file unreadable.
+pub fn read_jsonl_lenient<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
+    let Some(text) = read_text(path)? else {
+        return Ok(vec![]);
+    };
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<T>(line) {
+            Ok(v) => out.push(v),
+            Err(e) => tracing::warn!("{}:{}: skipping bad JSONL line: {e}", path.display(), i + 1),
+        }
     }
     Ok(out)
 }
@@ -506,5 +541,60 @@ mod tests {
         std::fs::write(&path, "{\"a\":1}\n{\"a\":").unwrap();
         let err = read_jsonl::<serde_json::Value>(&path).unwrap_err();
         assert!(err.to_string().contains(":2: bad JSONL line"));
+    }
+
+    /// A7: a torn line must not make the file unreadable, and the next append must not be
+    /// glued onto it.
+    #[test]
+    fn lenient_reader_skips_torn_lines_and_appends_recover() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.jsonl");
+        append_jsonl(&p, &json!({"n": 1})).unwrap();
+        {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            f.write_all(b"{\"n\": 2, \"torn").unwrap();
+        }
+        append_jsonl(&p, &json!({"n": 3})).unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&p)
+            .unwrap()
+            .write_all(b"\xff\xfe not utf8\n")
+            .unwrap();
+        append_jsonl(&p, &json!({"n": 4})).unwrap();
+        let v: Vec<serde_json::Value> = read_jsonl_lenient(&p).unwrap();
+        let ns: Vec<i64> = v.iter().map(|x| x["n"].as_i64().unwrap()).collect();
+        assert_eq!(ns, vec![1, 3, 4]);
+        assert!(
+            read_jsonl::<serde_json::Value>(&p).is_err(),
+            "the strict reader refuses"
+        );
+    }
+
+    /// A7: two writers on one file.
+    #[test]
+    fn concurrent_appends_never_interleave() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("runs.jsonl");
+        let payload = "x".repeat(20_000);
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let p = p.clone();
+            let payload = payload.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25 {
+                    append_jsonl(&p, &json!({"t": t, "i": i, "pad": payload})).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(text.lines().count(), 200);
+        for l in text.lines() {
+            serde_json::from_str::<serde_json::Value>(l).unwrap();
+        }
     }
 }

@@ -94,8 +94,11 @@ impl ProviderConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolSupport {
+    /// The model calls tools through the provider's native tool-calling interface. Required.
     Native,
-    TextProtocol,
+    /// No native tool calling: the model cannot be used. `text-protocol` (a fallback tier
+    /// that no longer exists) is read as this value so old files still load.
+    #[serde(alias = "text-protocol")]
     None,
 }
 

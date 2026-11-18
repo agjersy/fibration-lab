@@ -1,12 +1,15 @@
 // Ported from Personal Analyst `crates/core/src/policy.rs` at commit f229e4d.
 // Adapted: the vocabulary is generic (string policy classes, an `Action` built by the app
 // instead of `(tool, args)`, mode rules as data, locked ids or globs instead of protected
-// path globs only) so that Personal Present and Personal Analyst can both map their tools
-// onto it. No file I/O happens here; the app passes what an action changes.
+// path globs only) so that the deck and analysis workbenches can both map their tools onto
+// it. The app passes what an action changes; only `paths` looks at the filesystem (to
+// resolve symlinks), and it only reads.
 //! Shared-to-be crate `wb-policy` (BUILD-SPEC section 4). Must not depend on Present-specific crates.
 //!
 //! Policy engine: `(Action, Scope) -> Allow | Ask | Deny` from a policy table, an edit gate,
-//! locked items, the declared edit scope, and optional mode rules.
+//! locked items, the declared edit scope, and optional mode rules. The table is normally
+//! filled from one of three presets (`preset`); `session` adds the per-conversation state
+//! (scope per turn, sandbox awareness, path confinement).
 //!
 //! Evaluation order (first match wins):
 //!
@@ -14,7 +17,7 @@
 //!    a restricted flag, is `Deny(Mode)`.
 //! 2. A tool in `denied_tools` is `Deny(Policy)`.
 //! 3. Class `read` is `Allow`.
-//! 4. A class (or MCP server) at level `deny` is `Deny(Policy)`.
+//! 4. A class at level `deny`, or an edit under the `deny` edit gate, is `Deny(Policy)`.
 //! 5. An action with a locked target is `Deny(Locked)`.
 //! 6. An action marked `always_ask` is `Ask(AlwaysAsk)`.
 //! 7. Class `edit` follows the edit gate: `review` asks; `auto-new` allows new items and asks
@@ -25,12 +28,17 @@
 
 pub mod config;
 pub mod conflict;
-pub mod regions;
+pub mod paths;
+pub mod preset;
+pub mod session;
 
-pub use config::{AnalystPolicyConfig, McpConfig, PresentPolicyConfig};
+pub use config::{AnalystPolicyConfig, PresentPolicyConfig};
 pub use conflict::{check_conflict, content_hash, Conflict};
+pub use paths::PathRules;
+pub use preset::{Preset, PresetFields, PresetKind};
+pub use session::{ScopeChange, Session, Unsandboxed};
 
-use globset::{Glob, GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
@@ -39,8 +47,6 @@ use std::path::{Component, Path};
 pub const CLASS_READ: &str = "read";
 /// Policy class of tools that change the work product: follows the edit gate.
 pub const CLASS_EDIT: &str = "edit";
-/// Policy class of MCP tools: follows the per-server level, then the `mcp` class level.
-pub const CLASS_MCP: &str = "mcp";
 /// Restriction flag that every action with `creates_new` carries implicitly.
 pub const FLAG_CREATES_NEW: &str = "creates_new";
 
@@ -64,6 +70,12 @@ pub enum Reason {
     AlwaysAsk,
     /// The conversation mode does not offer this action.
     Mode,
+    /// The action asked for network access, which nothing grants.
+    Network,
+    /// The action would run without a confining OS sandbox.
+    Unsandboxed,
+    /// The target is not a path inside the root.
+    Path,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -100,19 +112,19 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
-    fn allow(message: impl Into<String>) -> Self {
+    pub(crate) fn allow(message: impl Into<String>) -> Self {
         Evaluation {
             decision: Decision::Allow,
             message: message.into(),
         }
     }
-    fn ask(reason: Reason, message: impl Into<String>) -> Self {
+    pub(crate) fn ask(reason: Reason, message: impl Into<String>) -> Self {
         Evaluation {
             decision: Decision::Ask { reason },
             message: message.into(),
         }
     }
-    fn deny(reason: Reason, message: impl Into<String>) -> Self {
+    pub(crate) fn deny(reason: Reason, message: impl Into<String>) -> Self {
         Evaluation {
             decision: Decision::Deny { reason },
             message: message.into(),
@@ -120,7 +132,7 @@ impl Evaluation {
     }
 }
 
-/// Level of a policy class or an MCP server.
+/// Level of a policy class.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
@@ -158,14 +170,17 @@ pub enum EditGate {
     /// In-scope edits apply immediately; out-of-scope edits pause.
     #[serde(rename = "auto")]
     Auto,
+    /// No edit is ever applied (the `read-only` preset).
+    #[serde(rename = "deny")]
+    Deny,
 }
 
 /// What a tool call is about to do, as the app describes it to the policy engine.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Action {
-    /// Internal tool name (`slide.propose_update`, `mcp.<server>.<tool>`).
+    /// Internal tool name (`slide.propose_update`, `fs.propose_edit`).
     pub tool: String,
-    /// Policy class (`read`, `edit`, `code`, `skills_scripts`, `mcp`, `export`, `shell`,
+    /// Policy class (`read`, `edit`, `code`, `skills_scripts`, `export`, `shell`,
     /// `package`, `git`, `run`, ...).
     pub class: String,
     /// Ids or paths the action changes.
@@ -181,6 +196,13 @@ pub struct Action {
     /// `new-citation`). `creates_new` counts as the flag `creates_new`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<String>,
+    /// Only an OS sandbox confines what the action does (running code, a shell command).
+    /// A [`Session`] asks first when no confining sandbox is active.
+    #[serde(default)]
+    pub needs_sandbox: bool,
+    /// The call asked for network access. A [`Session`] always denies it.
+    #[serde(default)]
+    pub requests_network: bool,
 }
 
 impl Action {
@@ -222,11 +244,13 @@ impl Action {
         self
     }
 
-    /// Server of an `mcp.<server>.<tool>` tool name.
-    pub fn mcp_server(&self) -> Option<&str> {
-        let rest = self.tool.strip_prefix("mcp.")?;
-        let server = rest.split('.').next()?;
-        (!server.is_empty()).then_some(server)
+    pub fn needs_sandbox(mut self, yes: bool) -> Self {
+        self.needs_sandbox = yes;
+        self
+    }
+    pub fn requests_network(mut self, yes: bool) -> Self {
+        self.requests_network = yes;
+        self
     }
 
     fn has_flag(&self, flag: &str) -> bool {
@@ -297,6 +321,9 @@ impl Scope {
 pub struct LockSet {
     entries: BTreeSet<String>,
     globs: GlobSet,
+    /// Match globs and exact entries without regard to letter case (paths on a
+    /// case-insensitive volume). Not serialized.
+    case_insensitive: bool,
 }
 
 impl PartialEq for LockSet {
@@ -327,6 +354,7 @@ impl LockSet {
         let mut l = LockSet {
             entries: entries.into_iter().map(Into::into).collect(),
             globs: GlobSet::empty(),
+            case_insensitive: false,
         };
         l.rebuild();
         l
@@ -351,11 +379,22 @@ impl LockSet {
     fn rebuild(&mut self) {
         let mut b = GlobSetBuilder::new();
         for e in &self.entries {
-            if let Ok(g) = Glob::new(e) {
+            if let Ok(g) = GlobBuilder::new(e)
+                .case_insensitive(self.case_insensitive)
+                .build()
+            {
                 b.add(g);
             }
         }
         self.globs = b.build().unwrap_or_else(|_| GlobSet::empty());
+    }
+
+    /// Match without regard to letter case (or go back to exact case).
+    pub fn set_case_insensitive(&mut self, yes: bool) {
+        if self.case_insensitive != yes {
+            self.case_insensitive = yes;
+            self.rebuild();
+        }
     }
 
     pub fn insert(&mut self, entry: impl Into<String>) -> bool {
@@ -375,7 +414,10 @@ impl LockSet {
     }
 
     pub fn is_locked(&self, target: &str) -> bool {
-        self.entries.contains(target) || self.globs.is_match(target)
+        self.entries.contains(target)
+            || self.globs.is_match(target)
+            || (self.case_insensitive
+                && self.entries.iter().any(|e| e.eq_ignore_ascii_case(target)))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -488,8 +530,6 @@ pub struct Policy {
     pub classes: BTreeMap<String, Level>,
     /// Locked items: never changeable by the agent.
     pub locked: LockSet,
-    /// MCP server -> level; servers not listed use the `mcp` class level.
-    pub mcp: BTreeMap<String, Level>,
     /// Tools switched off by configuration.
     pub denied_tools: BTreeSet<String>,
 }
@@ -501,7 +541,6 @@ impl Default for Policy {
             max_steps: 40,
             classes: BTreeMap::new(),
             locked: LockSet::default(),
-            mcp: BTreeMap::new(),
             denied_tools: BTreeSet::new(),
         }
     }
@@ -518,9 +557,6 @@ pub struct PolicyPatch {
     /// Class levels to set.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub classes: BTreeMap<String, Level>,
-    /// MCP server levels to set.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub mcp: BTreeMap<String, Level>,
     /// Replace the whole locked set (applied before `lock` and `unlock`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locked: Option<Vec<String>>,
@@ -554,8 +590,6 @@ impl PolicyPatch {
         }
         out.classes
             .extend(later.classes.iter().map(|(k, v)| (k.clone(), *v)));
-        out.mcp
-            .extend(later.mcp.iter().map(|(k, v)| (k.clone(), *v)));
         if later.locked.is_some() {
             out.locked = later.locked.clone();
             out.lock.clear();
@@ -606,8 +640,9 @@ impl Policy {
         self.classes.insert(class.into(), level);
         self
     }
-    pub fn with_mcp_server(mut self, server: impl Into<String>, level: Level) -> Self {
-        self.mcp.insert(server.into(), level);
+    /// Set the edit gate and the mapped class levels from a preset.
+    pub fn with_preset(mut self, preset: Preset, classes: &[(&str, PresetKind)]) -> Self {
+        preset.apply(&mut self, classes);
         self
     }
     pub fn with_locked<I, S>(mut self, entries: I) -> Self
@@ -630,9 +665,6 @@ impl Policy {
         }
         for (k, v) in &patch.classes {
             p.classes.insert(k.clone(), *v);
-        }
-        for (k, v) in &patch.mcp {
-            p.mcp.insert(k.clone(), *v);
         }
         if let Some(l) = &patch.locked {
             p.locked = LockSet::new(l.iter().cloned());
@@ -661,13 +693,8 @@ impl Policy {
         }
     }
 
-    /// Level that applies to an action: for class `mcp` the server's level when one is set.
+    /// Level that applies to an action.
     pub fn level_for(&self, action: &Action) -> Level {
-        if action.class == CLASS_MCP {
-            if let Some(l) = action.mcp_server().and_then(|s| self.mcp.get(s)) {
-                return *l;
-            }
-        }
         self.level(&action.class)
     }
 
@@ -708,13 +735,13 @@ impl Policy {
         }
         let level = self.level_for(action);
         if level == Level::Deny {
-            let what = match action.mcp_server() {
-                Some(s) if class == CLASS_MCP && self.mcp.contains_key(s) => {
-                    format!("MCP server `{s}`")
-                }
-                _ => format!("{class} policy"),
-            };
-            return Evaluation::deny(Reason::Policy, format!("{what} is deny"));
+            return Evaluation::deny(Reason::Policy, format!("{class} policy is deny"));
+        }
+        if class == CLASS_EDIT && self.edits == EditGate::Deny {
+            return Evaluation::deny(
+                Reason::Policy,
+                "edits policy is deny (read-only): no edit is applied",
+            );
         }
         if let Some(t) = action.targets.iter().find(|t| self.is_locked(t)) {
             return Evaluation::deny(Reason::Locked, format!("`{t}` is locked"));
@@ -736,6 +763,10 @@ impl Policy {
 
     fn explain_edit(&self, action: &Action, scope: &Scope) -> Evaluation {
         match self.edits {
+            EditGate::Deny => Evaluation::deny(
+                Reason::Policy,
+                "edits policy is deny (read-only): no edit is applied",
+            ),
             EditGate::Review => Evaluation::ask(Reason::Policy, "edits policy is review"),
             EditGate::AutoNew if action.creates_new => Evaluation::allow("new item under auto-new"),
             EditGate::AutoNew => Evaluation::ask(Reason::Policy, "existing item under auto-new"),
@@ -782,15 +813,13 @@ impl Policy {
                 "new items are written immediately, edits to existing items pause for review"
             }
             EditGate::Auto => "in-scope edits apply immediately; out-of-scope edits pause",
+            EditGate::Deny => "denied (read-only): no edit is applied",
         };
         s.push_str(&format!("Edits: {edits}."));
         for (class, level) in &self.classes {
             if class != CLASS_READ && class != CLASS_EDIT {
                 s.push_str(&format!(" {class}: {}.", level.as_str()));
             }
-        }
-        for (server, level) in &self.mcp {
-            s.push_str(&format!(" mcp.{server}: {}.", level.as_str()));
         }
         s.push_str(&format!(" Max steps per turn: {}.", self.max_steps));
         if !self.denied_tools.is_empty() {
@@ -818,7 +847,7 @@ impl Policy {
                 }
                 s.push_str(&format!(" Declared scope: {}.", items.join(", ")));
             }
-            _ if edits_offered => s.push_str(
+            _ if edits_offered && self.edits != EditGate::Deny => s.push_str(
                 " No scope declared yet: declare the scope before editing, or every edit will need approval.",
             ),
             _ => {}
@@ -854,5 +883,7 @@ pub fn normalize_rel_path(path: &str) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod tests;

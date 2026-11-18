@@ -7,7 +7,6 @@ edits = "review"                      # review | auto-new-slides | auto
 code = "ask"                          # builds and generated slides: ask | auto | deny
 skills_scripts = "ask"                # ask | auto | deny
 code_mode = "allow"                   # allow | deny (switching to code generation mode)
-mcp = "ask"
 export = "auto"
 max_steps = 60
 build_timeout_s = 60

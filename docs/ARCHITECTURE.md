@@ -21,7 +21,7 @@ This document specifies the architecture of the desktop application described in
 | D11 | Docking | `dockview` for in-window panels; Tauri `WebviewWindow` for undocked panels | Recommended |
 | D12 | LaTeX toolchain | A TeX installation the user provides. Tectonic's fetch-on-demand is removed from the plan: the app downloads nothing for it | Decided, see OQ-10 |
 | D13 | Persistence | JSONL for transcripts and run records, TOML for config, git refs for checkpoints. A SQLite index is deferred until file scans become a measured problem | Decided |
-| D14 | External tools | Removed from the plan: there is no MCP client. Mentions of MCP elsewhere in this document describe the earlier design and are not built | Dropped |
+| D14 | External tools | Dropped for good: there is no MCP client, no MCP policy key, and no MCP tool naming | Dropped |
 | D15 | Evaluation | Model-agnostic task suite with automatic graders; produces a scorecard per configured model; no model is privileged | Decided |
 | D16 | Platforms | macOS and Linux first, for both the desktop app and remote targets. Windows deferred to phase 4 | Decided |
 | D17 | Run launcher | Runs start directly on the target (local process, remote Linux machine, or cluster login node) behind a launcher interface; a Slurm scheduler launcher is a planned later extension, not a first-version feature | Decided |
@@ -46,7 +46,7 @@ flowchart LR
     AL[Agent loop]
     PE[Policy engine + edit gating]
     MP[Model providers]
-    TR[Tool registry + MCP client]
+    TR[Tool registry]
     TG[Target manager\nlocal | ssh]
     EM[Environment manager]
     RK[Kernel client]
@@ -65,12 +65,11 @@ flowchart LR
   end
 
   LLM[(Ollama / OpenAI-compatible\nAnthropic)]
-  MCP[(MCP servers)]
   Git[(Local analysis repo)]
 
   UI <-- typed IPC --> Core
   AL --> MP --> LLM
-  AL --> TR --> MCP
+  AL --> TR
   AL --> PE
   AL --> RK
   TG --> RK
@@ -98,11 +97,10 @@ What "native" means here: the app is a single native executable with native wind
 
 | Layer | Choice | Notes |
 |---|---|---|
-| Shell | Tauri 2 | Native window, menus, dialogs, multi-window for undocked panels, sidecar binaries, updater, platform installers. Interface drawn by the OS webview component: WKWebView on macOS, WebKitGTK on Linux. |
+| Shell | Tauri 2 | Native window, menus, dialogs, multi-window for undocked panels, sidecar binaries, platform installers (updates ship as new installers; there is no auto-updater). Interface drawn by the OS webview component: WKWebView on macOS, WebKitGTK on Linux. |
 | Core | Rust on `tokio` | All services in section 5. Compiled into the Tauri backend; also linked into a headless CLI for phase 0 and evals. |
 | IPC | Tauri commands and per-session channels; types exported with `ts-rs` | Request/response as commands; streams (model tokens, run output, artifacts) as events on a per-session channel. The `protocol` crate's types produce the TypeScript bindings. The contract is [IPC.md](IPC.md). |
 | Model clients | SSE streaming over requests built by the network gate (`wb-net`), hand-written adapters | Two adapters are a few hundred lines each and keep full control over tool-call parsing. No provider SDKs. |
-| MCP | none | Removed from the plan (D14). |
 | Storage | `toml`, JSONL | See section 7. |
 | File watching | `notify` | Working-tree diffing between turns, `out/` watching for terminal runs. |
 | Terminals | `portable-pty` in the core, `xterm.js` in the renderer | A remote terminal is a local pty running `ssh -t`. |
@@ -120,7 +118,7 @@ Known cost: WebKitGTK on Linux is slower than Chromium for heavy canvases and la
 
 | Entity | Definition | Owned by |
 |---|---|---|
-| Workspace | The app-level state: provider config, targets, global skills, global MCP servers, list of sessions. | `~/.analyst/` |
+| Workspace | The app-level state: provider config, targets, global skills, list of sessions. | `~/.analyst/` |
 | Target | Where runs execute: `local`, or an SSH host with a remote root directory. Holds its own tooling env, venvs, and run records. | `~/.analyst/config.toml` |
 | Session | Exactly one repo + one target + one environment + one or more conversations + layout + run history. One tab per session. A library shared across repos is a package dependency of each repo, not a second repo in the session. | `~/.analyst/sessions/<id>/` |
 | Repo | A git repository on the local disk containing analysis code and the committed project config in `.analyst/`. Canonical for code. | user's filesystem |
@@ -293,7 +291,7 @@ The loop is the product's core and is designed around the analysis cycle: plan, 
 
 1. System prompt: role, the script contract (5.13), output conventions, and the active policy summary so the model knows what will require approval.
 2. Project map: directory tree (depth-limited), the script index (name, description, options), the library index (public functions with one-line docstrings), environment summary (Python version, key packages), target name and state, git status, and the list of files changed by the user since the last turn.
-3. Skills whose triggers match (5.16), in full.
+3. Skills (5.16): the list of available skills by description, and in full those whose legacy triggers match the turn.
 4. Conversation history, compacted when it exceeds a configurable fraction of the model's context window. Compaction summarizes older turns and keeps a pinned-facts block (decisions, file names, parameter values) that the agent maintains explicitly.
 5. The current user message plus any attachments: file references, figure references, selected text from the editor.
 
@@ -325,7 +323,7 @@ Large outputs (run logs, file contents) are never inlined past a size limit; the
 | `git.status`, `git.diff` | read |
 | `git.commit` | git |
 | `doc.render`, `doc.insert_figure` | edit |
-| `mcp.<server>.<tool>` | per server |
+| `skill.load` | read |
 
 **Turn algorithm**
 
@@ -361,24 +359,34 @@ Pausing on "ask" is a real pause: the model's partial turn is held, the user act
 
 **Reuse before writing.** The system prompt requires the agent to consult `lib.index` and `fs.search` before defining a new function, and to extend or call an existing library function when one covers the need. The checker enforces the result (5.13).
 
-**Capability baseline and fallback.** The loop targets models with native tool calling, streaming, and a context window of at least 32k tokens; this is the definition of a "performant model" for this product. Models that fail the tool-calling probe (5.10) can run through a text protocol (fenced JSON blocks) that the core parses. It is a degraded tier, flagged in the UI, not a supported mode for the eval suite.
+**Capability baseline.** The loop requires models with native tool calling and targets streaming and a context window of at least 32k tokens; this is the definition of a "performant model" for this product. A model that fails the tool-calling probe (5.10) is rejected with an error that says so; there is no text-protocol fallback.
 
 ### 5.8 Policy engine and edit gating (D7)
 
-**Decided:** `review` is the default gating mode, review is per hunk, and protected paths and protected-region markers are in the first version.
+**Decided:** `review` is the default gating mode, review is per hunk, and protected paths are in the first version. Comment-marker locked regions inside a file were removed (DESIGN-REVIEW item 5): protect the file's path instead.
+
+The engine is the shared crate `wb-policy`; `crates/core/src/tools/gate.rs` only maps a tool call onto it. The policy surface is three presets plus protected paths:
+
+| `preset` | Edits | Runs | Packages, shell, git |
+|---|---|---|---|
+| `review` (the default values) | every edit reviewed | auto | ask |
+| `auto` | applied inside the declared scope, asked outside it | auto | ask |
+| `read-only` | denied | auto (existing scripts) | denied |
+
+`preset` expands to the detailed keys below; a detailed key written in the same table overrides the preset's value. The settings dialog offers the three presets and keeps the detailed keys under Advanced. Whatever the preset: paths under `.git/` and `.analyst/` and protected globs are never editable (also through a symlink), runs never get network access, and when no OS sandbox confines runs every run, snippet and shell command asks first unless the project sets `unsandboxed_runs = "auto"`.
 
 Policy is declarative, lives in `.analyst/project.toml`, and can be overridden per session from the UI without editing the file.
 
 ```toml
 [policy]
-edits    = "review"        # review | auto-new-files | auto
+preset   = "review"        # review | auto | read-only; expands to the five keys below
+edits    = "review"        # review | auto-new-files | auto | deny
 runs     = "auto"          # auto | ask
 packages = "ask"           # ask | auto | deny
 shell    = "ask"           # ask | auto | deny
 git      = "ask"           # commits by the agent
 protected = ["analysis/core/**", "data/**"]   # never editable by the agent
 max_steps = 40
-max_run_seconds = 600
 ```
 
 Edit gating states:
@@ -388,10 +396,9 @@ Edit gating states:
 | `review` | The turn pauses on each proposal. The diff appears inline in the editor (accept or reject per hunk) and as a card in chat. The turn resumes with the accepted content. |
 | `auto-new-files` | New files are written immediately; modifications to existing files pause for review. |
 | `auto` | All in-scope edits apply immediately. Out-of-scope edits still pause. A checkpoint exists for every turn. |
+| `deny` | No edit is applied or offered for review (the `read-only` preset). |
 
 Conflict detection: a proposal carries the content hash of the file it was based on. If the user changed the file meanwhile, the proposal is rejected with a conflict and the agent must re-read.
-
-Protected regions inside a file are marked with comments (`# analyst: lock` / `# analyst: unlock`); proposals touching them are denied.
 
 ### 5.9 Checkpoints
 
@@ -410,7 +417,7 @@ trait ModelClient {
 
 struct ModelCapabilities {
     context_window: u32,
-    tools: ToolSupport,      // Native | TextProtocol | None
+    tools: ToolSupport,      // Native (required) | None
     vision: bool,
     probed_at: Timestamp,
 }
@@ -554,19 +561,19 @@ Each session gets a `notes.md` by default.
 
 ### 5.16 Skills and configuration
 
-Skills are markdown files with front matter:
+Skills are Agent Skills folders, loaded by the shared crate `wb-skills`: `<name>/SKILL.md` with `name` and `description` in the front matter, plus any resource files.
 
 ```markdown
 ---
 name: curve-fitting
-triggers: ["fit", "regression", "least squares"]
-paths: ["analysis/fitting*.py"]
-always: false
+description: How to fit models and report uncertainties.
 ---
 When fitting models: report parameter uncertainties from the covariance, plot residuals, ...
 ```
 
-Skills load from `~/.analyst/skills/` (global) and `<repo>/.analyst/skills/` (project). Matching is by trigger words in the user message and by path globs of files in the context; `always: true` skills are always loaded. The user can see and toggle which skills are active in a given turn.
+Skills load from `~/.analyst/skills/` (user) and `<repo>/.analyst/skills/` (project; it wins on a name clash). The system prompt lists them by name and description; the agent loads one in full with the read-class tool `skill.load` before relying on it.
+
+The earlier front matter keys keep working inside `SKILL.md`: `triggers` (words in the user message), `paths` (globs of files in the declared scope or changed this turn) and `always: true`. A skill that carries them is put into the prompt in full when it matches the turn, without a tool call. Flat `<name>.md` files, which the earlier design described and no version loaded, are not read. A toggle in the UI for the skills of a turn is not built.
 
 Configuration layering, lowest to highest precedence: built-in defaults, `~/.analyst/config.toml`, `<repo>/.analyst/project.toml`, per-target overrides inside it, session overrides from the UI.
 
@@ -598,7 +605,7 @@ Panels and their primary interactions:
 | Session tabs | Switch, create, close, duplicate with a new conversation. Each shows its target and connection state and restores its full layout. |
 | Project sidebar | File tree. Scripts view lists each script with its options parsed from the index and a form to run it with chosen arguments. Library view lists public functions with callers and "promote to library" candidates from the checker. Runs view with history, target, and filters. |
 | Editor | CodeMirror 6 with Python syntax, Ruff diagnostics, Inline diff review of agent proposals. Code-lens for equations. Protected-region markers. |
-| Agent chat | Streaming messages. Cards for plans, proposals, runs, package changes, MCP calls, and approvals. Mode switch. Model switch. Context indicator (tokens used, compaction state). Attach files, figures, or editor selections. |
+| Agent chat | Streaming messages. Cards for plans, proposals, runs, package changes, and approvals. Mode switch. Model switch. Context indicator (tokens used, compaction state). Attach files, figures, or editor selections. |
 | Figures | Section 5.12. |
 | Equations | Section 5.11. |
 | Packages | Installed list on the session's target, search and add, remove, sync, Python version. Pending agent requests show here too. |
@@ -643,7 +650,7 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
 
 ## 8. Security and privacy
 
-- No telemetry. No network calls except to configured model providers, the configured package index during installs, and configured SSH targets, all through the gate described in 5.6 and all recorded in `<home>/egress.jsonl`. MCP servers and Tectonic's package fetches are removed from the plan.
+- No telemetry. No network calls except to configured model providers, the configured package index during installs, and configured SSH targets, all through the gate described in 5.6 and all recorded in `<home>/egress.jsonl`.
 - API keys in the environment or an untracked `.env` file (`~/.analyst/.env`, mode 0600, or the repo's). Never logged, removed from the environment of kernels and terminals, never passed into the sandbox, never sent to a remote target (a repo `.env` is excluded from the mirror), and not readable through the agent's file tools.
 - SSH credentials are never handled by the app; it relies on the user's OpenSSH configuration and agent.
 - The chat UI shows provider locality (local or remote) at all times. A per-target "data directories" list controls what the agent can read; nothing outside the repo and that list is readable by tools or by the sandbox.
@@ -666,7 +673,8 @@ apps/desktop/
   src-tauri/           Tauri shell: commands, events, window management (thin glue over crates/core)
   src/                 React renderer
 crates/protocol/       IPC and kernel message types; TypeScript bindings generated with ts-rs
-crates/core/           sessions, agent loop, policy, providers, tools, MCP, targets, sync, storage
+crates/wb-*/           shared with the deck workbench: network gate, providers, policy, transcript, skills, sandbox
+crates/core/           sessions, agent loop, tools, targets, sync, storage (providers, policy, transcript and skills come from crates/wb-*)
 crates/cli/            headless harness for phase 0 and evals
 python/kernel/         analyst_kernel (runs, index, equations, contract) and analyst_mpl
 evals/                 task suite, graders, scorecard runner

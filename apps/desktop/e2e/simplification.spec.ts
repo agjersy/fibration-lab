@@ -42,6 +42,7 @@ test.describe("simplification round (mock backend)", () => {
     await dialog.getByTestId("policy-preset-read-only").click();
     await expect(dialog.getByTestId("policy-preset-read-only")).toBeChecked();
     await dialog.getByTestId("policy-advanced").locator("summary").click();
+    await expect(dialog.locator("#st-edits")).toHaveValue("deny");
     await expect(dialog.locator("#st-packages")).toHaveValue("deny");
     await expect(dialog.locator("#st-shell")).toHaveValue("deny");
     await expect(dialog.locator("#st-git")).toHaveValue("deny");

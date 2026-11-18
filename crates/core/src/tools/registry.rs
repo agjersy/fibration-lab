@@ -1,9 +1,9 @@
 //! The phase 0 tool set with policy classes and model-facing JSON schemas.
 
-use crate::providers::names::to_model_name;
 use analyst_protocol::evals::Mode;
-use analyst_protocol::model::ToolDef;
 use serde_json::{json, Value};
+use wb_providers::model::ToolDef;
+use wb_providers::names::to_model_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolClass {
@@ -46,6 +46,7 @@ pub fn registry() -> Vec<ToolSpec> {
         ToolSpec { name: "declare_scope", class: Meta, description: "Declare the repo-relative files you intend to create or modify this turn. Required in build mode before any edit; edits outside the declared set need user approval.", parameters: obj(json!({"files": {"type":"array","items":{"type":"string"}}, "plan": {"type":"string","description":"One short paragraph describing the intended change."}}), &["files"]) },
         ToolSpec { name: "pin_fact", class: Meta, description: "Pin a short fact (decision, file name, parameter value) that must survive context compaction.", parameters: obj(json!({"fact": {"type":"string"}}), &["fact"]) },
         ToolSpec { name: "fs.read", class: Read, description: "Read a repo file (optionally a line range). Also reads session artifact files returned by truncated tool results.", parameters: obj(json!({"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}}), &["path"]) },
+        ToolSpec { name: "skill.load", class: Read, description: "Load the full instructions of a skill listed under SKILLS in the system prompt. Do this before relying on the skill.", parameters: obj(json!({"name":{"type":"string"}}), &["name"]) },
         ToolSpec { name: "fs.list", class: Read, description: "List files and directories under a repo path (depth-limited; ignores .git, .venv, out, __pycache__).", parameters: obj(json!({"path":{"type":"string"},"depth":{"type":"integer","minimum":1,"maximum":6}}), &[]) },
         ToolSpec { name: "fs.search", class: Read, description: "Search file contents with a regex (ripgrep). Returns path, line, and text per match.", parameters: obj(json!({"pattern":{"type":"string"},"glob":{"type":"string"},"max_results":{"type":"integer","minimum":1}}), &["pattern"]) },
         ToolSpec { name: "scripts.index", class: Read, description: "Index of command-line scripts: name, description, argparse options with defaults.", parameters: obj(json!({}), &[]) },
@@ -116,7 +117,7 @@ pub fn defs_for_mode(mode: Mode) -> Vec<ToolDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::names::is_valid_model_name;
+    use wb_providers::names::is_valid_model_name;
 
     #[test]
     fn registry_is_well_formed() {

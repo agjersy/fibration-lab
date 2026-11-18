@@ -6,8 +6,13 @@ Phase 0 is a headless build: the Rust core and CLI, the Python kernel, and the e
 
 ```
 Cargo.toml             Rust workspace
-crates/protocol/       serde types for the kernel protocol, config, transcripts, model events, evals
-crates/core/           sessions, agent loop, policy, providers, kernel client, targets, sync, checkpoints
+crates/wb-*/           shared with the deck workbench: wb-net (network gate), wb-providers (model clients, capability
+                       probe), wb-policy (policy engine, presets), wb-transcript (events, JSONL store, replay, compaction,
+                       pinned facts), wb-skills (Agent Skills loader), wb-sandbox
+crates/protocol/       serde types for the kernel protocol, config, typed transcript events for the UI, evals
+crates/core/           sessions, agent loop, tools, kernel client, targets, sync, checkpoints; its provider, policy,
+                       transcript and skills code is the shared crates plus thin adapters (model_client.rs,
+                       tools/gate.rs, session.rs, skills.rs)
 crates/cli/            the `analyst` binary
 python/kernel/         analyst_kernel (per-target kernel) and analyst_mpl (figure capture backend)
 evals/tasks/           model-agnostic evaluation tasks with fixture repos

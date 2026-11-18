@@ -58,6 +58,7 @@ Decided (OQ-P11): a third repository will hold code shared with Analyst. That re
 
 - **Now:** the shared-to-be crates and `packages/wb-ui` live in this workspace under `wb-*` names, with no dependency on Present-specific crates (enforced by a CI check that `crates/wb-*` depend only on each other and third-party crates). Their APIs are written for both apps.
 - **Port sources** (from Analyst at the commit in rule 1): `crates/core/src/providers/*` → `wb-providers`; `crates/core/src/policy.rs` → `wb-policy`; transcript and compaction pieces of `crates/core/src/agent/*` and `crates/protocol/src/transcript.rs` → `wb-transcript`; `python/kernel/analyst_kernel/sandbox.py` profile logic → `wb-sandbox` (reimplemented in Rust, same generated profile); `apps/desktop/src/styles/theme.css`, `ui/chat/*`, `ui/common/*`, `ipc/backend.ts` → `packages/wb-ui`.
+- **Since the merge into one repository:** the analysis core uses `wb-providers`, `wb-policy`, `wb-transcript` and `wb-skills` too, and its own copies are deleted. The fixes the analysis copies had received after the port commit were carried into the shared crates first. `wb-policy/src/regions.rs` (comment-marker locked regions) and the text protocol are removed from both.
 - **Later (separate approved task):** move `wb-*` and `packages/wb-ui` into the shared repository with history, switch Present to tag-pinned git dependencies, then switch Analyst in its own change.
 
 ## 5. Phase 0 work packages
@@ -84,7 +85,7 @@ Order matters: each package lists what it depends on. Packages without dependenc
 ### W2. Providers with gateway support (`wb-providers`)
 
 **Depends:** W0.
-**Do:** port Analyst's provider layer (both adapters, SSE, `ModelEvent`, scripted client, text protocol, capability probe). Add: `auth = bearer|x-api-key|none`, extra headers, `location`, unknown-field downgrade (PROTOCOL 6.1), document blocks with citation mapping, prompt-caching markers, the vision probe, `degraded` computation against the 128k + vision baseline, keys named by `env:<VAR>` and read from the environment or `.env`, the audit hook (a callback invoked per request with the PROTOCOL 10 record minus content).
+**Do:** port Analyst's provider layer (both adapters, SSE, `ModelEvent`, scripted client, capability probe; the text protocol was ported and later removed, native tool calling is required). Add: `auth = bearer|x-api-key|none`, extra headers, `location`, unknown-field downgrade (PROTOCOL 6.1), document blocks with citation mapping, prompt-caching markers, the vision probe, `degraded` computation against the 128k + vision baseline, keys named by `env:<VAR>` and read from the environment or `.env`, the audit hook (a callback invoked per request with the PROTOCOL 10 record minus content).
 **Accept:** the Analyst SSE fixture tests pass unchanged; new fixtures for bearer auth, extra headers, a 400 naming `cache_control` followed by a successful retry, an Anthropic stream with `citations` deltas mapped to `Cite`, the vision probe pass and fail; a request to an endpoint that is not allowed at the network gate is refused before any connection. (Proxy, CA bundle, and keychain support were removed: network only for model endpoints, package installs, and SSH targets, through the network gate (`wb-net`); keys from the environment or `.env`.)
 
 ### W3. Kernel skeleton and runtime bundling

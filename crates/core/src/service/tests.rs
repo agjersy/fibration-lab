@@ -2,12 +2,12 @@
 //! kernel use the stdlib-only fake in `tests/fake_kernel.py`).
 
 use super::*;
-use crate::providers::ScriptedModelClient;
-use analyst_protocol::model::{ModelEvent, StopReason};
 use analyst_protocol::transcript::Decision;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::sync::broadcast;
+use wb_providers::model::{ModelEvent, StopReason};
+use wb_providers::ScriptedModelClient;
 
 struct Fixture {
     _home: tempfile::TempDir,
@@ -327,7 +327,7 @@ async fn ui_approver_round_trip_accepts_with_modified_content() {
         .content
         .iter()
         .find_map(|p| match p {
-            analyst_protocol::model::ContentPart::ToolResult {
+            wb_providers::model::ContentPart::ToolResult {
                 tool_call_id,
                 content,
                 ..
@@ -1159,10 +1159,10 @@ async fn run_get_works_after_restart() {
 
 struct PanickingModel;
 
-impl crate::providers::ModelClient for PanickingModel {
+impl wb_providers::ModelClient for PanickingModel {
     fn stream(
         &self,
-        _req: analyst_protocol::model::ChatRequest,
+        _req: wb_providers::model::ChatRequest,
     ) -> futures::stream::BoxStream<'static, ModelEvent> {
         panic!("boom in the model client")
     }

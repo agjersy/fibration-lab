@@ -86,12 +86,28 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolSupport {
+    /// Native tool calling: required.
     Native,
-    TextProtocol,
+    /// No native tool calling: the model is rejected.
     None,
+}
+
+impl<'de> Deserialize<'de> for ToolSupport {
+    /// `text-protocol` (a fallback tier that no longer exists) is read as `none` so old
+    /// files still load.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match String::deserialize(d)?.as_str() {
+            "native" => Ok(ToolSupport::Native),
+            "none" | "text-protocol" => Ok(ToolSupport::None),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["native", "none"],
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -282,6 +298,42 @@ pub enum EditPolicy {
     Review,
     AutoNewFiles,
     Auto,
+    /// No edit is ever applied (the `read-only` preset).
+    Deny,
+}
+
+/// `policy.preset`: the primary way to configure a policy (IPC.md section 8). It expands to
+/// the detailed keys; a detailed key in the same table overrides the preset's value.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyPreset {
+    /// Edits reviewed; runs auto; packages, shell, git ask.
+    Review,
+    /// Edits inside the declared scope applied, outside it asked; runs auto; packages,
+    /// shell, git ask.
+    Auto,
+    /// Edits, packages, shell, git denied; runs of existing scripts auto.
+    ReadOnly,
+}
+
+impl From<PolicyPreset> for wb_policy::Preset {
+    fn from(p: PolicyPreset) -> Self {
+        match p {
+            PolicyPreset::Review => wb_policy::Preset::Review,
+            PolicyPreset::Auto => wb_policy::Preset::Auto,
+            PolicyPreset::ReadOnly => wb_policy::Preset::ReadOnly,
+        }
+    }
+}
+
+impl From<wb_policy::Preset> for PolicyPreset {
+    fn from(p: wb_policy::Preset) -> Self {
+        match p {
+            wb_policy::Preset::Review => PolicyPreset::Review,
+            wb_policy::Preset::Auto => PolicyPreset::Auto,
+            wb_policy::Preset::ReadOnly => PolicyPreset::ReadOnly,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
@@ -302,9 +354,15 @@ pub enum AskPolicy {
     Deny,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+/// The `[policy]` table with the preset expanded: every detailed key has its effective
+/// value. The expansion itself lives in `wb-policy` (`AnalystPolicyConfig`), which both
+/// reads the table and evaluates it. Keys of older files that no longer exist (`network`,
+/// `mcp`) are ignored.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PolicyConfig {
+    /// The preset the table named, if any. The detailed keys below already include it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<PolicyPreset>,
     pub edits: EditPolicy,
     pub runs: RunPolicy,
     pub packages: AskPolicy,
@@ -317,6 +375,7 @@ pub struct PolicyConfig {
 impl Default for PolicyConfig {
     fn default() -> Self {
         PolicyConfig {
+            preset: None,
             edits: EditPolicy::Review,
             runs: RunPolicy::Auto,
             packages: AskPolicy::Ask,
@@ -325,6 +384,94 @@ impl Default for PolicyConfig {
             protected: vec![],
             max_steps: 40,
         }
+    }
+}
+
+fn ask_policy(l: wb_policy::Level) -> AskPolicy {
+    match l {
+        wb_policy::Level::Ask => AskPolicy::Ask,
+        wb_policy::Level::Auto => AskPolicy::Auto,
+        wb_policy::Level::Deny => AskPolicy::Deny,
+    }
+}
+
+fn level(p: AskPolicy) -> wb_policy::Level {
+    match p {
+        AskPolicy::Ask => wb_policy::Level::Ask,
+        AskPolicy::Auto => wb_policy::Level::Auto,
+        AskPolicy::Deny => wb_policy::Level::Deny,
+    }
+}
+
+impl PolicyConfig {
+    /// The table as the shared policy engine reads it.
+    pub fn to_shared(&self, unsandboxed_runs: UnsandboxedRuns) -> wb_policy::AnalystPolicyConfig {
+        use wb_policy::config::{AnalystEdits, AnalystRuns};
+        wb_policy::AnalystPolicyConfig {
+            preset: self.preset.map(Into::into),
+            edits: match self.edits {
+                EditPolicy::Review => AnalystEdits::Review,
+                EditPolicy::AutoNewFiles => AnalystEdits::AutoNewFiles,
+                EditPolicy::Auto => AnalystEdits::Auto,
+                EditPolicy::Deny => AnalystEdits::Deny,
+            },
+            runs: match self.runs {
+                RunPolicy::Auto => AnalystRuns::Auto,
+                RunPolicy::Ask => AnalystRuns::Ask,
+            },
+            packages: level(self.packages),
+            shell: level(self.shell),
+            git: level(self.git),
+            protected: self.protected.clone(),
+            max_steps: self.max_steps,
+            unsandboxed_runs: match unsandboxed_runs {
+                UnsandboxedRuns::Ask => wb_policy::Unsandboxed::Ask,
+                UnsandboxedRuns::Auto => wb_policy::Unsandboxed::Auto,
+            },
+        }
+    }
+
+    fn from_shared(c: wb_policy::AnalystPolicyConfig) -> Self {
+        use wb_policy::config::{AnalystEdits, AnalystRuns};
+        PolicyConfig {
+            preset: c.preset.map(Into::into),
+            edits: match c.edits {
+                AnalystEdits::Review => EditPolicy::Review,
+                AnalystEdits::AutoNewFiles => EditPolicy::AutoNewFiles,
+                AnalystEdits::Auto => EditPolicy::Auto,
+                AnalystEdits::Deny => EditPolicy::Deny,
+            },
+            runs: match c.runs {
+                AnalystRuns::Auto => RunPolicy::Auto,
+                AnalystRuns::Ask => RunPolicy::Ask,
+            },
+            packages: ask_policy(c.packages),
+            shell: ask_policy(c.shell),
+            git: ask_policy(c.git),
+            protected: c.protected,
+            max_steps: c.max_steps,
+        }
+    }
+
+    /// Set the five preset keys; protected globs and the step limit stay.
+    pub fn apply_preset(&mut self, preset: PolicyPreset) {
+        let mut shared = self.to_shared(UnsandboxedRuns::Ask);
+        shared.apply_preset(preset.into());
+        *self = PolicyConfig::from_shared(shared);
+    }
+
+    /// The preset the detailed keys currently amount to, or `None` when they were changed
+    /// away from all three.
+    pub fn effective_preset(&self) -> Option<PolicyPreset> {
+        self.to_shared(UnsandboxedRuns::Ask)
+            .effective_preset()
+            .map(Into::into)
+    }
+}
+
+impl<'de> Deserialize<'de> for PolicyConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        wb_policy::AnalystPolicyConfig::deserialize(d).map(PolicyConfig::from_shared)
     }
 }
 
@@ -405,6 +552,41 @@ data_dirs = ["/data/shared"]
 
     /// Older project files carry `network = "deny" | "ask" | "allow"`. The key is gone; the
     /// file still loads and nothing in the loaded policy can grant network access.
+    /// `policy.preset` expands to the detailed keys; detailed keys still override. A
+    /// leftover `[policy.mcp]` table is ignored.
+    #[test]
+    fn policy_preset_expands_and_detailed_keys_override() {
+        let c: ProjectConfig = toml::from_str("[policy]\npreset = \"read-only\"\n").unwrap();
+        assert_eq!(c.policy.preset, Some(PolicyPreset::ReadOnly));
+        assert_eq!(c.policy.edits, EditPolicy::Deny);
+        assert_eq!(c.policy.runs, RunPolicy::Auto);
+        assert_eq!(
+            (c.policy.packages, c.policy.shell, c.policy.git),
+            (AskPolicy::Deny, AskPolicy::Deny, AskPolicy::Deny)
+        );
+        assert_eq!(c.policy.effective_preset(), Some(PolicyPreset::ReadOnly));
+        let c: ProjectConfig = toml::from_str(
+            "[policy]\npreset = \"auto\"\npackages = \"deny\"\nunsandboxed_runs = \"auto\"\nprotected = [\"data/**\"]\n[policy.mcp]\nwolfram = \"ask\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.policy.edits, EditPolicy::Auto);
+        assert_eq!(c.policy.packages, AskPolicy::Deny);
+        assert_eq!(c.policy.effective_preset(), None);
+        assert_eq!(c.unsandboxed_runs, UnsandboxedRuns::Auto);
+        assert_eq!(c.policy.protected, vec!["data/**".to_string()]);
+        let text = toml::to_string(&c).unwrap();
+        assert!(!text.contains("mcp"));
+        assert_eq!(toml::from_str::<ProjectConfig>(&text).unwrap(), c);
+        // No preset: the defaults, which are the review preset.
+        let d = ProjectConfig::default();
+        assert_eq!(d.policy.preset, None);
+        assert_eq!(d.policy.effective_preset(), Some(PolicyPreset::Review));
+        let mut p = d.policy.clone();
+        p.max_steps = 9;
+        p.apply_preset(PolicyPreset::Auto);
+        assert_eq!((p.edits, p.max_steps), (EditPolicy::Auto, 9));
+    }
+
     #[test]
     fn a_leftover_network_policy_is_ignored() {
         for value in ["deny", "ask", "allow"] {

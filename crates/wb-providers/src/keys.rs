@@ -31,8 +31,6 @@ pub enum KeyError {
          or the `.env` file"
     )]
     Missing { provider: String, reference: String },
-    #[error("provider `{0}` uses auth that needs a key but has no `key` in its configuration")]
-    NotConfigured(String),
 }
 
 /// A parsed `key` value.
@@ -57,6 +55,27 @@ impl KeyRef {
             KeyRef::Env(v) => v,
         }
     }
+}
+
+/// The variable that names a provider's key when its configuration names none: the provider
+/// name uppercased with every non-alphanumeric character replaced by `_`, followed by
+/// `_API_KEY` (`ollama-lab` gives `OLLAMA_LAB_API_KEY`).
+pub fn default_key_var(provider_name: &str) -> String {
+    let mut name: String = provider_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if !matches!(name.chars().next(), Some(c) if c.is_ascii_alphabetic() || c == '_') {
+        name.insert(0, '_');
+    }
+    name.push_str("_API_KEY");
+    name
 }
 
 /// Where keys are looked up: the process environment, then these `.env` files in order.
@@ -118,14 +137,28 @@ impl KeyStores {
             .map_err(|e| write_error(&file, e))
     }
 
+    /// Resolve a variable by name, with where it was found (the environment or a file).
+    pub fn lookup(&self, var: &str) -> Option<(String, secrets::Source)> {
+        let files: Vec<&Path> = self.files.iter().map(PathBuf::as_path).collect();
+        secrets::lookup(var, &files)
+    }
+
     /// The key for a provider. `Ok(None)` when its effective auth is `none`; an error when a
-    /// key is needed but not configured or not set.
+    /// key is needed but not set. A provider that needs a key and names none is looked up
+    /// under [`default_key_var`].
     pub fn resolve(&self, provider: &ProviderConfig) -> Result<Option<String>, KeyError> {
         if provider.effective_auth() == AuthKind::None {
             return Ok(None);
         }
         let Some(reference) = &provider.key else {
-            return Err(KeyError::NotConfigured(provider.name.clone()));
+            let var = default_key_var(&provider.name);
+            return match self.lookup(&var) {
+                Some((k, _)) => Ok(Some(k)),
+                None => Err(KeyError::Missing {
+                    provider: provider.name.clone(),
+                    reference: format!("env:{var}"),
+                }),
+            };
         };
         match self.get(&KeyRef::parse(reference)?) {
             Some(k) => Ok(Some(k)),
@@ -248,8 +281,23 @@ mod tests {
             Some(&format!("env:{VAR}")),
         );
         assert_eq!(s.resolve(&p).unwrap(), None);
-        let p = provider(ProviderKind::Anthropic, None, None);
-        assert!(matches!(s.resolve(&p), Err(KeyError::NotConfigured(_))));
+        // No `key` configured: the `<PROVIDER>_API_KEY` default is looked up.
+        let mut p = provider(ProviderKind::Anthropic, None, None);
+        p.name = "wb-keys.default test".into();
+        assert_eq!(default_key_var(&p.name), "WB_KEYS_DEFAULT_TEST_API_KEY");
+        assert_eq!(default_key_var("9router"), "_9ROUTER_API_KEY");
+        match s.resolve(&p) {
+            Err(KeyError::Missing { reference, .. }) => {
+                assert_eq!(reference, "env:WB_KEYS_DEFAULT_TEST_API_KEY")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        s.set(
+            &KeyRef::Env("WB_KEYS_DEFAULT_TEST_API_KEY".into()),
+            "from-default",
+        )
+        .unwrap();
+        assert_eq!(s.resolve(&p).unwrap().as_deref(), Some("from-default"));
         let p = provider(
             ProviderKind::Anthropic,
             None,

@@ -33,7 +33,7 @@ function info(): SessionInfo {
     created_at: "",
     last_opened_at: "",
     open: true,
-    policy: { edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask", protected: [], max_steps: 10 },
+    policy: { preset: "review", edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask", protected: [], max_steps: 10 },
     kernel: "ready",
     kernel_network_isolation: "bwrap",
     sandbox: null,

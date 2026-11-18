@@ -240,9 +240,25 @@ build_timeout_s = 120
     assert_eq!(p.policy.export, Gate::Ask);
     assert_eq!(p.contract.severities["src.coverage"], Severity::Info);
     assert_eq!(p.contract.max_bullets, 6);
+    // The `mcp` key above comes from an older file: it still loads and is dropped.
+    assert!(!toml::to_string(&p).unwrap().contains("mcp"));
     let again: ProjectConfig = toml::from_str(&toml::to_string(&p).unwrap()).unwrap();
     assert_eq!(again, p);
-    for edits in ["review", "auto-new-slides", "auto"] {
+    // `preset` expands to the detailed keys, which still override.
+    let ro: ProjectConfig = toml::from_str("[policy]\npreset = \"read-only\"\n").unwrap();
+    assert_eq!(ro.policy.preset, Some(PolicyPreset::ReadOnly));
+    assert_eq!(ro.policy.edits, EditPolicy::Deny);
+    assert_eq!(ro.policy.code, Gate::Auto);
+    assert_eq!(ro.policy.code_mode, Permission::Deny);
+    let over: ProjectConfig =
+        toml::from_str("[policy]\npreset = \"review\"\ncode = \"deny\"\n").unwrap();
+    assert_eq!(
+        (over.policy.code, over.policy.skills_scripts),
+        (Gate::Deny, Gate::Auto)
+    );
+    let again: ProjectConfig = toml::from_str(&toml::to_string(&over).unwrap()).unwrap();
+    assert_eq!(again, over);
+    for edits in ["review", "auto-new-slides", "auto", "deny"] {
         round_trip_value::<EditPolicy>("edits", &json!(edits));
     }
     assert!(toml::from_str::<ProjectConfig>("[policy]\nedits = \"yolo\"\n").is_err());

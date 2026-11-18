@@ -2,6 +2,6 @@
 
 export type PolicyView = { 
 /**
- * `review` | `auto-new-slides` | `auto`.
+ * `review` | `auto-new-slides` | `auto` | `deny`.
  */
-edits: string, code: string, skills_scripts: string, code_mode: string, mcp: string, export: string, max_steps: number, };
+edits: string, code: string, skills_scripts: string, code_mode: string, export: string, max_steps: number, };

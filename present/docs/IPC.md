@@ -28,8 +28,8 @@ interface AppInfo { version: string; home_abs: string; platform: "macos" | "wind
 interface ProjectSummary { id: ProjectId; name: string; path_abs: string; template_name: string; deck_mode: DeckMode;
   slides: number; model: string | null; created_at: string; last_opened_at: string; open: boolean }
 
-interface PolicyView { edits: "review" | "auto-new-slides" | "auto"; code: "ask" | "auto" | "deny";
-  skills_scripts: "ask" | "auto" | "deny"; code_mode: "allow" | "deny"; mcp: "ask" | "auto" | "deny";
+interface PolicyView { edits: "review" | "auto-new-slides" | "auto" | "deny"; code: "ask" | "auto" | "deny";
+  skills_scripts: "ask" | "auto" | "deny"; code_mode: "allow" | "deny";
   export: "ask" | "auto"; max_steps: number }
 
 interface ConversationSummary { id: ConversationId; title: string; model: string | null; mode: Mode; created_at: string; turns: number; busy: boolean }
@@ -76,7 +76,7 @@ interface ExportView { id: string; format: string; preset: string | null; path: 
 interface SnapshotView { id: SnapshotId; created: string; reason: string; label: string | null; turn: TurnId | null; slides: number; thumb: string | null }
 
 interface ModelEntry { name: string /* provider/id */; provider: string; location: "internal" | "external";
-  capabilities: { context_window: number; tools: "native" | "text-protocol" | "none"; vision: boolean; documents: boolean; caching: boolean; probed_at: string | null };
+  capabilities: { context_window: number; tools: "native" | "none"; vision: boolean; documents: boolean; caching: boolean; probed_at: string | null };
   degraded: boolean; degraded_reasons: string[] }
 
 interface SkillView { name: string; description: string; source: "builtin" | "user" | "project" | "managed"; has_scripts: boolean; enabled: boolean }

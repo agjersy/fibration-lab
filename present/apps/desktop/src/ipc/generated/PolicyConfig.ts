@@ -2,11 +2,16 @@
 import type { EditPolicy } from "./EditPolicy";
 import type { Gate } from "./Gate";
 import type { Permission } from "./Permission";
+import type { PolicyPreset } from "./PolicyPreset";
 
 /**
  * `[policy]`. Defaults are the values of the PROTOCOL 4.2 example.
+ *
+ * The table is read by `wb-policy` (`PresentPolicyConfig`), which expands `preset`; the
+ * values here are the effective ones. Keys of older files that no longer exist (`mcp`)
+ * are ignored.
  */
-export type PolicyConfig = { edits: EditPolicy, 
+export type PolicyConfig = { preset?: PolicyPreset, edits: EditPolicy, 
 /**
  * Builds and generated slides.
  */
@@ -14,4 +19,4 @@ code: Gate, skills_scripts: Gate,
 /**
  * Switching to code generation mode.
  */
-code_mode: Permission, mcp: Gate, export: Gate, max_steps: number, build_timeout_s: number, };
+code_mode: Permission, export: Gate, max_steps: number, build_timeout_s: number, };

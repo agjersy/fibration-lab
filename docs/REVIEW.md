@@ -8,6 +8,8 @@ The findings below were fixed on the working branch in four streams (kernel `818
 
 Verified after the fixes: 190 Rust tests, 165 kernel tests, 104 renderer unit tests, 10 end-to-end specs, the desktop smoke test (now including close and reopen), and the scripted agent-loop evaluation. The `Math:` exploit (G1) was re-run against the fixed kernel under a real `bubblewrap` sandbox and is rejected. A packaged layout with no dev checkout was simulated and bootstraps its own tooling environment.
 
+**Where the fixes live now (shared core, 2026-11-18).** The analysis copies of the provider layer, policy engine, transcript handling and compaction named in the tables below (`crates/core/src/providers/*`, `crates/core/src/policy.rs`, parts of `agent/mod.rs` and `session.rs`) were replaced by the shared crates `wb-providers`, `wb-policy` and `wb-transcript`. Their regression tests moved with them: G2, G4, G5, G7 and the network test are in `crates/wb-policy/src/session_tests.rs`; A1 to A4, B5, B6 in `wb-providers`; A7, B3, B4 in `wb-transcript`. G6 concerned comment-marker locked regions, which were removed; its test now asserts that no edit shape gets past a protected path.
+
 **Fixed and verified here:** G1, G2, G4, G5, G6, G7, G9, B1 to B13, R1 (against local directories), R7, K1 to K10, C1 to C5, A1 to A11, U1 to U11, and the vacuous-test items.
 
 **Implemented but not executed here**

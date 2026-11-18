@@ -9,14 +9,12 @@
 
 use crate::agent::{Agent, AgentConfig, AutoApprover};
 use crate::kernel::{KernelArgs, KernelClient, LocalStdio};
-use crate::policy::Policy;
-use crate::providers::ModelClient;
 use crate::session::Session;
+use crate::tools::gate::Policy;
 use crate::tools::ToolContext;
 use analyst_protocol::config::{EditPolicy, ProjectConfig, RunPolicy};
 use analyst_protocol::evals::*;
 use analyst_protocol::kernel::*;
-use analyst_protocol::model::ModelCapabilities;
 use analyst_protocol::transcript::{Event, ProposalKind};
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
@@ -24,6 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use wb_providers::model::ModelCapabilities;
+use wb_providers::ModelClient;
 
 #[derive(Debug, Clone)]
 pub struct LoadedTask {
@@ -856,8 +856,8 @@ pub fn write_scorecard(results_dir: &Path, sc: &Scorecard) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::ScriptedModelClient;
-    use analyst_protocol::model::ModelEvent;
+    use wb_providers::model::ModelEvent;
+    use wb_providers::ScriptedModelClient;
 
     fn fake_kernel_launcher() -> Vec<String> {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake_kernel.py");
@@ -946,7 +946,7 @@ count = 1
 
     fn stop_tools() -> ModelEvent {
         ModelEvent::Stop {
-            reason: analyst_protocol::model::StopReason::ToolCalls,
+            reason: wb_providers::model::StopReason::ToolCalls,
             message: None,
         }
     }

@@ -8,9 +8,9 @@
 use crate::cap::{ResultCap, TOOL_RESULT_CAP_BYTES};
 use crate::compact::{summary_messages, tail_start};
 use crate::event::Event;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::PathBuf;
-use wb_providers::{names, text_protocol, ContentPart, Message, Role};
+use wb_providers::{names, ContentPart, Message, Role};
 
 /// Tool result content for a call whose result never reached the transcript.
 pub const INTERRUPTED_RESULT: &str = "{\"error\":\"interrupted before a result was recorded\"}";
@@ -22,9 +22,6 @@ pub struct ReplayOptions {
     /// Map internal tool names to model-facing names (`deck.outline` -> `deck_outline`).
     /// On by default; switch off when the transcript already holds model-facing names.
     pub model_tool_names: bool,
-    /// The model has no native tool calling: tool calls are replayed as fenced
-    /// `tool_call` blocks in the assistant text and results as `tool_result <name>:` text.
-    pub text_protocol: bool,
     /// Cap on each replayed tool result (bytes of compact JSON).
     pub max_result_bytes: usize,
     /// Where results over the cap are written in full (`<dir>/<conversation>/<call id>.json`
@@ -41,7 +38,6 @@ impl Default for ReplayOptions {
     fn default() -> Self {
         ReplayOptions {
             model_tool_names: true,
-            text_protocol: false,
             max_result_bytes: TOOL_RESULT_CAP_BYTES,
             artifacts_dir: None,
             artifact_prefix: "replay".to_string(),
@@ -98,10 +94,10 @@ impl Builder<'_> {
         let mut results = std::mem::take(&mut self.results);
         let mut content = Vec::with_capacity(open.len());
         // Results in call order, as providers expect.
-        for (id, name) in open {
+        for (id, _) in open {
             let part = match results.iter().position(|(rid, _)| *rid == id) {
                 Some(i) => results.remove(i).1,
-                None => self.result_part(&id, &name, INTERRUPTED_RESULT.to_string(), true),
+                None => self.result_part(&id, INTERRUPTED_RESULT.to_string(), true),
             };
             content.push(part);
         }
@@ -111,18 +107,11 @@ impl Builder<'_> {
         });
     }
 
-    fn result_part(&self, id: &str, name: &str, content: String, is_error: bool) -> ContentPart {
-        if self.opts.text_protocol {
-            let value = serde_json::from_str::<Value>(&content).unwrap_or(json!(content));
-            ContentPart::Text {
-                text: text_protocol::format_result(name, &value),
-            }
-        } else {
-            ContentPart::ToolResult {
-                tool_call_id: id.to_string(),
-                content,
-                is_error,
-            }
+    fn result_part(&self, id: &str, content: String, is_error: bool) -> ContentPart {
+        ContentPart::ToolResult {
+            tool_call_id: id.to_string(),
+            content,
+            is_error,
         }
     }
 
@@ -162,42 +151,28 @@ impl Builder<'_> {
             self.flush_results();
         }
         let model_name = self.tool_name(name);
-        if self.opts.text_protocol {
-            let block = format!(
-                "```tool_call\n{}\n```",
-                json!({"name": model_name, "arguments": arguments})
-            );
-            if let Some(ContentPart::Text { text: prev }) = self.assistant.last_mut() {
-                prev.push_str("\n\n");
-                prev.push_str(&block);
-            } else {
-                self.assistant.push(ContentPart::Text { text: block });
-            }
-        } else {
-            self.assistant.push(ContentPart::ToolCall {
-                id: id.to_string(),
-                name: model_name.clone(),
-                arguments: arguments.clone(),
-            });
-        }
+        self.assistant.push(ContentPart::ToolCall {
+            id: id.to_string(),
+            name: model_name.clone(),
+            arguments: arguments.clone(),
+        });
         self.pending_calls.push((id.to_string(), model_name));
     }
 
     fn tool_result(&mut self, id: &str, ok: bool, result: &Value) {
         self.flush_assistant();
-        let Some((_, name)) = self.open.iter().find(|(oid, _)| oid == id) else {
+        if !self.open.iter().any(|(oid, _)| oid == id) {
             return; // a result without its call (the call was lost): drop it
-        };
+        }
         if self.results.iter().any(|(rid, _)| rid == id) {
             return;
         }
-        let name = name.clone();
         let capped = self.cap.cap(
             &format!("{}/{id}", self.opts.artifact_prefix),
             result.clone(),
         );
         let content = serde_json::to_string(&capped.value).unwrap_or_default();
-        let part = self.result_part(id, &name, content, !ok);
+        let part = self.result_part(id, content, !ok);
         self.results.push((id.to_string(), part));
     }
 
@@ -302,6 +277,7 @@ pub fn ensure_ready_for_user(history: &mut Vec<Message>) {
 mod tests {
     use super::*;
     use crate::compact::{SUMMARY_ACK, SUMMARY_PREFIX};
+    use serde_json::json;
 
     fn call(id: &str, name: &str) -> Event {
         Event::tool_call(id, name, json!({"q": id}))
@@ -323,7 +299,7 @@ mod tests {
             Event::usage(10, 5, "p/m"),
             Event::assistant("Looking at the deck."),
             call("t1", "deck.outline"),
-            call("t2", "mcp.wolfram.query"),
+            call("t2", "refs.search"),
             // Results arrive in a different order, with policy events in between.
             Event::tool_result("t2", false, json!({"error": "denied"}), false),
             Event::proposal("p", "slide-create", "new slide", None, None),
@@ -352,7 +328,7 @@ mod tests {
                 },
                 ContentPart::ToolCall {
                     id: "t2".into(),
-                    name: "mcp__wolfram__query".into(),
+                    name: "refs_search".into(),
                     arguments: json!({"q": "t2"})
                 },
             ]
@@ -523,37 +499,6 @@ mod tests {
         };
         let v: Value = serde_json::from_str(content).unwrap();
         assert!(v["truncated"] == true && v.get("artifact").is_none());
-    }
-
-    #[test]
-    fn text_protocol_replay_uses_fenced_blocks() {
-        let events = vec![
-            Event::user("x"),
-            Event::assistant("Checking."),
-            call("t1", "deck.outline"),
-            result("t1"),
-            Event::assistant("Done."),
-        ];
-        let opts = ReplayOptions {
-            text_protocol: true,
-            ..Default::default()
-        };
-        let m = to_messages(&events, &opts);
-        assert_eq!(roles(&m), "UAUA");
-        let text = m[1].text();
-        let (clean, calls) = text_protocol::parse_tool_calls(&text);
-        assert_eq!(clean, "Checking.");
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "deck_outline");
-        assert_eq!(calls[0].arguments, json!({"q": "t1"}));
-        assert_eq!(
-            m[2].text(),
-            text_protocol::format_result("deck_outline", &json!({"ok": "t1"}))
-        );
-        assert!(m.iter().all(|m| m
-            .content
-            .iter()
-            .all(|p| matches!(p, ContentPart::Text { .. }))));
     }
 
     #[test]

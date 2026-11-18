@@ -669,7 +669,9 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         },
     )
     .unwrap();
-    let caps = capabilities::probe(client.as_ref(), None, Some(32_000)).await;
+    let caps = capabilities::probe(client.as_ref(), None, Some(32_000))
+        .await
+        .unwrap();
     assert!(caps.caching && caps.documents && !caps.vision);
     assert!(caps.unsupported_fields.is_empty());
     assert!(caps.degraded);
@@ -683,7 +685,7 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         .body_text()
         .contains("cache_control"));
 
-    // A chat-completions model that answers in prose: text protocol, no documents/caching.
+    // A chat-completions model that answers in prose: no native tools, no documents/caching.
     let server = TestServer::start(|_, _| Reply::sse(OPENAI_TEXT)).await;
     let mut p = provider(ProviderKind::OpenAiCompatible, server.url());
     p.auth = Some(AuthKind::None);
@@ -697,8 +699,10 @@ async fn full_probe_records_capabilities_and_degraded_tier() {
         },
     )
     .unwrap();
-    let caps = capabilities::probe(client.as_ref(), None, None).await;
-    assert_eq!(caps.tools, ToolSupport::TextProtocol);
+    let caps = capabilities::probe(client.as_ref(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(caps.tools, ToolSupport::None);
     assert!(!caps.vision && !caps.documents && !caps.caching);
     assert_eq!(
         caps.degraded_reasons,
@@ -718,10 +722,10 @@ async fn audit_records_carry_metadata_and_never_content_keys_or_headers() {
     const HEADER_VALUE: &str = "header-value-55d0";
     let server = TestServer::start(move |r, seq| match seq {
         0 => Reply::sse(ANTHROPIC_TEXT),
-        // An error body that echoes the prompt back.
+        // An error body that echoes the prompt back (a status that is not retried).
         1 => Reply::json(
-            429,
-            json!({"error":{"type":"rate_limit_error","message":format!("too many requests for: {}", r.body_text())}}),
+            403,
+            json!({"error":{"type":"permission_error","message":format!("too many requests for: {}", r.body_text())}}),
         ),
         2 => Reply::sse(format!(
             "event: error\ndata: {}\n\n",
@@ -775,7 +779,7 @@ async fn audit_records_carry_metadata_and_never_content_keys_or_headers() {
     assert!(chrono::DateTime::parse_from_rfc3339(&r.ts).is_ok());
     assert_eq!(
         (records[1].status, records[1].error.as_deref()),
-        (AuditStatus::Error, Some("http_429"))
+        (AuditStatus::Error, Some("http_403"))
     );
     assert_eq!(
         (records[2].status, records[2].error.as_deref()),
@@ -865,7 +869,7 @@ async fn an_endpoint_that_is_not_allowed_at_the_gate_is_never_contacted() {
     assert_eq!(c.stop, Some(StopReason::Error));
     let message = c.stop_message.unwrap();
     assert!(
-        message.contains("was not sent") && message.contains("not allowed"),
+        message.contains("was not sent") && message.contains("not a configured model endpoint"),
         "{message}"
     );
     assert_eq!(audit.records()[0].error.as_deref(), Some("egress_denied"));

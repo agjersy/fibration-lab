@@ -5,15 +5,14 @@ use analyst_core::config::{self, ModelSpec};
 use analyst_core::kernel::{
     resolve_tooling_python_in, KernelArgs, KernelClient, KernelTransport, LocalStdio, SshStdio,
 };
-use analyst_core::policy::Policy;
-use analyst_core::providers::{self, capabilities, ModelClient};
+use analyst_core::model_client;
 use analyst_core::session::Session;
 use analyst_core::target::{self, Target};
+use analyst_core::tools::gate::Policy;
 use analyst_core::tools::ToolContext;
 use analyst_protocol::config::{EditPolicy, GlobalConfig, ProjectConfig, RunPolicy, TargetKind};
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::*;
-use analyst_protocol::model::ModelCapabilities;
 use analyst_protocol::transcript::Event;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -22,6 +21,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use wb_providers::model::ModelCapabilities;
+use wb_providers::{capabilities, ModelClient};
 
 #[derive(Parser)]
 #[command(
@@ -360,18 +361,17 @@ impl App {
             None => config::default_model(&self.global)?,
         };
         let resolved = config::resolve_model(&self.global, &spec)?;
-        let client = providers::client_for_repo(&self.home, Some(&self.repo), &resolved)?;
+        let client = model_client::client_for_repo(&self.home, Some(&self.repo), &resolved)?;
         let key = spec.to_string();
         let info_window = if reprobe || capabilities::cached(&self.home, &key).is_none() {
-            providers::model_info_window(&self.home, Some(&self.repo), &resolved).await
+            model_client::model_info_window(&self.home, Some(&self.repo), &resolved).await
         } else {
             None
         };
-        let caps = capabilities::ensure(
+        let caps = model_client::ensure_capabilities(
             &self.home,
-            &key,
             client.as_ref(),
-            resolved.overrides.as_ref(),
+            &resolved,
             info_window,
             reprobe,
         )

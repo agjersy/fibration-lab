@@ -9,12 +9,11 @@ use super::error::{ServiceError, ServiceResult};
 use super::runtime::SessionRuntime;
 use crate::agent::{Agent, AgentConfig, ApprovalDecision, ApprovalRequest, Approver};
 use crate::config;
-use crate::policy::Policy;
-use crate::providers::{self, capabilities, ModelClient};
+use crate::model_client;
+use crate::tools::gate::Policy;
 use crate::tools::ToolContext;
 use crate::util::{now_rfc3339, truncate_bytes};
 use analyst_protocol::evals::Mode;
-use analyst_protocol::model::ModelCapabilities;
 use analyst_protocol::transcript::{DecidedBy, Event, ProposalKind};
 use analyst_protocol::ui::*;
 use async_trait::async_trait;
@@ -22,6 +21,8 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::task::JoinHandle;
+use wb_providers::model::ModelCapabilities;
+use wb_providers::ModelClient;
 
 /// Per-conversation state: the long-lived agent (history), the busy flag, the running turn.
 pub struct ConversationRuntime {
@@ -343,19 +344,12 @@ pub async fn model_for(
     let spec = config::ModelSpec::parse(spec).map_err(|e| ServiceError::invalid(e.to_string()))?;
     let resolved =
         config::resolve_model(global, &spec).map_err(|e| ServiceError::not_found(e.to_string()))?;
-    let client = providers::client_for_repo(home, repo, &resolved)
+    let client = model_client::client_for_repo(home, repo, &resolved)
         .map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
     let key = spec.to_string();
-    let caps = capabilities::ensure(
-        home,
-        &key,
-        client.as_ref(),
-        resolved.overrides.as_ref(),
-        None,
-        false,
-    )
-    .await
-    .map_err(|e| ServiceError::internal(format!("{e:#}")))?;
+    let caps = model_client::ensure_capabilities(home, client.as_ref(), &resolved, None, false)
+        .await
+        .map_err(|e| ServiceError::internal(format!("{e:#}")))?;
     Ok((client, caps, key))
 }
 
@@ -617,10 +611,10 @@ async fn run_turn(
             rt.note_agent_run(run_id, &run_conv);
         }
     }));
-    let scope = agent.policy.scope.clone();
+    let scope = agent.policy.scope().map(<[String]>::to_vec);
     let mut policy = Policy::for_project(&rt.repo, &project, meta.mode)
         .map_err(|e| ServiceError::invalid(e.to_string()))?;
-    policy.scope = scope;
+    policy.set_scope(scope);
     if let Some(kind) = &sandbox {
         policy.set_sandbox(kind);
     }

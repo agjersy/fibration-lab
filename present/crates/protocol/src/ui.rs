@@ -117,12 +117,11 @@ pub struct ProjectSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PolicyView {
-    /// `review` | `auto-new-slides` | `auto`.
+    /// `review` | `auto-new-slides` | `auto` | `deny`.
     pub edits: String,
     pub code: String,
     pub skills_scripts: String,
     pub code_mode: String,
-    pub mcp: String,
     pub export: String,
     pub max_steps: u32,
 }
@@ -355,7 +354,7 @@ pub struct SnapshotView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CapabilitiesView {
     pub context_window: u32,
-    /// `native` | `text-protocol` | `none`.
+    /// `native` | `none` (a model without native tool calling cannot be used).
     pub tools: String,
     pub vision: bool,
     pub documents: bool,

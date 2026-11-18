@@ -6,8 +6,7 @@ use crate::checkpoint;
 use analyst_protocol::kernel::RunMeta;
 use analyst_protocol::session::{SessionRecord, SessionRun};
 use analyst_protocol::transcript::Event;
-use anyhow::{anyhow, Context, Result};
-use std::io::{BufRead, Write};
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -98,14 +97,30 @@ impl Session {
         self.conversations_dir().join(format!("{conv_id}.jsonl"))
     }
 
+    /// The shared transcript store over this session's directory
+    /// (`conversations/<id>.jsonl`, the layout this crate always used).
+    pub fn store(&self) -> wb_transcript::TranscriptStore {
+        wb_transcript::TranscriptStore::new(&self.dir)
+    }
+
+    /// A conversation's events as stored, including the ones the typed form does not know
+    /// (`compaction`). Unreadable lines are skipped.
+    pub fn read_events(&self, conv_id: &str) -> Result<Vec<wb_transcript::Event>> {
+        self.store().read(conv_id)
+    }
+
     /// Append one transcript event.
     pub fn append_event(&self, conv_id: &str, event: &Event) -> Result<()> {
-        append_jsonl(&self.transcript_path(conv_id), event)
+        self.store().append(conv_id, &to_shared(event)?)
     }
 
     /// Read a conversation's events.
     pub fn read_transcript(&self, conv_id: &str) -> Result<Vec<Event>> {
-        read_jsonl(&self.transcript_path(conv_id))
+        Ok(self
+            .read_events(conv_id)?
+            .iter()
+            .filter_map(from_shared)
+            .collect())
     }
 
     /// Conversation ids with transcripts on disk.
@@ -209,79 +224,27 @@ pub fn list(home: &Path) -> Result<Vec<Session>> {
     Ok(out)
 }
 
-/// One lock per JSONL file, shared by every writer in the process.
-fn file_lock(path: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
-    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
-    map.entry(path.to_path_buf()).or_default().clone()
-}
+/// Append one JSON line (`wb_transcript::append_jsonl`: one write under a per-file lock, a
+/// torn previous line is closed off first).
+pub use wb_transcript::append_jsonl;
 
-/// Append one JSON line. The line and its newline go out in a single `write` on an
-/// `O_APPEND` handle while holding the file's process-wide lock, so concurrent writers never
-/// interleave. A previous torn line (no trailing newline) is closed off first.
-pub fn append_jsonl<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut line = serde_json::to_string(value)?;
-    if line.contains('\n') {
-        return Err(anyhow!("JSONL line contains a newline"));
-    }
-    line.push('\n');
-    let lock = file_lock(path);
-    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .read(true)
-        .open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    if len > 0 {
-        let mut last = [0u8; 1];
-        if f.seek(SeekFrom::End(-1)).is_ok() && f.read_exact(&mut last).is_ok() && last[0] != b'\n'
-        {
-            line.insert(0, '\n');
-        }
-    }
-    f.write_all(line.as_bytes())
-        .with_context(|| format!("appending to {}", path.display()))?;
-    Ok(())
-}
-
-/// Read a JSONL file. Lines that do not parse (torn writes, records from a newer version) are
-/// skipped with a warning instead of making the whole file unreadable.
+/// Read a JSONL file; lines that do not parse (torn writes, records from a newer version)
+/// are skipped with a warning.
 pub fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
-    let f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(e).with_context(|| format!("opening {}", path.display())),
-    };
-    let mut out = Vec::new();
-    let mut reader = std::io::BufReader::new(f);
-    let mut buf = Vec::new();
-    let mut n = 0usize;
-    loop {
-        buf.clear();
-        let read = reader
-            .read_until(b'\n', &mut buf)
-            .with_context(|| format!("reading {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        n += 1;
-        let line = String::from_utf8_lossy(&buf);
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<T>(line) {
-            Ok(v) => out.push(v),
-            Err(e) => tracing::warn!("{}:{n}: skipping bad JSONL line: {e}", path.display()),
-        }
-    }
-    Ok(out)
+    wb_transcript::read_jsonl_lenient(path)
+}
+
+/// A typed transcript event as the shared store keeps it. The two are the same JSON.
+pub fn to_shared(event: &Event) -> Result<wb_transcript::Event> {
+    Ok(serde_json::from_value(serde_json::to_value(event)?)?)
+}
+
+/// The typed (IPC) form of a stored event; `None` for event types the analysis workbench
+/// does not show (`compaction`, deck events, events from a newer version).
+pub fn from_shared(event: &wb_transcript::Event) -> Option<Event> {
+    serde_json::to_value(event)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
 }
 
 #[cfg(test)]
@@ -370,54 +333,5 @@ mod tests {
         std::fs::write(repo.path().join("b.py"), "b\n").unwrap();
         assert_eq!(s.files_changed_since_last_turn().unwrap(), vec!["b.py"]);
         assert!(s.files_changed_since_last_turn().unwrap().is_empty());
-    }
-
-    /// A7: a torn line must not make the file unreadable, and the next append must not be
-    /// glued onto it.
-    #[test]
-    fn jsonl_reader_skips_torn_lines_and_appends_recover() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("x.jsonl");
-        append_jsonl(&p, &serde_json::json!({"n": 1})).unwrap();
-        {
-            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
-            f.write_all(b"{\"n\": 2, \"torn").unwrap();
-        }
-        append_jsonl(&p, &serde_json::json!({"n": 3})).unwrap();
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&p)
-            .unwrap()
-            .write_all(b"\xff\xfe not utf8\n")
-            .unwrap();
-        append_jsonl(&p, &serde_json::json!({"n": 4})).unwrap();
-        let v: Vec<serde_json::Value> = read_jsonl(&p).unwrap();
-        let ns: Vec<i64> = v.iter().map(|x| x["n"].as_i64().unwrap()).collect();
-        assert_eq!(ns, vec![1, 3, 4]);
-    }
-
-    #[test]
-    fn concurrent_appends_never_interleave() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("runs.jsonl");
-        let payload = "x".repeat(20_000);
-        let mut handles = Vec::new();
-        for t in 0..8 {
-            let p = p.clone();
-            let payload = payload.clone();
-            handles.push(std::thread::spawn(move || {
-                for i in 0..25 {
-                    append_jsonl(&p, &serde_json::json!({"t": t, "i": i, "pad": payload})).unwrap();
-                }
-            }));
-        }
-        for h in handles {
-            h.join().unwrap();
-        }
-        let text = std::fs::read_to_string(&p).unwrap();
-        assert_eq!(text.lines().count(), 200);
-        for l in text.lines() {
-            serde_json::from_str::<serde_json::Value>(l).unwrap();
-        }
     }
 }

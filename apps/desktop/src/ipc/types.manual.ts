@@ -168,8 +168,12 @@ export interface SessionSummary {
   open: boolean;
 }
 
+export type PolicyPreset = "review" | "auto" | "read-only";
+
 export interface PolicyView {
-  edits: "review" | "auto-new-files" | "auto";
+  /** The preset the detailed keys amount to, or null when they match none of the three. */
+  preset: PolicyPreset | null;
+  edits: "review" | "auto-new-files" | "auto" | "deny";
   runs: "auto" | "ask";
   packages: "ask" | "auto" | "deny";
   shell: "ask" | "auto" | "deny";
@@ -298,7 +302,7 @@ export interface ModelEntry {
   id: string;
   kind: "openai-compatible" | "anthropic";
   local: boolean;
-  capabilities: { context_window: number; tools: "native" | "text-protocol" | "none"; vision: boolean } | null;
+  capabilities: { context_window: number; tools: "native" | "none"; vision: boolean } | null;
 }
 
 export interface TargetInfo {

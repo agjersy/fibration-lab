@@ -284,6 +284,22 @@ pub enum EditPolicy {
     Review,
     AutoNewSlides,
     Auto,
+    /// No edit is ever applied (the `read-only` preset).
+    Deny,
+}
+
+/// `policy.preset`: `review` (edits reviewed, builds and skill scripts start on their own),
+/// `auto` (edits inside the declared scope applied, outside it asked), `read-only` (no
+/// edits, no switch to code generation mode; builds and skill scripts still run). It
+/// expands to the detailed keys; a detailed key in the same table overrides it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema, TS,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyPreset {
+    Review,
+    Auto,
+    ReadOnly,
 }
 
 /// `ask | auto | deny`.
@@ -330,16 +346,21 @@ pub enum Permission {
 }
 
 /// `[policy]`. Defaults are the values of the PROTOCOL 4.2 example.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, TS)]
-#[serde(default)]
+///
+/// The table is read by `wb-policy` (`PresentPolicyConfig`), which expands `preset`; the
+/// values here are the effective ones. Keys of older files that no longer exist (`mcp`)
+/// are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema, TS)]
 pub struct PolicyConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preset: Option<PolicyPreset>,
     pub edits: EditPolicy,
     /// Builds and generated slides.
     pub code: Gate,
     pub skills_scripts: Gate,
     /// Switching to code generation mode.
     pub code_mode: Permission,
-    pub mcp: Gate,
     pub export: Gate,
     pub max_steps: u32,
     pub build_timeout_s: u64,
@@ -348,15 +369,50 @@ pub struct PolicyConfig {
 impl Default for PolicyConfig {
     fn default() -> Self {
         PolicyConfig {
+            preset: None,
             edits: EditPolicy::Review,
             code: Gate::Ask,
             skills_scripts: Gate::Ask,
             code_mode: Permission::Allow,
-            mcp: Gate::Ask,
             export: Gate::Auto,
             max_steps: 60,
             build_timeout_s: 60,
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for PolicyConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use wb_policy::config::{AllowDeny, PresentEdits};
+        use wb_policy::{Level, Preset};
+        let gate = |l: Level| match l {
+            Level::Ask => Gate::Ask,
+            Level::Auto => Gate::Auto,
+            Level::Deny => Gate::Deny,
+        };
+        let c = wb_policy::PresentPolicyConfig::deserialize(d)?;
+        Ok(PolicyConfig {
+            preset: c.preset.map(|p| match p {
+                Preset::Review => PolicyPreset::Review,
+                Preset::Auto => PolicyPreset::Auto,
+                Preset::ReadOnly => PolicyPreset::ReadOnly,
+            }),
+            edits: match c.edits {
+                PresentEdits::Review => EditPolicy::Review,
+                PresentEdits::AutoNewSlides => EditPolicy::AutoNewSlides,
+                PresentEdits::Auto => EditPolicy::Auto,
+                PresentEdits::Deny => EditPolicy::Deny,
+            },
+            code: gate(c.code),
+            skills_scripts: gate(c.skills_scripts),
+            code_mode: match c.code_mode {
+                AllowDeny::Allow => Permission::Allow,
+                AllowDeny::Deny => Permission::Deny,
+            },
+            export: gate(c.export),
+            max_steps: c.max_steps,
+            build_timeout_s: c.build_timeout_s,
+        })
     }
 }
 

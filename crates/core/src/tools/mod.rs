@@ -2,6 +2,7 @@
 //! local filesystem, ripgrep, the kernel, `uv`, and git, with 16 KiB result capping.
 
 pub mod dispatch;
+pub mod gate;
 pub mod proposals;
 pub mod registry;
 

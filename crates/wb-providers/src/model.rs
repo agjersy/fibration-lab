@@ -149,14 +149,16 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
     /// Opaque caller-chosen correlation id. Never sent to the endpoint; copied into the
     /// `AuditRecord` for this request so the caller can join it with its own context
     /// (project, conversation, turn, included references).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_tag: Option<String>,
 }
+
+/// Default `max_tokens` when a model has no `max_output_tokens` override. A smaller value
+/// truncates file-creation tool calls (Analyst REVIEW B6).
+pub const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 16384;
 
 /// Baseline context window (tokens) below which a model is flagged degraded.
 pub const BASELINE_CONTEXT_WINDOW: u32 = 131_072;
@@ -189,6 +191,9 @@ pub struct ModelCapabilities {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub degraded_reasons: Vec<String>,
     pub probed_at: String,
+    /// `max_output_tokens` from the `[[models]]` override, when one is set. Never probed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for ModelCapabilities {
@@ -203,6 +208,7 @@ impl Default for ModelCapabilities {
             degraded: false,
             degraded_reasons: Vec::new(),
             probed_at: String::new(),
+            max_output_tokens: None,
         };
         c.recompute_degraded();
         c
@@ -324,7 +330,6 @@ mod tests {
                 parameters: json!({"type":"object"}),
             }],
             max_tokens: Some(10),
-            temperature: None,
             audit_tag: None,
         };
         let s = serde_json::to_string(&req).unwrap();
@@ -349,7 +354,7 @@ mod tests {
         assert!(!c.degraded, "exactly 131072 meets the baseline");
 
         c.context_window = BASELINE_CONTEXT_WINDOW - 1;
-        c.tools = ToolSupport::TextProtocol;
+        c.tools = ToolSupport::None;
         c.vision = false;
         c.recompute_degraded();
         assert!(c.degraded);
