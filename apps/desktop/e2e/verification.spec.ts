@@ -144,4 +144,47 @@ test.describe("verification (mock backend)", () => {
     await exports.getByTestId("export-pdf").click();
     await expect(page.getByTestId("confirm-dialog")).toHaveCount(0);
   });
+
+  test("refresh a stale equation from the analysis through a normal proposal", async ({ page }) => {
+    await createSession(page);
+    const editor = await openModels(page);
+    await page.locator(".dv-tab", { hasText: "Decks" }).click();
+    await page.getByTestId("decks-view").getByTestId("new-deck").click();
+    const dialog = page.getByRole("dialog", { name: "New deck" });
+    await dialog.getByLabel("Title").fill("Q3 Review");
+    await dialog.getByLabel("Template").fill(TEMPLATE);
+    await dialog.getByTestId("create-deck").click();
+    const rail = page.getByTestId("slides-view");
+    await rail.getByTestId("add-slide").click();
+    await expect(rail.getByTestId("rail-item")).toHaveCount(1);
+    const row = await showEquations(page);
+    await row.getByTestId("equation-place").click();
+    await expect(page.getByTestId("slide-canvas").getByTestId("slide-equation")).toBeVisible();
+
+    // The source of the equation changes: the checker reports it stale.
+    await page.locator(".dv-tab", { hasText: "models.py" }).click();
+    await editor.locator(".cm-content").click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type("\n# tweak\n");
+    await page.keyboard.press("ControlOrMeta+s");
+    await palette(page, "Show deck checks");
+    const checks = page.getByTestId("checks-panel");
+    await checks.getByTestId("run-deck-checks").click();
+    await expect(checks.locator('[data-testid="check-row"][data-rule="stale"]')).toHaveCount(1);
+    const canvas = page.getByTestId("slide-canvas");
+    await page.locator(".dv-tab", { hasText: "Canvas" }).click();
+    await expect(canvas.getByTestId("element-refresh")).toBeVisible();
+
+    // Refresh all stale: a before/after card in the chat listing what changes.
+    await checks.getByTestId("refresh-all-stale").click();
+    const card = page.getByTestId("chat").getByTestId("slide-proposal-card");
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card.getByTestId("proposal-message")).toContainText("equation of single_exp");
+    await expect(card.getByTestId("proposal-message")).toContainText("Invalidates");
+    await expect(card.getByTestId("slide-before")).toBeVisible();
+    await card.getByTestId("proposal-accept").click();
+    await expect(card).toContainText("accepted");
+    await checks.getByTestId("run-deck-checks").click();
+    await expect(checks.locator('[data-testid="check-row"][data-rule="stale"]')).toHaveCount(0);
+  });
 });

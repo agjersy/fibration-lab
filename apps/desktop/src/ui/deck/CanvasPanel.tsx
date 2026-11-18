@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { allLayouts, newElementId } from "../../deck/model";
 import type { Deck } from "../../ipc";
-import { setSlideLayout, setSlideLocked, updateSlide } from "../../state/deckActions";
+import { refreshFromAnalysis, setSlideLayout, setSlideLocked, updateSlide } from "../../state/deckActions";
 import { selectedView, staleElements } from "../../state/decks";
 import { useElementSize } from "../common/useElementSize";
 import { useDeckContext } from "./context";
@@ -83,6 +83,7 @@ export function CanvasPanel() {
                 onEquation={(cite) => focusEquation(cite)}
                 stale={staleElements(d, slide.id)}
                 verification={slideClaimStates(verification, deck, slide.id)}
+                {...(codeMode ? {} : { onRefresh: (elementId: string) => void refreshFromAnalysis(session, deck, slide.id, elementId) })}
               />
             )}
           </div>

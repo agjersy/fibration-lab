@@ -178,6 +178,8 @@ pub const COMMANDS: &[&str] = &[
     "verification_list",
     "verification_set",
     "deck_verification_gaps",
+    "slide_refresh",
+    "deck_refresh_stale",
 ];
 
 /// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see
@@ -376,6 +378,8 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
             verification_list,
             verification_set,
             deck_verification_gaps,
+            slide_refresh,
+            deck_refresh_stale,
         ])
         .build(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("building the Tauri app: {e}"))?
@@ -492,6 +496,8 @@ mod tests {
         "verification_list",
         "verification_set",
         "deck_verification_gaps",
+        "slide_refresh",
+        "deck_refresh_stale",
     ];
 
     #[test]

@@ -1,7 +1,7 @@
 // The deck checker's findings by slide and rule (stale run citations among them); a row selects
 // its slide on the canvas. Same look as the analysis Diagnostics panel.
 import { useState } from "react";
-import { runDeckChecks } from "../../state/deckActions";
+import { refreshFromAnalysis, runDeckChecks } from "../../state/deckActions";
 import { useDeckContext } from "./context";
 import { showSlide } from "./navigation";
 import { NoDeck } from "./NoDeck";
@@ -13,6 +13,7 @@ export function ChecksPanel() {
   const { session, deck, d } = ctx;
   const rows = [...d.diagnostics].sort((a, b) => (a.slide_index ?? d.slides[a.slide_id ?? ""]?.index ?? -1) - (b.slide_index ?? d.slides[b.slide_id ?? ""]?.index ?? -1) || a.rule.localeCompare(b.rule));
   const errors = rows.filter((x) => x.severity === "error").length;
+  const stale = rows.filter((x) => x.rule === "stale").length;
   const check = async () => {
     setChecking(true);
     await runDeckChecks(session, deck);
@@ -25,6 +26,11 @@ export function ChecksPanel() {
           {rows.length} finding{rows.length === 1 ? "" : "s"} · {errors} error{errors === 1 ? "" : "s"}
         </span>
         <span className="grow" />
+        {stale > 0 ? (
+          <button type="button" className="small" onClick={() => void refreshFromAnalysis(session, deck)} title="Re-run what changed and propose the updated slides" data-testid="refresh-all-stale">
+            Refresh all stale ({stale})
+          </button>
+        ) : null}
         <button type="button" className="small" onClick={() => void check()} disabled={checking} data-testid="run-deck-checks">
           {checking ? "Checking…" : "Run checks"}
         </button>

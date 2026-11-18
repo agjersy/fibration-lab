@@ -13,6 +13,7 @@ pub mod fs;
 pub mod history;
 pub mod packages;
 pub mod provenance;
+pub mod refresh;
 pub mod runs;
 pub mod runtime;
 pub mod tasks;

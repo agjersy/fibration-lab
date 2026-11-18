@@ -351,4 +351,14 @@ describe("equations on slides", () => {
     expect(el.querySelector('[data-testid="slide-equation"][data-stale="true"]')).not.toBeNull();
     expect(el.querySelector<HTMLButtonElement>('[data-testid="equation-badge"]')!.disabled).toBe(true);
   });
+
+  it("offers Refresh on a stale element and shows the verification of claims", () => {
+    const refreshed: string[] = [];
+    const el = render(
+      <SlidePreview slide={placed(cite())} template={TEMPLATE} width={640} stale={new Set(["e-eq1"])} verification={new Map([["e-eq1", "flagged" as const]])} onRefresh={(id) => refreshed.push(id)} />,
+    );
+    expect(el.querySelector('[data-testid="slide-verify-badge"]')?.getAttribute("data-state")).toBe("flagged");
+    act(() => el.querySelector<HTMLButtonElement>('[data-testid="element-refresh"]')!.click());
+    expect(refreshed).toEqual(["e-eq1"]);
+  });
 });

@@ -175,29 +175,7 @@ pub async fn place_figure(
             "run `{run_id}` has no artifact `{artifact}`; call artifacts_list to see what its runs produced"
         ))
     })?;
-    let ext = entry
-        .path
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if entry.kind != ArtifactKind::Figure
-        || !matches!(ext.as_str(), "png" | "svg" | "jpg" | "jpeg" | "gif")
-    {
-        return Err(ServiceError::invalid(format!(
-            "`{}` is not an image a slide can show (png, svg, jpg, gif); only figures are placed, data stays where the run wrote it",
-            entry.path
-        )));
-    }
-    // The rendered file is in the repo (a remote run's figures are pulled there), or in the
-    // session's copy of what was pulled.
-    let source = crate::util::resolve_in_repo(repo, &entry.path, true)
-        .ok()
-        .filter(|p| p.is_file())
-        .unwrap_or_else(|| session.pulled_artifact_path(run_id, &entry.path));
-    let bytes = std::fs::read(&source).map_err(|e| {
-        ServiceError::io(format!("the figure `{}` cannot be read: {e}", entry.path))
-    })?;
+    let asset = copy_figure_asset(session, repo, svc, &entry)?;
     let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
         .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
     let (slide, hash) = svc
@@ -216,12 +194,6 @@ pub async fn place_figure(
         false,
     )
     .await?;
-    let asset = format!("assets/{}.{ext}", &crate::util::sha256_hex(&bytes)[..16]);
-    let target = svc.ws.project.root.join(&asset);
-    if !target.is_file() {
-        analyst_deck::util::write_atomic(&target, &bytes)
-            .map_err(|e| ServiceError::io(format!("writing {asset}: {e}")))?;
-    }
     let alt = alt
         .map(str::to_string)
         .or(entry.title.clone())
@@ -245,6 +217,47 @@ pub async fn place_figure(
 
 /// A figure of a run placed on a slide.
 pub type PlacedFigure = PlacedElement;
+
+/// Copy a run's figure into the deck's `assets/` by content hash and return the asset path.
+/// Only images are copied; data files stay where the run wrote them.
+pub(crate) fn copy_figure_asset(
+    session: &Session,
+    repo: &Path,
+    svc: &analyst_deck::service::DeckService,
+    entry: &ArtifactEntry,
+) -> super::ServiceResult<String> {
+    use super::ServiceError;
+    let ext = entry
+        .path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if entry.kind != ArtifactKind::Figure
+        || !matches!(ext.as_str(), "png" | "svg" | "jpg" | "jpeg" | "gif")
+    {
+        return Err(ServiceError::invalid(format!(
+            "`{}` is not an image a slide can show (png, svg, jpg, gif); only figures are placed, data stays where the run wrote it",
+            entry.path
+        )));
+    }
+    // The rendered file is in the repo (a remote run's figures are pulled there), or in the
+    // session's copy of what was pulled.
+    let source = crate::util::resolve_in_repo(repo, &entry.path, true)
+        .ok()
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| session.pulled_artifact_path(&entry.run_id, &entry.path));
+    let bytes = std::fs::read(&source).map_err(|e| {
+        ServiceError::io(format!("the figure `{}` cannot be read: {e}", entry.path))
+    })?;
+    let asset = format!("assets/{}.{ext}", &crate::util::sha256_hex(&bytes)[..16]);
+    let target = svc.ws.project.root.join(&asset);
+    if !target.is_file() {
+        analyst_deck::util::write_atomic(&target, &bytes)
+            .map_err(|e| ServiceError::io(format!("writing {asset}: {e}")))?;
+    }
+    Ok(asset)
+}
 
 /// The placeholder an element goes into: `placeholder` when given, else the first free one of
 /// the slide's layout that accepts one of `kinds` (titles skipped unless `titles`).

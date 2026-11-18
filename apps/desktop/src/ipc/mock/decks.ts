@@ -5,7 +5,7 @@
 // panels draw real layouts.
 import { registerDeckFile } from "../../deck/files";
 import type { Commands } from "../commands";
-import type { ArtifactEntry, CheckpointView, Deck, DeckSummary, IpcError, SessionEvent, SessionId, TaskId } from "../types";
+import type { ArtifactEntry, CheckpointView, Deck, DeckSummary, IpcError, ProposalDecision, ProposalView, SessionEvent, SessionId, TaskId } from "../types";
 import { TEMPLATE } from "./deck/fixtures";
 
 type DeckCommand =
@@ -23,6 +23,8 @@ type DeckCommand =
   | "slide_lock"
   | "slide_place_figure"
   | "slide_place_equation"
+  | "slide_refresh"
+  | "deck_refresh_stale"
   | "slide_preview_png"
   | "chart_compute"
   | "deck_code_read"
@@ -65,6 +67,10 @@ export interface DeckMockEnv {
   figureUrl: (session: SessionId, path: string) => string | null;
   /** The equation record of a function (the analysis kernel's eq.extract and eq.check). */
   equation: (session: SessionId, path: string, fn: string) => Deck.EqCite;
+  /** The content hash of a project file now (null when it is gone). */
+  fileHash: (session: SessionId, path: string) => string | null;
+  /** Shows a proposal in the session's active conversation and resolves with the user's decision. */
+  propose: (session: SessionId, proposal: Omit<ProposalView, "conversation">) => Promise<ProposalDecision>;
 }
 
 /** What the mock agent needs to propose slide changes. */
@@ -194,9 +200,55 @@ export function makeDeckMock(env: DeckMockEnv): { handlers: DeckHandlers; agent:
         if (c && c.type === "image" && c.run_cite && stale.has(`${c.run_cite.run_id}\n${c.run_cite.artifact}`)) {
           out.push({ rule: "stale", severity: "warn", message: `the figure comes from run ${c.run_cite.run_id}; the code has changed since`, slide_id: id, element_id: c.id, slide_index: index });
         }
+        if (c && c.type === "equation" && env.fileHash(session, c.eq_cite.path) !== c.eq_cite.source_hash) {
+          out.push({ rule: "stale", severity: "warn", message: `the equation of ${c.eq_cite.qualname} comes from ${c.eq_cite.path}, which has changed since it was placed`, slide_id: id, element_id: c.id, slide_index: index });
+        }
       }
     });
     return out;
+  };
+  /** Stale equations of a slide re-extracted (the mock's analysis has no runs to repeat), proposed as a slide update. */
+  const refreshSlide = (session: SessionId, deck: string, slideId: string, elementId: string | null): ProposalView | null => {
+    const d = deckOf(session, deck);
+    const entry = d.slides.get(slideId);
+    if (!entry) throw ipcError("not_found", `no slide ${slideId}`);
+    const before = structuredClone(entry.slide);
+    const after = structuredClone(entry.slide);
+    const changes: string[] = [];
+    for (const [key, c] of Object.entries(after.placeholders)) {
+      if (!c || c.type !== "equation" || (elementId && c.id !== elementId)) continue;
+      if (env.fileHash(session, c.eq_cite.path) === c.eq_cite.source_hash) continue;
+      const fresh = env.equation(session, c.eq_cite.path, c.eq_cite.qualname);
+      changes.push(fresh.latex === c.eq_cite.latex ? `equation of ${fresh.qualname}: source changed, equation unchanged` : `equation of ${fresh.qualname}: ${c.eq_cite.latex} → ${fresh.latex}`);
+      after.placeholders[key] = { type: "equation", id: c.id, eq_cite: fresh };
+    }
+    if (!changes.length) return null;
+    const proposal: Omit<ProposalView, "conversation"> = {
+      id: `refresh-${slideId}-${env.nextId()}`,
+      kind: "slide-update",
+      path: `decks/${deck}/deck/slides/${slideId}.json`,
+      summary: `Refresh ${slideId} from the analysis (${changes.length} change${changes.length === 1 ? "" : "s"})`,
+      original: null,
+      proposed: null,
+      diff: null,
+      command: null,
+      packages: null,
+      message: `Changed:\n${changes.join("\n")}\nInvalidates: no recorded verification`,
+      in_scope: true,
+      reason: "review",
+      deck,
+      slide_ids: [slideId],
+      before,
+      after,
+    };
+    void env.propose(session, proposal).then((decision) => {
+      if (decision.decision !== "accept") return;
+      const cur = d.slides.get(slideId);
+      if (!cur || cur.hash !== entry.hash) return;
+      d.slides.set(slideId, { slide: after, hash: hashOf(after) });
+      changed(session, d, [slideId]);
+    });
+    return { ...proposal, conversation: "" };
   };
   const insert = (d: MockDeck, id: string, after?: string, section?: string): void => {
     for (const s of d.deck.sections) s.slides = s.slides.filter((x) => x !== id);
@@ -393,6 +445,15 @@ export function makeDeckMock(env: DeckMockEnv): { handlers: DeckHandlers; agent:
       d.slides.set(slide_id, { slide, hash: hashOf(slide) });
       changed(session, d, [slide_id]);
       return view(d, slide_id);
+    },
+
+    slide_refresh: ({ session, deck, slide_id, element_id }) => refreshSlide(session, deck, slide_id, element_id ?? null),
+
+    deck_refresh_stale: ({ session, deck }) => {
+      const d = deckOf(session, deck);
+      return order(d)
+        .map((id) => refreshSlide(session, deck, id, null))
+        .filter((p): p is ProposalView => p !== null);
     },
 
     slide_preview_png: ({ session, deck, slide_id }) => {

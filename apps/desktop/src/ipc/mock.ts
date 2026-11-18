@@ -321,6 +321,14 @@ export class MockBackend implements Backend {
         eq.tier === "declared" ? { status: "agree", trials: 32, tol: 1e-6 } : { status: "unavailable", trials: 0, reason: eq.tier === "derived" ? "derived from the code itself" : "display-only LaTeX" };
       return { latex: eq.latex, tier: eq.tier, check, qualname: eq.qualname, path, source_hash: hashOf(content) };
     },
+    fileHash: (session, path) => {
+      const content = this.sessions.get(session)?.files.get(path);
+      return content === undefined ? null : hashOf(content);
+    },
+    propose: (session, proposal) => {
+      const s = this.requireOpen(session);
+      return this.waitForProposal(s, { ...proposal, conversation: s.info.active_conversation });
+    },
   });
   private readonly verificationMock = makeVerificationMock({
     requireOpen: (session) => {

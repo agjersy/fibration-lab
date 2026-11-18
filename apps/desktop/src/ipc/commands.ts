@@ -25,6 +25,7 @@ import type {
   PolicyView,
   ProposalDecision,
   ProposalId,
+  ProposalView,
   ProviderKeyStatus,
   RunDetail,
   RunId,
@@ -153,6 +154,8 @@ export interface Commands {
   verification_list: { args: S; result: VerificationView[] };
   verification_set: { args: S & { item: VerifyItem; state: VerifyState; note?: string }; result: VerificationView };
   deck_verification_gaps: { args: S & { deck: string }; result: VerificationView[] };
+  slide_refresh: { args: D & { slide_id: string; element_id?: string }; result: ProposalView | null };
+  deck_refresh_stale: { args: D; result: ProposalView[] };
 }
 
 export type CommandName = keyof Commands;

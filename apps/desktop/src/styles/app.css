@@ -1192,3 +1192,6 @@ table.grid tr.clickable:hover td {
   margin: 0;
   padding-left: 1.2em;
 }
+.proposal-message {
+  white-space: pre-line;
+}

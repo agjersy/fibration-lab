@@ -1437,6 +1437,38 @@ pub async fn deck_verification_gaps(
         .map_err(Into::into)
 }
 
+// ---- refresh from analysis (docs/IPC.md section 10) ----
+
+/// Refreshes the stale elements of a slide (or one element): re-runs the cited script when its
+/// code changed, extracts and checks an equation again, and proposes the updated slide (a
+/// normal slide proposal). Null when nothing on it is stale.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_refresh(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    element_id: Option<String>,
+) -> R<Option<ProposalView>> {
+    let rt = rt_of(&state, &session)?;
+    analyst_core::service::refresh::refresh_slide(&rt, &deck, &slide_id, element_id.as_deref())
+        .await
+        .map_err(Into::into)
+}
+
+/// Refreshes every slide of a deck with a stale element; one proposal per slide.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_refresh_stale(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<ProposalView>> {
+    let rt = rt_of(&state, &session)?;
+    analyst_core::service::refresh::refresh_stale(&rt, &deck)
+        .await
+        .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{deck_asset_dirs, figure_asset_dirs};

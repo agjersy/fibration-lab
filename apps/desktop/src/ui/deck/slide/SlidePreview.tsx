@@ -39,6 +39,8 @@ export interface SlidePreviewProps {
   onEquation?: (cite: EqCite, elementId: string) => void;
   /** Verification state of the slide's claims (elements that cite the analysis), by element id. */
   verification?: ReadonlyMap<string, VerificationState>;
+  /** A stale element's Refresh was clicked (re-run what changed and propose the update). */
+  onRefresh?: (elementId: string) => void;
 }
 
 const Katex = lazy(() => import("../../panels/Katex"));
@@ -76,7 +78,7 @@ function applyFit(box: HTMLElement | null, inner: HTMLElement | null, shrink: bo
 
 const NO_STALE: ReadonlySet<string> = new Set();
 
-export function SlidePreview({ slide, template, width, deck, index, resolveAsset, interactive = false, onEditText, onCite, onRunCite, stale = NO_STALE, onEquation, verification }: SlidePreviewProps) {
+export function SlidePreview({ slide, template, width, deck, index, resolveAsset, interactive = false, onEditText, onCite, onRunCite, stale = NO_STALE, onEquation, verification, onRefresh }: SlidePreviewProps) {
   const size = slideSize(template, deck);
   const scale = scaleFor(size, width);
   const height = slideHeight(size, width);
@@ -125,15 +127,9 @@ export function SlidePreview({ slide, template, width, deck, index, resolveAsset
       {slide.elements.map((el) => (
         <FreeElementView key={el.id} element={el} shared={shared} />
       ))}
-      {verification && verification.size > 0 && layout
+      {verification && verification.size > 0
         ? [...verification.entries()].map(([id, state]) => {
-            const key = Object.keys(slide.placeholders).find((k) => {
-              const c = slide.placeholders[k];
-              return c && c.type !== "empty" && c.id === id;
-            });
-            const ph = key ? layout.placeholders.find((p) => p.key === key) : undefined;
-            const free = slide.elements.find((e) => e.id === id);
-            const box = ph ? emuRect(ph, scale) : free ? emuRect(free, scale) : null;
+            const box = elementBox(slide, layout, id, scale);
             if (!box) return null;
             return (
               <span
@@ -150,6 +146,29 @@ export function SlidePreview({ slide, template, width, deck, index, resolveAsset
             );
           })
         : null}
+      {onRefresh
+        ? [...stale].map((id) => {
+            const box = elementBox(slide, layout, id, scale);
+            if (!box) return null;
+            return (
+              <button
+                key={`r-${id}`}
+                type="button"
+                className="sp-refresh"
+                data-testid="element-refresh"
+                data-element={id}
+                title="The source changed: re-run what changed and propose the updated element"
+                style={{ left: box.left, top: box.top, fontSize: Math.max(8, ptToPx(9, scale)) }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRefresh(id);
+                }}
+              >
+                ↻ Refresh
+              </button>
+            );
+          })
+        : null}
       {slide.kind === "generated" ? (
         <div className="sp-generated" style={{ fontSize: Math.max(8, ptToPx(10, scale)) }} title="Drawn by a script (generated slide)">
           generated
@@ -157,6 +176,18 @@ export function SlidePreview({ slide, template, width, deck, index, resolveAsset
       ) : null}
     </div>
   );
+}
+
+/** The pixel box of an element (placeholder content or free element) by id. */
+function elementBox(slide: Slide, layout: ReturnType<typeof findLayout>, id: string, scale: number): Rect | null {
+  const key = Object.keys(slide.placeholders).find((k) => {
+    const c = slide.placeholders[k];
+    return c && c.type !== "empty" && c.id === id;
+  });
+  const ph = key && layout ? layout.placeholders.find((p) => p.key === key) : undefined;
+  if (ph) return emuRect(ph, scale);
+  const free = slide.elements.find((e) => e.id === id);
+  return free ? emuRect(free, scale) : null;
 }
 
 interface Shared {
