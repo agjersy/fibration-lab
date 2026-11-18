@@ -3,4 +3,4 @@
 /**
  * How slide edits are gated.
  */
-export type EditPolicy = "review" | "auto-new-slides" | "auto";
+export type EditPolicy = "review" | "auto-new-slides" | "auto" | "deny";

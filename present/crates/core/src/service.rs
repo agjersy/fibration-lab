@@ -635,6 +635,7 @@ impl ProjectRuntime {
             p = p.with_edits(match e.as_str() {
                 "auto" => wb_policy::EditGate::Auto,
                 "auto-new-slides" | "auto-new" => wb_policy::EditGate::AutoNew,
+                "deny" => wb_policy::EditGate::Deny,
                 _ => wb_policy::EditGate::Review,
             });
         }
@@ -660,7 +661,6 @@ impl ProjectRuntime {
                 code: "ask".into(),
                 skills_scripts: "ask".into(),
                 code_mode: "allow".into(),
-                mcp: "ask".into(),
                 export: "auto".into(),
                 max_steps: 60,
             };
@@ -670,6 +670,7 @@ impl ProjectRuntime {
                 wb_policy::EditGate::Review => "review",
                 wb_policy::EditGate::AutoNew => "auto-new-slides",
                 wb_policy::EditGate::Auto => "auto",
+                wb_policy::EditGate::Deny => "deny",
             }
             .into(),
             code: p.level("code").as_str().into(),
@@ -680,7 +681,6 @@ impl ProjectRuntime {
                 "allow"
             }
             .into(),
-            mcp: p.level("mcp").as_str().into(),
             export: p.level("export").as_str().into(),
             max_steps: p.max_steps,
         }

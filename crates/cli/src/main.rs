@@ -6,9 +6,9 @@ use analyst_core::kernel::{
     resolve_tooling_python_in, KernelArgs, KernelClient, KernelTransport, LocalStdio, SshStdio,
 };
 use analyst_core::model_client;
-use analyst_core::policy::Policy;
 use analyst_core::session::Session;
 use analyst_core::target::{self, Target};
+use analyst_core::tools::gate::Policy;
 use analyst_core::tools::ToolContext;
 use analyst_protocol::config::{EditPolicy, GlobalConfig, ProjectConfig, RunPolicy, TargetKind};
 use analyst_protocol::evals::Mode;

@@ -117,12 +117,11 @@ pub struct ProjectSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PolicyView {
-    /// `review` | `auto-new-slides` | `auto`.
+    /// `review` | `auto-new-slides` | `auto` | `deny`.
     pub edits: String,
     pub code: String,
     pub skills_scripts: String,
     pub code_mode: String,
-    pub mcp: String,
     pub export: String,
     pub max_steps: u32,
 }

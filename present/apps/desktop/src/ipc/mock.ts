@@ -115,7 +115,7 @@ export const MOCK_MODELS: ModelEntry[] = [
   },
 ];
 
-const DEFAULT_POLICY: PolicyView = { edits: "review", code: "ask", skills_scripts: "ask", code_mode: "allow", mcp: "ask", export: "auto", max_steps: 40 };
+const DEFAULT_POLICY: PolicyView = { edits: "review", code: "ask", skills_scripts: "ask", code_mode: "allow", export: "auto", max_steps: 40 };
 
 const APP: AppInfo = {
   version: "0.1.0-mock",

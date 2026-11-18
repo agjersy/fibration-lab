@@ -11,7 +11,7 @@ import { flushAgentText, queueAgentText, useChat } from "./chat";
 import { applyEvent } from "./dispatcher";
 import { figureAssetUrl, figureStem, groupFigures } from "./figures";
 import { ensurePackages, refreshPackages, usePackages } from "./packages";
-import { POLICY_PRESETS, presetOf, presetPatch } from "./policyPresets";
+import { applyPolicyPatch, POLICY_PRESETS, presetOf, presetPatch } from "./policyPresets";
 import { useRuns } from "./runs";
 import { useFiles } from "./files";
 import { useSessions } from "./sessions";
@@ -248,27 +248,28 @@ describe("package list cache", () => {
 });
 
 describe("policy presets", () => {
-  const base: PolicyView = { edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask", protected: [".env"], max_steps: 40 };
+  const base: PolicyView = { preset: "review", edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask", protected: [".env"], max_steps: 40 };
 
-  it("map onto the session_set_policy fields of IPC.md section 8", () => {
-    expect(presetPatch("review")).toEqual({ edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask" });
-    expect(presetPatch("auto")).toEqual({ edits: "auto", runs: "auto", packages: "ask", shell: "ask", git: "ask" });
-    // Edits have no "deny" in session_set_policy; "review" is the strictest value there is.
-    expect(presetPatch("read-only")).toEqual({ edits: "review", runs: "auto", packages: "deny", shell: "deny", git: "deny" });
+  it("are sent as the preset field of session_set_policy (IPC.md section 8)", () => {
+    for (const p of POLICY_PRESETS) expect(presetPatch(p.id)).toEqual({ preset: p.id });
     expect(POLICY_PRESETS.map((p) => p.id)).toEqual(["review", "auto", "read-only"]);
   });
 
-  it("a preset never touches protected globs or the step limit", () => {
-    for (const p of POLICY_PRESETS) expect(Object.keys(presetPatch(p.id)).sort()).toEqual(["edits", "git", "packages", "runs", "shell"]);
+  it("expand to the five keys, with a true read-only, and never touch protected globs or the step limit", () => {
+    expect(applyPolicyPatch(base, presetPatch("review"))).toMatchObject({ edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask" });
+    expect(applyPolicyPatch(base, presetPatch("auto"))).toMatchObject({ edits: "auto", runs: "auto", packages: "ask", shell: "ask", git: "ask" });
+    expect(applyPolicyPatch(base, presetPatch("read-only"))).toMatchObject({ edits: "deny", runs: "auto", packages: "deny", shell: "deny", git: "deny" });
+    for (const p of POLICY_PRESETS) expect(applyPolicyPatch(base, presetPatch(p.id))).toMatchObject({ protected: base.protected, max_steps: base.max_steps });
   });
 
   it("recognises the preset a policy amounts to, and custom combinations as none", () => {
     expect(presetOf(base)).toBe("review");
-    for (const p of POLICY_PRESETS) expect(presetOf({ ...base, ...presetPatch(p.id) })).toBe(p.id);
-    const otherKeys: PolicyView = { ...base, max_steps: 5 };
-    expect(presetOf(otherKeys)).toBe("review");
-    expect(presetOf({ ...base, edits: "auto-new-files" })).toBeNull();
-    expect(presetOf({ ...base, runs: "ask" })).toBeNull();
+    for (const p of POLICY_PRESETS) expect(presetOf(applyPolicyPatch(base, presetPatch(p.id)))).toBe(p.id);
+    expect(presetOf(applyPolicyPatch(base, { max_steps: 5 }))).toBe("review");
+    expect(presetOf(applyPolicyPatch(base, { edits: "auto-new-files" }))).toBeNull();
+    expect(presetOf(applyPolicyPatch(base, { runs: "ask" }))).toBeNull();
+    // A detailed key in the same patch overrides the preset.
+    expect(applyPolicyPatch(base, { preset: "read-only", git: "ask" })).toMatchObject({ preset: null, edits: "deny", git: "ask" });
   });
 
   it("applies through session_set_policy and leaves the other keys alone", async () => {
@@ -280,6 +281,7 @@ describe("policy presets", () => {
     const before = useSessions.getState().infos[S]!.policy;
     const after = await b.invoke("session_set_policy", { session: S, policy: presetPatch("read-only") });
     expect(presetOf(after)).toBe("read-only");
+    expect(after.edits).toBe("deny");
     expect(after).toMatchObject({ protected: before.protected, max_steps: before.max_steps });
     await waitFor(() => presetOf(useSessions.getState().infos[S]!.policy) === "read-only", 4000, "session_changed");
   });

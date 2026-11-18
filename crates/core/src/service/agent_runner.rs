@@ -10,7 +10,7 @@ use super::runtime::SessionRuntime;
 use crate::agent::{Agent, AgentConfig, ApprovalDecision, ApprovalRequest, Approver};
 use crate::config;
 use crate::model_client;
-use crate::policy::Policy;
+use crate::tools::gate::Policy;
 use crate::tools::ToolContext;
 use crate::util::{now_rfc3339, truncate_bytes};
 use analyst_protocol::evals::Mode;
@@ -611,10 +611,10 @@ async fn run_turn(
             rt.note_agent_run(run_id, &run_conv);
         }
     }));
-    let scope = agent.policy.scope.clone();
+    let scope = agent.policy.scope().map(<[String]>::to_vec);
     let mut policy = Policy::for_project(&rt.repo, &project, meta.mode)
         .map_err(|e| ServiceError::invalid(e.to_string()))?;
-    policy.scope = scope;
+    policy.set_scope(scope);
     if let Some(kind) = &sandbox {
         policy.set_sandbox(kind);
     }

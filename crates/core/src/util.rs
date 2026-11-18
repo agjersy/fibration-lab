@@ -124,39 +124,15 @@ pub fn sh_quote_path(p: &str) -> String {
 
 /// Whether a repo-relative path is reserved and never editable by the agent or the renderer:
 /// anything under `.git/` (at any depth) or the top-level `.analyst/`, in any letter case.
-/// Paths that do not normalise are reported as reserved.
+/// Paths that do not normalise are reported as reserved. (The rule lives in `wb-policy`.)
 pub fn is_reserved_path(rel: &str) -> bool {
-    let Ok(norm) = normalize_rel_path(rel) else {
-        return true;
-    };
-    for (i, comp) in norm.split('/').enumerate() {
-        // Trailing dots and spaces are ignored by some filesystems (`.git.`, `.git `), and
-        // HFS+ ignores some zero-width code points inside names.
-        let c: String = comp
-            .trim_end_matches(['.', ' '])
-            .to_lowercase()
-            .chars()
-            .filter(|ch| {
-                !matches!(
-                    *ch,
-                    '\u{200c}' | '\u{200d}' | '\u{200e}' | '\u{200f}' | '\u{feff}'
-                )
-            })
-            .collect();
-        // `git~1` is the Windows 8.3 short name of `.git`.
-        if c == ".git" || c == "git~1" || (i == 0 && c == ".analyst") {
-            return true;
-        }
-    }
-    false
+    wb_policy::paths::is_reserved_path(rel, crate::tools::gate::RESERVED_DIRS)
 }
 
-/// Resolve a repo-relative path to an absolute one that provably stays inside the repository:
-/// the deepest existing ancestor is canonicalised (following symlinks) and must lie under the
-/// canonical root. With `must_exist`, a missing path is an error. The returned path is the
-/// canonical ancestor joined with the not-yet-existing remainder. `"."` and `""` mean the root.
+/// Resolve a repo-relative path to an absolute one that provably stays inside the repository
+/// (symlinks are followed; see `wb_policy::paths::resolve_in_root`).
 pub fn resolve_in_repo(root: &Path, rel: &str, must_exist: bool) -> Result<PathBuf, String> {
-    resolve_in_roots(root, rel, must_exist, &[])
+    wb_policy::paths::resolve_in_root(root, rel, must_exist)
 }
 
 /// Like [`resolve_in_repo`], but a path that resolves (through a symlink) into one of
@@ -167,51 +143,7 @@ pub fn resolve_in_roots(
     must_exist: bool,
     extra_roots: &[PathBuf],
 ) -> Result<PathBuf, String> {
-    let norm = if rel.is_empty() || rel == "." {
-        String::new()
-    } else {
-        normalize_rel_path(rel)?
-    };
-    let canon_root = std::fs::canonicalize(root)
-        .map_err(|e| format!("cannot resolve the repo root {}: {e}", root.display()))?;
-    let full = if norm.is_empty() {
-        canon_root.clone()
-    } else {
-        canon_root.join(&norm)
-    };
-    // Walk up to the deepest ancestor that exists (as anything, including a dangling link).
-    let mut existing: &Path = &full;
-    let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
-    while std::fs::symlink_metadata(existing).is_err() {
-        match (existing.parent(), existing.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name);
-                existing = parent;
-            }
-            _ => return Err(format!("path `{rel}` cannot be resolved")),
-        }
-    }
-    if must_exist && !rest.is_empty() {
-        return Err(format!("`{rel}` does not exist"));
-    }
-    let canon = std::fs::canonicalize(existing)
-        .map_err(|e| format!("`{rel}` cannot be resolved (broken symlink?): {e}"))?;
-    let inside = canon.starts_with(&canon_root)
-        || extra_roots.iter().any(|r| {
-            std::fs::canonicalize(r)
-                .map(|c| canon.starts_with(c))
-                .unwrap_or(false)
-        });
-    if !inside {
-        return Err(format!(
-            "path `{rel}` resolves outside the repository (through a symlink)"
-        ));
-    }
-    let mut out = canon;
-    for name in rest.into_iter().rev() {
-        out.push(name);
-    }
-    Ok(out)
+    wb_policy::paths::resolve_in_roots(root, rel, must_exist, extra_roots)
 }
 
 /// Whether `path` itself is a symbolic link (not followed).
@@ -221,55 +153,7 @@ pub fn is_symlink(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether the filesystem holding `root` is case-insensitive. Probed without writing: an
-/// existing directory entry must be reachable under a case-flipped name.
-pub fn fs_case_insensitive(root: &Path) -> bool {
-    fn flip(name: &str) -> Option<String> {
-        let f: String = name
-            .chars()
-            .map(|c| {
-                if c.is_lowercase() {
-                    c.to_uppercase().next().unwrap_or(c)
-                } else {
-                    c.to_lowercase().next().unwrap_or(c)
-                }
-            })
-            .collect();
-        (f != name).then_some(f)
-    }
-    fn same(a: &Path, b: &Path) -> bool {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
-                (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
-                _ => false,
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            a.exists() && b.exists()
-        }
-    }
-    let Ok(root) = std::fs::canonicalize(root) else {
-        return false;
-    };
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&root) {
-        candidates.extend(rd.flatten().take(32).map(|e| e.path()));
-    }
-    candidates.push(root.clone());
-    for c in candidates {
-        let (Some(parent), Some(name)) = (c.parent(), c.file_name().and_then(|n| n.to_str()))
-        else {
-            continue;
-        };
-        if let Some(f) = flip(name) {
-            return same(&c, &parent.join(f));
-        }
-    }
-    false
-}
+pub use wb_policy::paths::fs_case_insensitive;
 
 // ---- external tools ----
 

@@ -90,6 +90,7 @@ export type { PlaceholderType } from "./PlaceholderType";
 export type { Platform } from "./Platform";
 export type { PolicyConfig } from "./PolicyConfig";
 export type { PolicyPatch } from "./PolicyPatch";
+export type { PolicyPreset } from "./PolicyPreset";
 export type { PolicyView } from "./PolicyView";
 export type { ProcessVariant } from "./ProcessVariant";
 export type { ProjectEvent } from "./ProjectEvent";

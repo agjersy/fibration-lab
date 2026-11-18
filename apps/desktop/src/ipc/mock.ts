@@ -12,6 +12,7 @@
 //   - closing a session drops its subscriptions.
 import type { Backend } from "./backend";
 import type { Commands } from "./commands";
+import { applyPolicyPatch } from "../state/policyPresets";
 import { unifiedDiff } from "./mock/diff";
 import { decayPng, residualsPng, simParamsFromArgs, type MockPng, type SimParams } from "./mock/figure";
 import { DOUBLE_EXP_SNIPPET, RESIDUALS_DOC, RESIDUALS_DOC_PROPOSED, fixtureFiles } from "./mock/fixtures";
@@ -132,6 +133,7 @@ const TARGETS: TargetInfo[] = [
 ];
 
 const DEFAULT_POLICY: PolicyView = {
+  preset: "review",
   edits: "review",
   runs: "auto",
   packages: "ask",
@@ -1136,7 +1138,7 @@ export class MockBackend implements Backend {
 
     session_set_policy: ({ session, policy }) => {
       const s = this.requireOpen(session);
-      s.info.policy = { ...s.info.policy, ...policy };
+      s.info.policy = applyPolicyPatch(s.info.policy, policy);
       this.emit(session, { type: "session_changed", info: this.infoOf(s) });
       return { ...s.info.policy };
     },

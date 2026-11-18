@@ -299,7 +299,7 @@ mod tests {
             Event::usage(10, 5, "p/m"),
             Event::assistant("Looking at the deck."),
             call("t1", "deck.outline"),
-            call("t2", "mcp.wolfram.query"),
+            call("t2", "refs.search"),
             // Results arrive in a different order, with policy events in between.
             Event::tool_result("t2", false, json!({"error": "denied"}), false),
             Event::proposal("p", "slide-create", "new slide", None, None),
@@ -328,7 +328,7 @@ mod tests {
                 },
                 ContentPart::ToolCall {
                     id: "t2".into(),
-                    name: "mcp__wolfram__query".into(),
+                    name: "refs_search".into(),
                     arguments: json!({"q": "t2"})
                 },
             ]

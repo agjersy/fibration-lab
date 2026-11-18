@@ -9,8 +9,8 @@
 
 use crate::agent::{Agent, AgentConfig, AutoApprover};
 use crate::kernel::{KernelArgs, KernelClient, LocalStdio};
-use crate::policy::Policy;
 use crate::session::Session;
+use crate::tools::gate::Policy;
 use crate::tools::ToolContext;
 use analyst_protocol::config::{EditPolicy, ProjectConfig, RunPolicy};
 use analyst_protocol::evals::*;

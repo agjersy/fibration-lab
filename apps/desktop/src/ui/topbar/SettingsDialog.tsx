@@ -9,8 +9,8 @@ import type { ThemePreference } from "../../state/ui";
 import { Modal } from "../common/Dialog";
 import { ProviderKeys } from "./ProviderKeys";
 
-const POLICY_FIELDS: { key: keyof Omit<PolicyView, "protected" | "max_steps">; options: string[]; label: string }[] = [
-  { key: "edits", options: ["review", "auto-new-files", "auto"], label: "Edits" },
+const POLICY_FIELDS: { key: keyof Omit<PolicyView, "preset" | "protected" | "max_steps">; options: string[]; label: string }[] = [
+  { key: "edits", options: ["review", "auto-new-files", "auto", "deny"], label: "Edits" },
   { key: "runs", options: ["auto", "ask"], label: "Runs" },
   { key: "packages", options: ["ask", "auto", "deny"], label: "Packages" },
   { key: "shell", options: ["ask", "auto", "deny"], label: "Shell" },

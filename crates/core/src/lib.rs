@@ -9,7 +9,6 @@ pub mod evals;
 pub mod init;
 pub mod kernel;
 pub mod model_client;
-pub mod policy;
 pub mod service;
 pub mod session;
 pub mod target;

@@ -745,7 +745,7 @@ impl SessionRuntime {
         let mut cfg = self.effective_policy();
         patch.apply(&mut cfg);
         // Validate protected globs early.
-        crate::policy::Policy::new(&self.repo, cfg.clone(), Mode::Build)
+        crate::tools::gate::Policy::new(&self.repo, cfg.clone(), Mode::Build)
             .map_err(|e| ServiceError::invalid(e.to_string()))?;
         self.update_meta(|m| m.policy_override = Some(cfg.clone()))?;
         Ok(PolicyView::from(&cfg))

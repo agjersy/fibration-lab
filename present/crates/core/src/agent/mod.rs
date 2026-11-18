@@ -163,6 +163,9 @@ fn reason_str(reason: Reason) -> &'static str {
         Reason::Locked => "locked",
         Reason::AlwaysAsk => "always_ask",
         Reason::Mode => "mode",
+        Reason::Network => "network",
+        Reason::Unsandboxed => "unsandboxed",
+        Reason::Path => "path",
     }
 }
 
@@ -258,6 +261,7 @@ impl Agent {
                 wb_policy::EditGate::Review => "reviewed by the user one at a time",
                 wb_policy::EditGate::AutoNew => "applied directly for new slides and reviewed for changes to existing ones",
                 wb_policy::EditGate::Auto => "applied directly when inside the declared scope",
+                wb_policy::EditGate::Deny => "denied: this project is read-only",
             },
             level(tools::CLASS_CODE),
             level(tools::CLASS_SKILLS),

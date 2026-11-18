@@ -4,7 +4,8 @@
 //! `apps/desktop/src/ipc/generated/` together with an `index.ts` that re-exports them.
 
 use crate::config::{
-    AskPolicy, EditPolicy, PolicyConfig, ProviderKind, RunPolicy, TargetKind, ToolSupport,
+    AskPolicy, EditPolicy, PolicyConfig, PolicyPreset, ProviderKind, RunPolicy, TargetKind,
+    ToolSupport,
 };
 use crate::evals::Mode;
 use crate::kernel::{Artifact, Diagnostic, FigureSidecar, LibFunction, RunMeta, ScriptInfo};
@@ -167,6 +168,8 @@ pub struct SessionSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PolicyView {
+    /// The preset the detailed keys amount to, or null when they match none of the three.
+    pub preset: Option<PolicyPreset>,
     pub edits: EditPolicy,
     pub runs: RunPolicy,
     pub packages: AskPolicy,
@@ -179,6 +182,7 @@ pub struct PolicyView {
 impl From<&PolicyConfig> for PolicyView {
     fn from(c: &PolicyConfig) -> Self {
         PolicyView {
+            preset: c.effective_preset(),
             edits: c.edits,
             runs: c.runs,
             packages: c.packages,
@@ -193,6 +197,7 @@ impl From<&PolicyConfig> for PolicyView {
 impl From<&PolicyView> for PolicyConfig {
     fn from(v: &PolicyView) -> Self {
         PolicyConfig {
+            preset: v.preset,
             edits: v.edits,
             runs: v.runs,
             packages: v.packages,
@@ -208,6 +213,10 @@ impl From<&PolicyView> for PolicyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default, TS)]
 #[serde(default)]
 pub struct PolicyPatch {
+    /// Set the five preset keys (applied first; detailed keys in the same patch override).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preset: Option<PolicyPreset>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub edits: Option<EditPolicy>,
@@ -234,6 +243,9 @@ pub struct PolicyPatch {
 impl PolicyPatch {
     /// Apply the patch to a policy config.
     pub fn apply(&self, c: &mut PolicyConfig) {
+        if let Some(p) = self.preset {
+            c.apply_preset(p);
+        }
         if let Some(v) = self.edits {
             c.edits = v;
         }

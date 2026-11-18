@@ -20,7 +20,7 @@ pub use approver::{
 };
 
 use crate::checkpoint;
-use crate::policy::{Decision as PolicyDecision, Policy, ScopeChange};
+use crate::tools::gate::{Decision as PolicyDecision, Policy, ScopeChange};
 use crate::tools::proposals::{self, Proposal};
 use crate::tools::registry::{self, ToolClass};
 use crate::tools::ToolContext;
@@ -177,7 +177,7 @@ impl Agent {
 
     pub fn set_mode(&mut self, mode: Mode) {
         self.config.mode = mode;
-        self.policy.mode = mode;
+        self.policy.set_mode(mode);
     }
 
     pub fn history(&self) -> &[Message] {
@@ -310,7 +310,7 @@ impl Agent {
         self.history = history;
         self.pinned = pinned;
         self.turn_counter = turns;
-        self.policy.scope = scope;
+        self.policy.set_scope(scope);
         self.mid_turn = false;
         self.touched.clear();
         self.compact_floor = 0;
@@ -417,7 +417,8 @@ impl Agent {
         self.pinned
             .retain(|p| !p.starts_with("Declared scope:") && !p.starts_with("Plan:"));
         // The policy must know the sandbox before the first tool call (G2).
-        self.policy.unsandboxed_runs = self.ctx.project.unsandboxed_runs;
+        self.policy
+            .set_unsandboxed_runs(self.ctx.project.unsandboxed_runs);
         if let Some(k) = &self.ctx.kernel {
             if let Some(h) = k.hello().await {
                 self.policy.set_sandbox(&h.sandbox);
@@ -686,7 +687,11 @@ impl Agent {
         let change = self.policy.scope_change(&files);
         let mut widened = false;
         if let ScopeChange::Widens(added) = &change {
-            let current = self.policy.scope.clone().unwrap_or_default();
+            let current = self
+                .policy
+                .scope()
+                .map(<[String]>::to_vec)
+                .unwrap_or_default();
             let reason = format!(
                 "the agent asks to widen its declared edit scope by adding {} (scope so far: {})",
                 added.join(", "),
@@ -727,7 +732,11 @@ impl Agent {
         }
         self.policy.declare_scope(files);
         self.declarations += 1;
-        let scope = self.policy.scope.clone().unwrap_or_default();
+        let scope = self
+            .policy
+            .scope()
+            .map(<[String]>::to_vec)
+            .unwrap_or_default();
         self.pinned.retain(|p| !p.starts_with("Declared scope:"));
         self.pinned
             .push(format!("Declared scope: {}", scope.join(", ")));
@@ -1402,7 +1411,7 @@ mod tests {
         approver: Arc<dyn Approver>,
         max_steps: u32,
     ) -> Agent {
-        let mode = policy.mode;
+        let mode = policy.mode();
         Agent::new(
             model,
             ctx,
@@ -1887,7 +1896,7 @@ mod tests {
             inner: ScriptedModelClient::new(scripts),
             summary_calls: Default::default(),
         });
-        let mode = policy.mode;
+        let mode = policy.mode();
         let mut a = Agent::new(
             model.clone(),
             ctx,
@@ -2098,10 +2107,7 @@ mod tests {
         }
         assert!(!repo.path().join("scripts/b.py").exists());
         assert_eq!(s.unwanted_edits, 0);
-        assert_eq!(
-            a.policy.scope.as_deref(),
-            Some(&["scripts/a.py".to_string()][..])
-        );
+        assert_eq!(a.policy.scope(), Some(&["scripts/a.py".to_string()][..]));
         // Declarations and their order are in the transcript.
         let events = a.ctx.session.read_transcript("c1").unwrap();
         let decl: Vec<(bool, Value)> = events
@@ -2381,7 +2387,10 @@ mod tests {
             .pinned_facts()
             .iter()
             .any(|f| f == "Turn 1: changed scripts/a.py"));
-        assert!(b.policy.scope.is_none(), "a finished turn's scope is gone");
+        assert!(
+            b.policy.scope().is_none(),
+            "a finished turn's scope is gone"
+        );
         b.run_turn("what did you do?").await.unwrap();
         let req = &model2.recorded()[0];
         assert_eq!(req.messages.len(), original.len() + 1);
@@ -2394,10 +2403,7 @@ mod tests {
             .unwrap();
         b.rehydrate(&events[..=cut]);
         assert_valid(b.history());
-        assert_eq!(
-            b.policy.scope.as_deref(),
-            Some(&["scripts/a.py".to_string()][..])
-        );
+        assert_eq!(b.policy.scope(), Some(&["scripts/a.py".to_string()][..]));
         assert!(b
             .pinned_facts()
             .iter()

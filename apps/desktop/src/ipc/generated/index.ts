@@ -51,6 +51,7 @@ export type { OutputStream } from "./OutputStream";
 export type { PackageInfo } from "./PackageInfo";
 export type { Platform } from "./Platform";
 export type { PolicyPatch } from "./PolicyPatch";
+export type { PolicyPreset } from "./PolicyPreset";
 export type { PolicyView } from "./PolicyView";
 export type { ProposalDecision } from "./ProposalDecision";
 export type { ProposalKind } from "./ProposalKind";
