@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { createBackendHolder, errorMessage, ipcError, isIpcError } from "./backend";
 import { listCommands, registerCommands, runCommand } from "./commands";
 import { commandItems, fuzzyScore, rankItems } from "./components/Palette";
-import { MockClock, MockEmitter } from "./mock";
 
 describe("backend helpers", () => {
   it("recognises and formats IPC errors", () => {
@@ -13,40 +12,21 @@ describe("backend helpers", () => {
     expect(isIpcError("nope")).toBe(false);
   });
 
-  it("selects the mock outside Tauri and caches the instance", async () => {
+  it("selects the browser backend outside Tauri and caches the instance", async () => {
     let loads = 0;
     const holder = createBackendHolder({
       globalKey: "__WB_TEST_BACKEND__",
       loadTauri: async () => ({ kind: "tauri" }),
-      loadMock: async () => {
+      loadBrowser: async () => {
         loads++;
-        return { kind: "mock" };
+        return { kind: "browser" };
       },
     });
     expect(() => holder.backend()).toThrow();
-    expect((await holder.getBackend()).kind).toBe("mock");
-    expect((await holder.getBackend()).kind).toBe("mock");
+    expect((await holder.getBackend()).kind).toBe("browser");
+    expect((await holder.getBackend()).kind).toBe("browser");
     expect(loads).toBe(1);
-    expect(holder.backend().kind).toBe("mock");
-  });
-});
-
-describe("mock helpers", () => {
-  it("fans events out per scope and unsubscribes", () => {
-    const em = new MockEmitter<number>();
-    const got: number[] = [];
-    const un = em.subscribe("a", (n) => got.push(n));
-    em.emit("a", 1);
-    em.emit("b", 2);
-    un();
-    em.emit("a", 3);
-    expect(got).toEqual([1]);
-  });
-
-  it("resolves immediately with zero latency", async () => {
-    const clock = new MockClock({ latency: [0, 0], timeScale: 0 });
-    await clock.delay();
-    await clock.wait(1000);
+    expect(holder.backend().kind).toBe("browser");
   });
 });
 

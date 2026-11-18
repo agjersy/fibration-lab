@@ -1,6 +1,5 @@
 // Helpers shared by the vitest suites. Not part of the app bundle.
 import type { Backend, Commands, SessionEvent, SessionId } from "../ipc";
-import { MockBackend } from "../ipc/mock";
 import { flushAgentText, useChat } from "../state/chat";
 import { useDiagnostics } from "../state/diagnostics";
 import { unsubscribeAll } from "../state/dispatcher";
@@ -82,11 +81,6 @@ export function resetStores(): void {
   useTasks.setState({ tasks: {} });
   useTerminals.setState({ terminals: {}, active: {}, counter: {} });
   useUi.setState({ toasts: [], unsavedPrompt: null, palette: null });
-}
-
-/** The strict mock at test speed: no latency, the kernel ready `kernelMs` after open. */
-export function strictMock(kernelMs = 60, seedSession = true): MockBackend {
-  return new MockBackend({ latency: [0, 0], timeScale: kernelMs / 300, seedSession });
 }
 
 type Invoke = <K extends keyof Commands>(cmd: K, args: Commands[K]["args"]) => Promise<Commands[K]["result"]>;

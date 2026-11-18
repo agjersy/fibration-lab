@@ -6,7 +6,8 @@ import { setBackend } from "../../ipc";
 import { bootstrap, createSession, loadBuffer, runCurrentScript, saveBuffer } from "../../state/actions";
 import { bufferText, registerTextSource, useFiles } from "../../state/files";
 import { useSessions } from "../../state/sessions";
-import { probe, resetStores, strictMock, waitFor } from "../../test/util";
+import { FakeBackend } from "../../test/fake";
+import { resetStores, waitFor } from "../../test/util";
 import { createEditorState, docText } from "./editorState";
 import { EditorSync } from "./editorSync";
 
@@ -107,10 +108,12 @@ describe("the store reads the editor's text only when asked", () => {
   beforeEach(() => resetStores());
 
   it("typing updates only the dirty flag; save and run-current-script take one snapshot each", async () => {
-    const b = probe(strictMock(10, false));
+    const b = new FakeBackend();
     setBackend(b);
     await bootstrap();
     const id = await createSession({ repo_abs: "/home/user/projects/x" });
+    await waitFor(() => b.calls.includes("subscribe") && b.calls.includes("session_info"));
+    b.kernelReady(id);
     await waitFor(() => useSessions.getState().kernel[id]?.state === "ready");
     const path = "scripts/decay_sim.py";
     await loadBuffer(id, path);
@@ -162,7 +165,7 @@ describe("the store reads the editor's text only when asked", () => {
   });
 
   it("a rename carries the editor's unsaved text to the new path", async () => {
-    const b = probe(strictMock(10, false));
+    const b = new FakeBackend();
     setBackend(b);
     await bootstrap();
     const id = await createSession({ repo_abs: "/home/user/projects/x" });

@@ -9,8 +9,8 @@ export type { PolicyPreset };
 
 export type PresetFields = Pick<PolicyView, "edits" | "runs" | "packages" | "shell" | "git">;
 
-// `fields` documents what each preset expands to. The browser mock uses it
-// to imitate the backend; the app itself never sends these values.
+// `fields` documents what each preset expands to in `wb-policy`; the app itself
+// never sends these values.
 export const POLICY_PRESETS: { id: PolicyPreset; label: string; description: string; fields: PresetFields }[] = [
   {
     id: "review",
@@ -32,8 +32,6 @@ export const POLICY_PRESETS: { id: PolicyPreset; label: string; description: str
   },
 ];
 
-const KEYS: (keyof PresetFields)[] = ["edits", "runs", "packages", "shell", "git"];
-
 /** The policy patch that selects a preset (the argument of `session_set_policy`). */
 export function presetPatch(preset: PolicyPreset): { preset: PolicyPreset } {
   if (!POLICY_PRESETS.some((p) => p.id === preset)) throw new Error(`unknown policy preset ${preset}`);
@@ -43,13 +41,4 @@ export function presetPatch(preset: PolicyPreset): { preset: PolicyPreset } {
 /** The preset a policy currently amounts to (as the backend reports it), or null when the detailed keys were changed away from all three. */
 export function presetOf(policy: Pick<PolicyView, "preset">): PolicyPreset | null {
   return policy.preset ?? null;
-}
-
-/** What the backend does with a policy patch, for the browser mock: a preset sets its five keys first, detailed keys override, and `preset` is recomputed. */
-export function applyPolicyPatch(current: PolicyView, patch: Partial<PolicyView>): PolicyView {
-  const { preset, ...detailed } = patch;
-  const expanded = preset ? POLICY_PRESETS.find((p) => p.id === preset)?.fields : undefined;
-  const next: PolicyView = { ...current, ...expanded, ...detailed };
-  next.preset = POLICY_PRESETS.find((p) => KEYS.every((k) => p.fields[k] === next[k]))?.id ?? null;
-  return next;
 }

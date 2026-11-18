@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TEMPLATE, demoDeck, demoSlides } from "../ipc/mock/deck/fixtures";
+import { TEMPLATE, demoDeck, demoSlides } from "../test/deck/fixtures";
 import { findLayout, moveSlide, newElementId, orderedSlideIds, parseCite, previousSlideId, sectionOf, slideCites, slideTitle, switchLayout, withTitle } from "./model";
 
 const slides = demoSlides();

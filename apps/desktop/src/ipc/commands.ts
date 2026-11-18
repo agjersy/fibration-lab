@@ -1,4 +1,6 @@
-// Command table from docs/IPC.md sections 4 and 7. Argument names are exact (snake_case).
+// Command table of docs/IPC.md (sections 4, 7, 9, 10). Argument names are exact (snake_case).
+// `analyst_core::commands` holds the Rust table every transport dispatches to; its tests fail when
+// this list names a different command or argument.
 import type {
   AppInfo,
   ArtifactEntry,

@@ -4,14 +4,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setBackend } from "../ipc";
 import type { FigureView, PolicyView, SessionEvent } from "../ipc";
-import { probe, resetStores, strictMock, waitFor } from "../test/util";
-import type { Probe } from "../test/util";
+import { FakeBackend } from "../test/fake";
+import { resetStores, waitFor } from "../test/util";
 import { bootstrap, openSession } from "./actions";
 import { flushAgentText, queueAgentText, useChat } from "./chat";
 import { applyEvent } from "./dispatcher";
 import { figureAssetUrl, figureStem, groupFigures } from "./figures";
 import { ensurePackages, refreshPackages, usePackages } from "./packages";
-import { applyPolicyPatch, POLICY_PRESETS, presetOf, presetPatch } from "./policyPresets";
+import { POLICY_PRESETS, presetOf, presetPatch } from "./policyPresets";
 import { useRuns } from "./runs";
 import { useFiles } from "./files";
 import { useSessions } from "./sessions";
@@ -92,16 +92,25 @@ describe("chat streaming", () => {
   });
 });
 
+/** A fake backend with session `s1`, opened, its kernel ready. */
+async function readySession(): Promise<FakeBackend> {
+  const b = new FakeBackend();
+  b.seed({ id: S });
+  setBackend(b);
+  await bootstrap();
+  await openSession(S);
+  b.kernelReady(S);
+  await waitFor(() => useSessions.getState().kernel[S]?.state === "ready", 4000, "kernel");
+  return b;
+}
+
 describe("index fetches", () => {
-  let b: Probe;
+  let b: FakeBackend;
   const count = () => b.calls.filter((c) => c === "index_get").length;
 
   beforeEach(async () => {
     resetStores();
-    b = probe(strictMock(20));
-    setBackend(b);
-    await bootstrap();
-    await openSession(S);
+    b = await readySession();
     await waitFor(() => useFiles.getState().index[S], 4000, "first index");
     // Let the load-time and kernel-ready requests settle.
     await new Promise((r) => setTimeout(r, 30));
@@ -121,6 +130,9 @@ describe("index fetches", () => {
   it("a real save (files_changed + index_changed) costs one index_get", async () => {
     const src = await b.invoke("fs_read", { session: S, path: "scripts/decay_sim.py" });
     await b.invoke("fs_write", { session: S, path: "scripts/decay_sim.py", content: `${src.content}\n# edited\n` });
+    // What the core emits after a .py file is written.
+    b.emit(S, { type: "files_changed", paths: ["scripts/decay_sim.py"] });
+    b.emit(S, { type: "index_changed" });
     await waitFor(() => count() > 0 && useFiles.getState().indexStale[S] === false, 4000, "index refreshed");
     await new Promise((r) => setTimeout(r, 30));
     expect(count()).toBe(1);
@@ -196,16 +208,12 @@ describe("figures", () => {
 });
 
 describe("package list cache", () => {
-  let b: Probe;
+  let b: FakeBackend;
   const count = () => b.calls.filter((c) => c === "env_packages").length;
 
   beforeEach(async () => {
     resetStores();
-    b = probe(strictMock(10));
-    setBackend(b);
-    await bootstrap();
-    await openSession(S);
-    await waitFor(() => useSessions.getState().kernel[S]?.state === "ready", 4000, "kernel");
+    b = await readySession();
     b.calls.length = 0;
   });
 
@@ -255,34 +263,17 @@ describe("policy presets", () => {
     expect(POLICY_PRESETS.map((p) => p.id)).toEqual(["review", "auto", "read-only"]);
   });
 
-  it("expand to the five keys, with a true read-only, and never touch protected globs or the step limit", () => {
-    expect(applyPolicyPatch(base, presetPatch("review"))).toMatchObject({ edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask" });
-    expect(applyPolicyPatch(base, presetPatch("auto"))).toMatchObject({ edits: "auto", runs: "auto", packages: "ask", shell: "ask", git: "ask" });
-    expect(applyPolicyPatch(base, presetPatch("read-only"))).toMatchObject({ edits: "deny", runs: "auto", packages: "deny", shell: "deny", git: "deny" });
-    for (const p of POLICY_PRESETS) expect(applyPolicyPatch(base, presetPatch(p.id))).toMatchObject({ protected: base.protected, max_steps: base.max_steps });
+  it("document the five keys each sets, with a true read-only", () => {
+    const fields = Object.fromEntries(POLICY_PRESETS.map((p) => [p.id, p.fields]));
+    expect(fields).toEqual({
+      review: { edits: "review", runs: "auto", packages: "ask", shell: "ask", git: "ask" },
+      auto: { edits: "auto", runs: "auto", packages: "ask", shell: "ask", git: "ask" },
+      "read-only": { edits: "deny", runs: "auto", packages: "deny", shell: "deny", git: "deny" },
+    });
   });
 
-  it("recognises the preset a policy amounts to, and custom combinations as none", () => {
+  it("take the preset a policy amounts to from the backend, null for a custom combination", () => {
     expect(presetOf(base)).toBe("review");
-    for (const p of POLICY_PRESETS) expect(presetOf(applyPolicyPatch(base, presetPatch(p.id)))).toBe(p.id);
-    expect(presetOf(applyPolicyPatch(base, { max_steps: 5 }))).toBe("review");
-    expect(presetOf(applyPolicyPatch(base, { edits: "auto-new-files" }))).toBeNull();
-    expect(presetOf(applyPolicyPatch(base, { runs: "ask" }))).toBeNull();
-    // A detailed key in the same patch overrides the preset.
-    expect(applyPolicyPatch(base, { preset: "read-only", git: "ask" })).toMatchObject({ preset: null, edits: "deny", git: "ask" });
-  });
-
-  it("applies through session_set_policy and leaves the other keys alone", async () => {
-    resetStores();
-    const b = probe(strictMock(10));
-    setBackend(b);
-    await bootstrap();
-    await openSession(S);
-    const before = useSessions.getState().infos[S]!.policy;
-    const after = await b.invoke("session_set_policy", { session: S, policy: presetPatch("read-only") });
-    expect(presetOf(after)).toBe("read-only");
-    expect(after.edits).toBe("deny");
-    expect(after).toMatchObject({ protected: before.protected, max_steps: before.max_steps });
-    await waitFor(() => presetOf(useSessions.getState().infos[S]!.policy) === "read-only", 4000, "session_changed");
+    expect(presetOf({ ...base, preset: null })).toBeNull();
   });
 });

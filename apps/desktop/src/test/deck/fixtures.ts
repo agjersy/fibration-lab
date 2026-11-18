@@ -1,8 +1,8 @@
-// Fixture data of the "Demo review" project (IPC.md section 6). The template description is the real
+// Fixture data of the "Demo review" deck for the renderer's unit tests. The template description is the real
 // output of `present template inspect evals/templates/corp/corp.potx`; slides 1 to 4, 7 and 8 come from
 // the kernel test corpus (python/kernel/tests/corpus.py) with demo text, the two diagram slides are
 // written by hand per PROTOCOL 2.5.
-import type { Deck, Paragraph, RefView, Run, Slide, Table, TemplateDescription, Text } from "../../../deck/types";
+import type { Deck, Paragraph, Run, Slide, Table, TemplateDescription, Text } from "../../deck/types";
 import corpTemplate from "./corp-template.json";
 import { SITE_IMAGE } from "./image";
 
@@ -257,90 +257,3 @@ export function demoDeck(): Deck {
     brief: "Quarterly review for the leadership team: margin, revenue by region, and the pricing plan.",
   };
 }
-
-const LOREM =
-  "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. ";
-
-/** Extracted text of one page of the mock PDF (12 pages). */
-export function pdfPageText(page: number): string {
-  if (page === 11) {
-    // Characters 120 to 188 hold the cited sentence; it says 2.9, the slide says 3.1 (the red number).
-    const head = LOREM.slice(0, 120);
-    const cited = "Gross margin rose 2.9 pts quarter on quarter, to 18% of net revenue.";
-    return `${head}${cited} ${LOREM}`;
-  }
-  if (page === 12) {
-    const head = LOREM.slice(0, 40);
-    const cited = "Two thirds of the improvement came from list-price changes in EMEA, the rest from mix.";
-    return `${head}${cited} ${LOREM}`;
-  }
-  return `Page ${page}. ${LOREM}${LOREM}`;
-}
-
-export const MAIL_TEXT =
-  "From: Omar\nTo: Leadership team\nSubject: Procurement savings\n\nOperating costs are down 4% on procurement savings this quarter; the figure is preliminary. The new distribution site opens in Q1. Site photo attached.\n";
-
-export interface MockRef {
-  view: RefView;
-  /** Heading outline (title, location). */
-  outline: { title: string; loc: string; level: number }[];
-}
-
-export function demoRefs(): MockRef[] {
-  return [
-    {
-      view: { id: "r-q3rep", version: PDF_VERSION, kind: "pdf", title: "Q3 report.pdf", size_bytes: 482_113, pages: 12, status: "ready", error: null, cited_by: [], parent: null },
-      outline: [
-        { title: "1 Summary", loc: "p1", level: 1 },
-        { title: "2 Results", loc: "p4", level: 1 },
-        { title: "2.1 Margin", loc: "p11", level: 2 },
-        { title: "2.2 Regions", loc: "p12", level: 2 },
-        { title: "Table 1: Revenue by region", loc: "p12/t1", level: 3 },
-        { title: "Table 2: Cost by region", loc: "p12/t2", level: 3 },
-      ],
-    },
-    {
-      view: { id: "r-fin", version: XLSX_VERSION, kind: "xlsx", title: "Financials.xlsx", size_bytes: 38_420, pages: null, status: "ready", error: null, cited_by: [], parent: null },
-      outline: [
-        { title: "Q3", loc: "Q3!A1:D5", level: 1 },
-        { title: "Plan", loc: "Plan!A1:D4", level: 1 },
-      ],
-    },
-    {
-      view: { id: "r-mail", version: MAIL_VERSION, kind: "eml", title: "Procurement savings.eml", size_bytes: 96_304, pages: null, status: "ready", error: null, cited_by: [], parent: null },
-      outline: [
-        { title: "Message", loc: "c0-208", level: 1 },
-        { title: "Attachment 1: site-photo.png", loc: "att1/full", level: 2 },
-      ],
-    },
-  ];
-}
-
-export const BUILD_PY = `from present_sdk import Deck
-
-deck = Deck.open()
-
-title = deck.add_slide("Title Slide")
-title.title = "Quarterly review"
-title.subtitle = "Leadership team · Q3"
-
-margin = deck.add_slide("Title and Content")
-margin.title = "Margin recovered to 18% on pricing actions"
-margin.body.add_bullet("Gross margin up 3.1 pts quarter on quarter")
-
-deck.save()
-`;
-
-export const BUILD_PY_PROPOSED = BUILD_PY.replace(
-  'margin.body.add_bullet("Gross margin up 3.1 pts quarter on quarter")',
-  'margin.body.add_bullet("Gross margin up 3.1 pts quarter on quarter")\nmargin.body.add_bullet("Two thirds from list-price changes in EMEA", level=1)',
-);
-
-export const OUTLINE_ROWS = [
-  { slide_id: "s-title", title: "Quarterly review", message: "Open with the audience and the period", layout: "Title Slide", sources: [] as string[] },
-  { slide_id: "s-margin", title: "Margin recovered to 18% on pricing actions", message: "Pricing drove the recovery", layout: "Title and Content", sources: [CITE_PDF_MARGIN] },
-  { slide_id: "s-revenue", title: "Revenue grew in every region", message: "Growth is broad, AMER leads", layout: "Two Content", sources: [CITE_XLSX_Q3] },
-  { slide_id: null, title: "Costs fell 4% on procurement savings", message: "Savings are real but preliminary", layout: "Title and Content", sources: [CITE_MAIL] },
-  { slide_id: "s-process", title: "Pricing changes follow four steps", message: "The process is controlled", layout: "Title and Content", sources: [] as string[] },
-  { slide_id: "s-notes", title: "Next steps", message: "Three decisions for today", layout: "Title and Content", sources: [] as string[] },
-];

@@ -2,8 +2,6 @@
 // import app-specific code. Styles: `@wb/ui/styles/theme.css` (tokens) and `@wb/ui/styles/base.css`.
 export type { Backend, BackendHolder, CommandMap, CommandSpec, IpcError } from "./backend";
 export { createBackendHolder, errorMessage, hasTauri, ipcError, isIpcError } from "./backend";
-export { MockClock, MockEmitter, sleep } from "./mock";
-export type { MockTiming } from "./mock";
 export type { KeyBinding, KeyLike, Keymap, ParsedKey } from "./keymap";
 export { createKeymap, formatKey, isMac, matchesKey, parseKey } from "./keymap";
 export type { CommandDef } from "./commands";

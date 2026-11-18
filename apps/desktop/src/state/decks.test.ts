@@ -1,9 +1,12 @@
 // The deck store and its event path: deck events of the session channel update one deck of one
 // session; deck paths load through the asset protocol under Tauri only.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deckFileUrl, registerDeckFile } from "../deck/files";
+import { deckFileUrl } from "../deck/files";
+import { setBackend } from "../ipc";
+import { FakeBackend } from "../test/fake";
+import { waitFor } from "../test/util";
 import type { Deck } from "../ipc";
-import { demoDeck, demoSlides } from "../ipc/mock/deck/fixtures";
+import { demoDeck, demoSlides } from "../test/deck/fixtures";
 import { applyDeckEvent } from "./deckEvents";
 import { deckKey, getDeckState, orderedViews, staleElements, useDecks } from "./decks";
 import { useTasks } from "./tasks";
@@ -77,11 +80,25 @@ describe("deck store", () => {
 });
 
 describe("deck file URLs", () => {
-  it("passes data URLs through, uses registered files in browser mode, and the asset protocol under Tauri", () => {
+  it("passes data URLs through, fetches files over the bridge in browser mode, and uses the asset protocol under Tauri", async () => {
     expect(deckFileUrl(S, "/r", D, "data:image/png;base64,AAAA")).toBe("data:image/png;base64,AAAA");
-    expect(deckFileUrl(S, "/r", D, ".present/cache/thumbs/deck/1.png")).toBeNull();
-    registerDeckFile(S, D, "assets/abc.png", "blob:mock");
-    expect(deckFileUrl(S, "/r", D, "assets/abc.png")).toBe("blob:mock");
+    // Browser mode: null at first, then the file read through the bridge (repo-relative).
+    const b = new FakeBackend();
+    const asked: string[] = [];
+    b.handle("fs_read_binary", ({ path }) => {
+      asked.push(path);
+      return { mime: "image/png", base64: "QUJD" };
+    });
+    setBackend(b);
+    expect(deckFileUrl(S, "/r", D, "assets/abc.png")).toBeNull();
+    expect(deckFileUrl(S, "/r", D, "/r/decks/q3-review/.present/cache/1.png")).toBeNull();
+    await waitFor(() => deckFileUrl(S, "/r", D, "assets/abc.png"));
+    expect(deckFileUrl(S, "/r", D, "assets/abc.png")).toBe("data:image/png;base64,QUJD");
+    await waitFor(() => asked.length === 2);
+    expect(asked).toEqual(["decks/q3-review/assets/abc.png", "decks/q3-review/.present/cache/1.png"]);
+    // A path outside the repository is not asked for.
+    expect(deckFileUrl(S, "/r", D, "/etc/passwd")).toBeNull();
+    expect(asked).toHaveLength(2);
 
     const convert = vi.fn((path: string, protocol: string) => `${protocol}://localhost/${encodeURIComponent(path)}`);
     window.__TAURI_INTERNALS__ = { convertFileSrc: convert };
