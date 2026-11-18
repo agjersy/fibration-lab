@@ -3280,3 +3280,75 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
         .is_some_and(|l| l.starts_with("before refreshing q3/"))));
     fx.wb.shutdown().await;
 }
+
+/// A shell with no dialogs, recording which sessions it was asked to widen the asset scope for.
+#[derive(Default)]
+struct RecordingHost {
+    assets: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl crate::commands::Host for RecordingHost {
+    fn session_assets(&self, _wb: &Workbench, session: &str) {
+        self.assets.lock().unwrap().push(session.to_string());
+    }
+    async fn pick_directory(
+        &self,
+        _title: Option<String>,
+    ) -> Result<Option<String>, analyst_protocol::ui::IpcError> {
+        Ok(None)
+    }
+    async fn pick_files(
+        &self,
+        _title: Option<String>,
+        _filters: Vec<crate::commands::DialogFilter>,
+        _multiple: bool,
+    ) -> Result<Option<Vec<String>>, analyst_protocol::ui::IpcError> {
+        Ok(None)
+    }
+    fn reveal(&self, _path: &std::path::Path) -> Result<(), analyst_protocol::ui::IpcError> {
+        Ok(())
+    }
+    fn open(&self, _path: &std::path::Path) -> Result<(), analyst_protocol::ui::IpcError> {
+        Ok(())
+    }
+}
+
+/// `deck_open` records the session's active deck in its state; it survives closing and reopening
+/// the session, which reports it in `SessionInfo.active_deck` for the renderer to reopen.
+#[tokio::test]
+async fn the_open_deck_is_remembered_across_a_session_reopen() {
+    let fx = fixture_with(deck_options).await;
+    if !deck_runtime_available(&fx.rt.home) {
+        return;
+    }
+    assert_eq!(fx.rt.info().await.active_deck, None);
+    fx.rt
+        .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
+        .unwrap();
+    let host = RecordingHost::default();
+    crate::commands::dispatch(
+        &fx.wb,
+        &host,
+        "deck_open",
+        json!({"session": fx.session, "deck": "q3"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fx.rt.info().await.active_deck.as_deref(), Some("q3"));
+    fx.wb.close_session(&fx.session).await.unwrap();
+    let reopened = fx.wb.open_session(&fx.session).await.unwrap();
+    assert_eq!(reopened.active_deck.as_deref(), Some("q3"));
+    // Opening a deck that does not exist changes nothing.
+    assert!(crate::commands::dispatch(
+        &fx.wb,
+        &host,
+        "deck_open",
+        json!({"session": fx.session, "deck": "nope"}),
+    )
+    .await
+    .is_err());
+    let rt = fx.wb.session(&fx.session).unwrap();
+    assert_eq!(rt.info().await.active_deck.as_deref(), Some("q3"));
+    fx.wb.shutdown().await;
+}

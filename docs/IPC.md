@@ -49,6 +49,7 @@ interface SessionInfo extends SessionSummary {
   policy: PolicyView; kernel: KernelState; sandbox: string | null; python_abs: string | null;
   kernel_network_isolation: string | null;   // "bwrap" | "sandbox-exec" | "none"; null before the first kernel start
   conversations: ConversationSummary[]; active_conversation: ConversationId;
+  active_deck: string | null;   // the deck last opened with deck_open; reopened with the session
   target_kind: "local" | "ssh"; target_host: string | null;
 }
 
@@ -263,7 +264,7 @@ The deck workbench's shell is gone; its commands live in this shell as thin glue
 |---|---|---|---|
 | `decks_list` | `{ session }` | `DeckSummary[]` | reads `decks/*/deck/deck.json`; starts nothing |
 | `deck_create` | `{ session, title, template_abs, slug?, code? }` | `DeckSummary` | copies the template into `decks/<slug>/` (slug from the title when omitted); `conflict` when it exists |
-| `deck_open` | `{ session, deck }` | `Deck.DeckInfo` | starts the deck's kernel; deck, template description, engines, sandbox |
+| `deck_open` | `{ session, deck }` | `Deck.DeckInfo` | starts the deck's kernel; deck, template description, engines, sandbox. Records the deck as the session's active deck (`SessionInfo.active_deck`, kept in the session's `meta.json`); when a restored workbench mounts, the renderer reopens it, or shows the Decks list if it no longer exists |
 | `template_thumbnails` | `{ session, deck }` | `Deck.LayoutThumbnail[]` | |
 | `template_replace` | `{ session, deck, template_abs }` | `TaskId` | checkpointed first |
 | `deck_get` | `{ session, deck }` | `Deck.DeckView` | |

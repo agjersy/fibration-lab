@@ -41,6 +41,7 @@ function info(): SessionInfo {
     python_abs: null,
     conversations: [{ id: C, title: "c", model: null, mode: "build", created_at: "", turns: 0, busy: false }],
     active_conversation: C,
+    active_deck: null,
     target_kind: "local",
     target_host: null,
     pending_proposals: [],

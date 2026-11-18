@@ -302,6 +302,10 @@ pub struct SessionInfo {
     pub python_abs: Option<String>,
     pub conversations: Vec<ConversationSummary>,
     pub active_conversation: ConversationId,
+    /// The deck last opened in this session (`deck_open`); the renderer reopens it with the
+    /// session, or shows the Decks list when it no longer exists.
+    #[serde(default)]
+    pub active_deck: Option<String>,
     pub target_kind: TargetKind,
     pub target_host: Option<String>,
     /// Proposals still awaiting a decision, so a reloaded renderer can show them again.

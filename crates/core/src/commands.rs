@@ -290,7 +290,12 @@ table! {
         host.session_assets(wb, &session);
         summary
     }
-    deck_open(session: String, deck: String) { deck_of(wb, &session, &deck).await?.info().await.map_err(de)? }
+    deck_open(session: String, deck: String) {
+        let rt = rt_of(wb, &session)?;
+        let info = rt.deck(&deck).await.map_err(IpcError::from)?.info().await.map_err(de)?;
+        rt.set_active_deck(Some(&deck))?;
+        info
+    }
     template_thumbnails(session: String, deck: String) {
         deck_of(wb, &session, &deck).await?.template_thumbnails().await.map_err(de)?
     }

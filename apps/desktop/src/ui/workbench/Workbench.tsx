@@ -3,6 +3,7 @@ import type { DockviewApi, DockviewReadyEvent, IDockviewPanelHeaderProps, IDockv
 import { useCallback, useEffect, useRef } from "react";
 import { backend } from "../../ipc";
 import type { SessionId } from "../../ipc";
+import { restoreActiveDeck } from "../../state/deckActions";
 import { useFiles } from "../../state/files";
 import { useResolvedTheme } from "../theme";
 import { ChatPanel } from "../chat/ChatPanel";
@@ -146,6 +147,8 @@ export function Workbench({ session }: { session: SessionId }) {
           restoring.current = false;
         }
         if (!restored) buildDefaultLayout(api);
+        // The deck panels of a restored layout show the deck the session had open.
+        void restoreActiveDeck(session);
       })();
       api.onDidLayoutChange(() => {
         if (restoring.current) return;

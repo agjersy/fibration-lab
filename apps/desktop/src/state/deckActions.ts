@@ -8,7 +8,8 @@ import { deckKey, getDeckState, useDecks } from "./decks";
 import type { OutlineRow } from "./decks";
 import { useTasks } from "./tasks";
 import { notifyError, useUi } from "./ui";
-import { showPanel } from "../ui/workbench/controller";
+import { openDeckPanel, showPanel } from "../ui/workbench/controller";
+import { useSessions } from "./sessions";
 
 /** The storyline of a deck, repo-relative (written by the agent's accepted outline proposals). */
 export function outlinePath(deck: string): string {
@@ -61,6 +62,22 @@ export async function openDeck(session: SessionId, deck: string): Promise<boolea
     loadDecks(session),
   ]);
   return true;
+}
+
+/**
+ * Reopens the deck the session had open (`SessionInfo.active_deck`, recorded by `deck_open`) once
+ * its workbench is restored, so a restored layout's deck panels show that deck instead of "No deck
+ * open". When the deck no longer exists, the Decks list is shown instead. Nothing happens when the
+ * session had no deck open or a deck is already active.
+ */
+export async function restoreActiveDeck(session: SessionId): Promise<void> {
+  const deck = useSessions.getState().infos[session]?.active_deck ?? null;
+  if (!deck || useDecks.getState().active[session]) return;
+  await loadDecks(session);
+  const exists = (useDecks.getState().lists[session] ?? []).some((d) => d.slug === deck);
+  if (exists && (await openDeck(session, deck))) return;
+  if (!exists) useUi.getState().toast("info", `The deck ${deck} that was open in this session no longer exists.`);
+  openDeckPanel("decks");
 }
 
 export async function createDeck(session: SessionId, args: { title: string; template_abs: string; code: boolean }): Promise<string> {

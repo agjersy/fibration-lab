@@ -136,6 +136,9 @@ pub struct SessionMeta {
     pub last_opened_at: String,
     #[serde(default)]
     pub active_conversation: Option<String>,
+    /// The deck last opened in this session (`deck_open`), reopened when the session is.
+    #[serde(default)]
+    pub active_deck: Option<String>,
     #[serde(default)]
     pub conversations: Vec<ConversationMeta>,
     /// Session policy override (not written to project.toml).
@@ -462,6 +465,11 @@ impl SessionRuntime {
             .unwrap_or_else(|p| p.into_inner().clone())
     }
 
+    /// Remember the deck the user has open, so the session reopens it.
+    pub fn set_active_deck(&self, deck: Option<&str>) -> ServiceResult<()> {
+        self.update_meta(|m| m.active_deck = deck.map(str::to_string))
+    }
+
     fn update_meta<R>(&self, f: impl FnOnce(&mut SessionMeta) -> R) -> ServiceResult<R> {
         let mut m = self
             .meta
@@ -601,6 +609,7 @@ impl SessionRuntime {
             }),
             conversations,
             active_conversation: meta.active_conversation.clone().unwrap_or_default(),
+            active_deck: meta.active_deck.clone(),
             target_kind: if target.is_remote() {
                 TargetKind::Ssh
             } else {

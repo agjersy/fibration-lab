@@ -127,6 +127,7 @@ export class FakeBackend implements Backend {
       python_abs: null,
       conversations: [conv],
       active_conversation: conv.id,
+      active_deck: null,
       target_kind: "local",
       target_host: null,
       pending_proposals: [],
