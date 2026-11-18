@@ -1,4 +1,5 @@
-// Ported from Personal Analyst `crates/core/src/providers/anthropic.rs` at commit f229e4d.
+// Ported from Personal Analyst `crates/core/src/providers/anthropic.rs`, including the
+// post-review fixes (REVIEW A1, A2, A4, B6).
 // Adapted (Present PROTOCOL 6.1): configurable auth and extra headers, document blocks with
 // citations, prompt-caching markers, the unknown-field downgrade, cache tokens in usage, and
 // the audit hook (the request pump now lives in `wire.rs`).
@@ -11,14 +12,14 @@ use crate::wire::{
     self, Decoder, Endpoint, EndpointConfig, Features, OptionalField, WireFeatures, WireSpec,
     FIELD_CACHE_CONTROL, FIELD_CITATIONS, FIELD_DOCUMENT,
 };
-use crate::ModelClient;
+use crate::{generated_call_id, normalize_messages, unparsed_arguments, HttpPolicy, ModelClient};
 use futures::stream::BoxStream;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
-const DEFAULT_MAX_TOKENS: u32 = 4096;
+const DEFAULT_MAX_TOKENS: u32 = crate::model::DEFAULT_MAX_OUTPUT_TOKENS;
 
 const FIXED_HEADERS: &[(&str, &str)] = &[
     ("anthropic-version", ANTHROPIC_VERSION),
@@ -72,10 +73,12 @@ pub fn build_body(req: &ChatRequest) -> Value {
     build_body_with(req, &BodyOptions::default())
 }
 
-/// Build the JSON request body.
+/// Build the JSON request body. Roles strictly alternate (adjacent same-role messages are
+/// merged), whitespace-only text is dropped, tool results lead their user message, and no
+/// `temperature` is sent (current models reject it).
 pub fn build_body_with(req: &ChatRequest, opts: &BodyOptions) -> Value {
     let mut messages: Vec<Value> = Vec::new();
-    for m in &req.messages {
+    for m in &normalize_messages(&req.messages) {
         let role = match m.role {
             Role::User => "user",
             Role::Assistant => "assistant",
@@ -127,11 +130,11 @@ pub fn build_body_with(req: &ChatRequest, opts: &BodyOptions) -> Value {
                     b
                 }
             })
-            .filter(|b| !(b["type"] == "text" && b["text"].as_str() == Some("")))
             .collect();
-        if blocks.is_empty() {
-            continue;
-        }
+        // The API requires tool_result blocks first in the message that answers tool_use.
+        let (results, others): (Vec<Value>, Vec<Value>) =
+            blocks.into_iter().partition(|b| b["type"] == "tool_result");
+        let blocks: Vec<Value> = results.into_iter().chain(others).collect();
         messages.push(json!({"role": role, "content": blocks}));
     }
     let mut body = json!({
@@ -161,9 +164,6 @@ pub fn build_body_with(req: &ChatRequest, opts: &BodyOptions) -> Value {
             }
         }
         body["tools"] = Value::Array(tools);
-    }
-    if let Some(t) = req.temperature {
-        body["temperature"] = json!(t);
     }
     body
 }
@@ -236,6 +236,8 @@ pub struct StreamState {
     output_tokens: u64,
     stop_reason: Option<String>,
     error_type: Option<String>,
+    /// `message_stop` (or `error`) was received.
+    terminal: bool,
     done: bool,
 }
 
@@ -364,17 +366,7 @@ impl StreamState {
                 let idx = v.get("index").and_then(Value::as_u64).unwrap_or(0);
                 if let Some(b) = self.blocks.remove(&idx) {
                     if b.kind == "tool_use" {
-                        let arguments = if b.json.trim().is_empty() {
-                            json!({})
-                        } else {
-                            serde_json::from_str(&b.json)
-                                .unwrap_or_else(|_| json!({"_raw": b.json}))
-                        };
-                        out.push(ModelEvent::ToolCall {
-                            id: b.id,
-                            name: b.name,
-                            arguments,
-                        });
+                        out.push(Self::tool_call(b, false));
                     }
                 }
             }
@@ -391,8 +383,12 @@ impl StreamState {
                     }
                 }
             }
-            "message_stop" => out.extend(self.finish()),
+            "message_stop" => {
+                self.terminal = true;
+                out.extend(self.finish());
+            }
             "error" => {
+                self.terminal = true;
                 self.done = true;
                 self.error_type = v
                     .pointer("/error/type")
@@ -413,6 +409,42 @@ impl StreamState {
         out
     }
 
+    fn tool_call(b: Block, cut_off: bool) -> ModelEvent {
+        let arguments = if b.json.trim().is_empty() && !cut_off {
+            json!({})
+        } else {
+            serde_json::from_str::<Value>(&b.json)
+                .ok()
+                .filter(|v| v.is_object() && !cut_off)
+                .unwrap_or_else(|| unparsed_arguments(&b.json, cut_off))
+        };
+        ModelEvent::ToolCall {
+            id: if b.id.is_empty() {
+                generated_call_id()
+            } else {
+                b.id
+            },
+            name: b.name,
+            arguments,
+        }
+    }
+
+    /// The body ended. Without `message_stop` the response is incomplete: report an error
+    /// instead of pretending the turn ended normally (B6).
+    pub fn finish_eof(&mut self) -> Vec<ModelEvent> {
+        if self.done || self.terminal {
+            return self.finish();
+        }
+        self.done = true;
+        vec![ModelEvent::Stop {
+            reason: StopReason::Error,
+            message: Some(
+                "the model stream ended before the response was complete (connection dropped?)"
+                    .into(),
+            ),
+        }]
+    }
+
     /// Emit usage and the stop event (idempotent).
     pub fn finish(&mut self) -> Vec<ModelEvent> {
         let mut out = Vec::new();
@@ -420,6 +452,13 @@ impl StreamState {
             return out;
         }
         self.done = true;
+        // A tool_use block still open here was cut off by the output limit.
+        let cut_off = self.stop_reason.as_deref() == Some("max_tokens");
+        for (_, b) in std::mem::take(&mut self.blocks) {
+            if b.kind == "tool_use" {
+                out.push(Self::tool_call(b, cut_off));
+            }
+        }
         out.push(ModelEvent::Usage {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
@@ -445,7 +484,7 @@ pub fn parse_sse_document(doc: &str) -> Vec<ModelEvent> {
     for ev in crate::sse::parse_all(doc) {
         out.extend(st.feed(&ev.event, &ev.data));
     }
-    out.extend(st.finish());
+    out.extend(st.finish_eof());
     out
 }
 
@@ -454,7 +493,7 @@ impl Decoder for StreamState {
         StreamState::feed(self, &ev.event, &ev.data)
     }
     fn finish(&mut self) -> Vec<ModelEvent> {
-        StreamState::finish(self)
+        StreamState::finish_eof(self)
     }
     fn refused(&self) -> bool {
         self.stop_reason.as_deref() == Some("refusal")
@@ -466,6 +505,8 @@ impl Decoder for StreamState {
 
 pub struct AnthropicClient {
     ep: Arc<Endpoint>,
+    /// Timeouts and retries for this client's requests.
+    pub policy: HttpPolicy,
 }
 
 impl AnthropicClient {
@@ -489,6 +530,7 @@ impl AnthropicClient {
     pub fn from_endpoint(cfg: EndpointConfig) -> anyhow::Result<Self> {
         Ok(AnthropicClient {
             ep: Arc::new(Endpoint::new(cfg)?),
+            policy: HttpPolicy::default(),
         })
     }
 
@@ -511,7 +553,7 @@ impl ModelClient for AnthropicClient {
             build: build_for,
             optional: OPTIONAL,
         };
-        wire::run_stream::<StreamState>(self.ep.clone(), spec, req)
+        wire::run_stream::<StreamState>(self.ep.clone(), spec, req, self.policy.clone())
     }
 
     fn model_id(&self) -> &str {
@@ -653,7 +695,6 @@ mod tests {
                 parameters: json!({"type":"object"}),
             }],
             max_tokens: None,
-            temperature: Some(0.0),
             audit_tag: None,
         };
         let body = build_body(&req);
@@ -916,5 +957,130 @@ mod tests {
             ..Default::default()
         });
         assert!(wire::rejected_fields(OPTIONAL, &plain, "unknown field cache_control").is_empty());
+    }
+
+    /// B6: a body that ends without `message_stop` is an error, not a normal end.
+    #[test]
+    fn eof_before_message_stop_is_an_error() {
+        let doc = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n";
+        let events = parse_sse_document(doc);
+        assert!(matches!(
+            events.last(),
+            Some(ModelEvent::Stop { reason: StopReason::Error, message: Some(m) }) if m.contains("ended before")
+        ));
+    }
+
+    /// B6: a tool call cut off by the output limit is flagged, never executed as garbage.
+    #[test]
+    fn tool_call_cut_off_by_max_tokens_is_flagged() {
+        let doc = concat!(
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_9\",\"name\":\"fs_propose_create\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\": \\\"a.py\\\", \\\"content\\\": \\\"x = \"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":16384}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        );
+        let events = parse_sse_document(doc);
+        match &events[0] {
+            ModelEvent::ToolCall {
+                id,
+                name,
+                arguments,
+            } => {
+                assert_eq!(id, "toolu_9");
+                assert_eq!(name, "fs_propose_create");
+                assert_eq!(arguments["_truncated"], true);
+                assert!(arguments["_raw"].as_str().unwrap().contains("a.py"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            events.last(),
+            Some(ModelEvent::Stop {
+                reason: StopReason::MaxTokens,
+                ..
+            })
+        ));
+    }
+
+    /// A1 and A4 on the wire: merged roles, tool results first, no blank text blocks.
+    #[test]
+    fn body_merges_same_role_messages_and_drops_blank_text() {
+        let req = ChatRequest {
+            model: "m".into(),
+            system: None,
+            messages: vec![
+                Message::user_text("a"),
+                Message::assistant_text(" \n"),
+                Message::user_text("b"),
+                Message {
+                    role: Role::Assistant,
+                    content: vec![ContentPart::ToolCall {
+                        id: "t1".into(),
+                        name: "x".into(),
+                        arguments: json!({}),
+                    }],
+                },
+                Message {
+                    role: Role::User,
+                    content: vec![
+                        ContentPart::Text {
+                            text: "note".into(),
+                        },
+                        ContentPart::ToolResult {
+                            tool_call_id: "t1".into(),
+                            content: "ok".into(),
+                            is_error: false,
+                        },
+                    ],
+                },
+            ],
+            tools: vec![],
+            max_tokens: Some(5),
+            audit_tag: None,
+        };
+        let body = build_body(&req);
+        let msgs = body["messages"].as_array().unwrap();
+        let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "user"]);
+        assert_eq!(msgs[0]["content"].as_array().unwrap().len(), 2);
+        assert_eq!(msgs[2]["content"][0]["type"], "tool_result");
+        assert_eq!(msgs[2]["content"][1]["type"], "text");
+        let text = serde_json::to_string(&body).unwrap();
+        assert!(!text.contains("\"text\":\" \\n\""));
+    }
+
+    /// A2: overload and rate-limit responses are retried before the first byte.
+    #[tokio::test]
+    async fn retries_overload_then_streams() {
+        use crate::testserver::{serve, Canned};
+        let ok = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\nevent: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"hi\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        let server = serve(vec![
+            Canned::status(
+                529,
+                "{\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}",
+            ),
+            Canned::status(429, "slow down"),
+            Canned::sse(ok),
+        ])
+        .await;
+        let mut c = AnthropicClient::new(server.url.clone(), "k".into(), "m".into()).unwrap();
+        c.policy.backoff_base = std::time::Duration::from_millis(5);
+        let got = crate::collect(c.stream(ChatRequest {
+            model: "m".into(),
+            messages: vec![Message::user_text("x")],
+            ..Default::default()
+        }))
+        .await;
+        assert_eq!(got.stop, Some(StopReason::End), "{:?}", got.stop_message);
+        assert_eq!(got.text, "hi");
+        assert_eq!(server.bodies().len(), 3);
+        // A 400 is not retried.
+        let server = serve(vec![Canned::status(400, "bad request body")]).await;
+        let mut c = AnthropicClient::new(server.url.clone(), "k".into(), "m".into()).unwrap();
+        c.policy.backoff_base = std::time::Duration::from_millis(5);
+        let got = crate::collect(c.stream(ChatRequest::default())).await;
+        assert_eq!(got.stop, Some(StopReason::Error));
+        assert!(got.stop_message.unwrap().contains("HTTP 400"));
+        assert_eq!(server.bodies().len(), 1);
     }
 }

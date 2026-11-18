@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 analyst-protocol = { path = "../protocol" }
 wb-net = { path = "../wb-net" }
+wb-providers = { path = "../wb-providers" }
 wb-sandbox = { path = "../wb-sandbox" }
 serde.workspace = true
 serde_json.workspace = true

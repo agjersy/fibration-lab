@@ -341,7 +341,6 @@ impl Agent {
             messages: self.history.clone(),
             tools: tools::defs_for(self.config.mode, self.code_mode()),
             max_tokens: self.config.max_tokens,
-            temperature: None,
             audit_tag: Some(format!("{}:{}", self.conv_id, self.turn_counter)),
         }
     }

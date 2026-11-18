@@ -722,10 +722,10 @@ async fn audit_records_carry_metadata_and_never_content_keys_or_headers() {
     const HEADER_VALUE: &str = "header-value-55d0";
     let server = TestServer::start(move |r, seq| match seq {
         0 => Reply::sse(ANTHROPIC_TEXT),
-        // An error body that echoes the prompt back.
+        // An error body that echoes the prompt back (a status that is not retried).
         1 => Reply::json(
-            429,
-            json!({"error":{"type":"rate_limit_error","message":format!("too many requests for: {}", r.body_text())}}),
+            403,
+            json!({"error":{"type":"permission_error","message":format!("too many requests for: {}", r.body_text())}}),
         ),
         2 => Reply::sse(format!(
             "event: error\ndata: {}\n\n",
@@ -779,7 +779,7 @@ async fn audit_records_carry_metadata_and_never_content_keys_or_headers() {
     assert!(chrono::DateTime::parse_from_rfc3339(&r.ts).is_ok());
     assert_eq!(
         (records[1].status, records[1].error.as_deref()),
-        (AuditStatus::Error, Some("http_429"))
+        (AuditStatus::Error, Some("http_403"))
     );
     assert_eq!(
         (records[2].status, records[2].error.as_deref()),
@@ -869,7 +869,7 @@ async fn an_endpoint_that_is_not_allowed_at_the_gate_is_never_contacted() {
     assert_eq!(c.stop, Some(StopReason::Error));
     let message = c.stop_message.unwrap();
     assert!(
-        message.contains("was not sent") && message.contains("not allowed"),
+        message.contains("was not sent") && message.contains("not a configured model endpoint"),
         "{message}"
     );
     assert_eq!(audit.records()[0].error.as_deref(), Some("egress_denied"));

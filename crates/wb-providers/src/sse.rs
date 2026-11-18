@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/providers/sse.rs` at commit f229e4d.
+// Ported from Personal Analyst `crates/core/src/providers/sse.rs`, including the post-review fixes (REVIEW A2).
 //! Incremental Server-Sent Events parser.
 
 /// One SSE event: the `event:` name (empty when absent) and the joined `data:` payload.
@@ -25,14 +25,32 @@ impl SseParser {
     /// Push a chunk of bytes; returns every event completed by it.
     pub fn push(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         self.pending.extend_from_slice(chunk);
-        // Decode as much valid UTF-8 as possible, keeping an incomplete tail.
-        let valid_up_to = match std::str::from_utf8(&self.pending) {
-            Ok(_) => self.pending.len(),
-            Err(e) => e.valid_up_to(),
-        };
-        let text = String::from_utf8_lossy(&self.pending[..valid_up_to]).into_owned();
-        self.pending.drain(..valid_up_to);
-        self.buf.push_str(&text);
+        // Decode as much as possible, keeping only an incomplete sequence at the very end.
+        // An invalid byte becomes U+FFFD instead of stalling everything after it.
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    self.buf.push_str(text);
+                    self.pending.clear();
+                    break;
+                }
+                Err(e) => {
+                    let valid = e.valid_up_to();
+                    self.buf
+                        .push_str(&String::from_utf8_lossy(&self.pending[..valid]));
+                    match e.error_len() {
+                        Some(n) => {
+                            self.buf.push('\u{FFFD}');
+                            self.pending.drain(..valid + n);
+                        }
+                        None => {
+                            self.pending.drain(..valid);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
         let mut out = Vec::new();
         while let Some(idx) = self.buf.find('\n') {
             let line: String = self.buf[..idx].trim_end_matches('\r').to_string();
@@ -46,6 +64,10 @@ impl SseParser {
 
     /// Flush a trailing event that was not terminated by a blank line.
     pub fn finish(&mut self) -> Option<SseEvent> {
+        if !self.pending.is_empty() {
+            let tail = std::mem::take(&mut self.pending);
+            self.buf.push_str(&String::from_utf8_lossy(&tail));
+        }
         if !self.buf.is_empty() {
             let line = std::mem::take(&mut self.buf);
             if let Some(ev) = self.feed_line(line.trim_end_matches('\r')) {
@@ -130,6 +152,21 @@ mod tests {
         evs.extend(p.push(&bytes[7..]));
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].data, "héllo");
+    }
+
+    /// A2: one invalid byte used to park every later byte in `pending` forever.
+    #[test]
+    fn invalid_utf8_does_not_stall_the_stream() {
+        let mut p = SseParser::new();
+        let mut evs = p.push(b"data: a\xffb\n\n");
+        evs.extend(p.push(b"data: next\n\n"));
+        assert_eq!(evs.len(), 2, "{evs:?}");
+        assert_eq!(evs[0].data, "a\u{FFFD}b");
+        assert_eq!(evs[1].data, "next");
+        // A truncated sequence at the very end is flushed lossily by finish.
+        let mut p = SseParser::new();
+        assert!(p.push(b"data: caf\xc3").is_empty());
+        assert_eq!(p.finish().unwrap().data, "caf\u{FFFD}");
     }
 
     #[test]

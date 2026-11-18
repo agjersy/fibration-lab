@@ -86,15 +86,28 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolSupport {
     /// Native tool calling: required.
     Native,
-    /// No native tool calling: the model is rejected. `text-protocol` (a fallback tier that
-    /// no longer exists) is read as this value so old files still load.
-    #[serde(alias = "text-protocol")]
+    /// No native tool calling: the model is rejected.
     None,
+}
+
+impl<'de> Deserialize<'de> for ToolSupport {
+    /// `text-protocol` (a fallback tier that no longer exists) is read as `none` so old
+    /// files still load.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match String::deserialize(d)?.as_str() {
+            "native" => Ok(ToolSupport::Native),
+            "none" | "text-protocol" => Ok(ToolSupport::None),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["native", "none"],
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

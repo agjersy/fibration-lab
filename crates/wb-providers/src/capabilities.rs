@@ -123,7 +123,6 @@ pub async fn probe_vision(client: &dyn ModelClient) -> bool {
         }],
         tools: vec![],
         max_tokens: Some(200),
-        temperature: None,
         audit_tag: Some("probe:vision".into()),
     };
     let c = collect(client.stream(req)).await;
@@ -154,7 +153,6 @@ pub async fn probe_documents(client: &dyn ModelClient) -> bool {
         }],
         tools: vec![],
         max_tokens: Some(200),
-        temperature: None,
         audit_tag: Some("probe:documents".into()),
     };
     let c = collect(client.stream(req)).await;
@@ -181,6 +179,9 @@ pub fn apply_overrides(
         }
         if let Some(v) = o.vision {
             caps.vision = v;
+        }
+        if o.max_output_tokens.is_some() {
+            caps.max_output_tokens = o.max_output_tokens;
         }
         caps.recompute_degraded();
     }
@@ -240,7 +241,6 @@ pub async fn probe(
         ))],
         tools: vec![probe_tool()],
         max_tokens: Some(1024),
-        temperature: None,
         audit_tag: Some("probe:tools".into()),
     };
     let c = collect(client.stream(req)).await;
@@ -282,6 +282,7 @@ pub async fn probe(
         degraded: false,
         degraded_reasons: Vec::new(),
         probed_at: now_rfc3339(),
+        max_output_tokens: overrides.and_then(|o| o.max_output_tokens),
     };
     caps.recompute_degraded();
     client.apply_capabilities(&caps);
@@ -523,7 +524,13 @@ mod tests {
     struct Failing;
     impl ModelClient for Failing {
         fn stream(&self, req: ChatRequest) -> futures::stream::BoxStream<'static, ModelEvent> {
-            assert!(req.temperature.is_none(), "probes send no temperature");
+            assert!(
+                serde_json::to_value(&req)
+                    .unwrap()
+                    .get("temperature")
+                    .is_none(),
+                "probes send no temperature"
+            );
             Box::pin(futures::stream::iter(vec![ModelEvent::Stop {
                 reason: StopReason::Error,
                 message: Some("HTTP 529: overloaded".into()),
@@ -571,6 +578,7 @@ mod tests {
             .unwrap();
         assert_eq!(with.context_window, 200_000);
         assert!(with.vision && !with.degraded);
+        assert_eq!(with.max_output_tokens, Some(8000));
         let stored = cached(dir.path(), "p/m").unwrap();
         assert_eq!(stored.context_window, DEFAULT_CONTEXT_WINDOW);
         assert!(!stored.vision);

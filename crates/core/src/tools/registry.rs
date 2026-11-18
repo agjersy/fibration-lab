@@ -1,9 +1,9 @@
 //! The phase 0 tool set with policy classes and model-facing JSON schemas.
 
-use crate::providers::names::to_model_name;
 use analyst_protocol::evals::Mode;
-use analyst_protocol::model::ToolDef;
 use serde_json::{json, Value};
+use wb_providers::model::ToolDef;
+use wb_providers::names::to_model_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolClass {
@@ -116,7 +116,7 @@ pub fn defs_for_mode(mode: Mode) -> Vec<ToolDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::names::is_valid_model_name;
+    use wb_providers::names::is_valid_model_name;
 
     #[test]
     fn registry_is_well_formed() {

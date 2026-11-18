@@ -20,7 +20,6 @@ pub use tasks::{TaskLogger, TaskRegistry};
 pub use terminal::{CaptureEnv, Terminal, TerminalManager, TerminalSpec};
 
 use crate::config;
-use crate::providers::capabilities;
 use crate::session::Session;
 use crate::target::Target;
 use analyst_protocol::config::{GlobalConfig, ProviderKind, TargetKind};
@@ -29,6 +28,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use wb_providers::capabilities;
 
 /// Options for the whole app.
 #[derive(Debug, Clone)]
@@ -516,7 +516,7 @@ impl Workbench {
         let capabilities = match (caps, overrides) {
             (Some(c), _) => Some(ModelCapabilitiesView {
                 context_window: c.context_window,
-                tools: c.tools,
+                tools: crate::model_client::tool_support(c.tools),
                 vision: c.vision,
             }),
             (None, Some(o)) if o.context_window.is_some() && o.tools.is_some() => {
@@ -583,16 +583,14 @@ impl Workbench {
             config::ModelSpec::parse(model).map_err(|e| ServiceError::invalid(e.to_string()))?;
         let resolved = config::resolve_model(&global, &spec)
             .map_err(|e| ServiceError::not_found(e.to_string()))?;
-        let client = crate::providers::client_for_in(&self.opts.home, &resolved)
+        let client = crate::model_client::client_for_in(&self.opts.home, &resolved)
             .map_err(|e| ServiceError::invalid(format!("{e:#}")))?;
-        let key = spec.to_string();
         let info_window =
-            crate::providers::model_info_window(&self.opts.home, None, &resolved).await;
-        capabilities::ensure(
+            crate::model_client::model_info_window(&self.opts.home, None, &resolved).await;
+        crate::model_client::ensure_capabilities(
             &self.opts.home,
-            &key,
             client.as_ref(),
-            resolved.overrides.as_ref(),
+            &resolved,
             info_window,
             true,
         )

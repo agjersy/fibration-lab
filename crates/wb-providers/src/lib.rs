@@ -35,12 +35,14 @@ pub use keys::{KeyError, KeyRef, KeyStores};
 pub use model::{
     ChatRequest, ContentPart, Message, ModelCapabilities, ModelEvent, Role, StopReason, ToolDef,
 };
+use wb_net::EgressError;
 pub use wire::{CapabilityCacheRef, EndpointConfig, WireFeatures};
 
 use futures::stream::BoxStream;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// A streaming chat client. Every adapter produces exactly the `ModelEvent` sequence of
 /// the wire contract and always terminates the stream with a `Stop` event.
@@ -88,7 +90,7 @@ pub fn client_for(
     let base_url = provider.effective_base_url();
     wb_net::gate()
         .allow_model_endpoint(&base_url)
-        .map_err(|e| anyhow::anyhow!("provider `{}`: invalid base_url: {e}", provider.name))?;
+        .map_err(|e| anyhow::anyhow!("provider `{}`: {}", provider.name, egress_message(&e)))?;
     let mut cfg = EndpointConfig::from_provider(provider, key, model_id);
     cfg.audit = opts.audit.clone();
     if let Some(home) = opts.home {
@@ -105,6 +107,132 @@ pub fn client_for(
         }
         ProviderKind::Anthropic => Arc::new(anthropic::AnthropicClient::from_endpoint(cfg)?),
     })
+}
+
+/// The model's context window as reported by the provider, when it reports one: Anthropic
+/// `GET /v1/models/{id}` (`max_input_tokens`), OpenAI-compatible `GET /models`
+/// (`context_length`, `context_window`, `max_model_len`, ...). `None` on any failure,
+/// including a missing key; the lookup is bounded to 10 seconds.
+pub async fn model_info_window(
+    provider: &ProviderConfig,
+    model_id: &str,
+    keys: &KeyStores,
+) -> Option<u32> {
+    let key = keys.resolve(provider).ok()?;
+    wb_net::gate()
+        .allow_model_endpoint(&provider.effective_base_url())
+        .ok()?;
+    let cfg = EndpointConfig::from_provider(provider, key, model_id);
+    let lookup = async {
+        match provider.kind {
+            ProviderKind::OpenAiCompatible => openai_compat::OpenAiCompatClient::from_endpoint(cfg)
+                .ok()?
+                .list_models()
+                .await
+                .ok(),
+            ProviderKind::Anthropic => anthropic::AnthropicClient::from_endpoint(cfg)
+                .ok()?
+                .model_info()
+                .await
+                .ok(),
+        }
+    };
+    let info = tokio::time::timeout(Duration::from_secs(10), lookup)
+        .await
+        .ok()??;
+    capabilities::context_window_from_info(&info, model_id)
+}
+
+/// History as both wire formats need it: text parts that are empty or whitespace-only are
+/// dropped (the Anthropic API rejects them), messages left without content are dropped, and
+/// adjacent messages of the same role are merged so roles strictly alternate.
+pub fn normalize_messages(messages: &[Message]) -> Vec<Message> {
+    let mut out: Vec<Message> = Vec::new();
+    for m in messages {
+        let content: Vec<ContentPart> = m
+            .content
+            .iter()
+            .filter(|p| !matches!(p, ContentPart::Text { text } if text.trim().is_empty()))
+            .cloned()
+            .collect();
+        if content.is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            Some(last) if last.role == m.role => {
+                // Keep separate texts readable when two messages are joined.
+                if let (Some(ContentPart::Text { text: a }), Some(ContentPart::Text { .. })) =
+                    (last.content.last_mut(), content.first())
+                {
+                    if !a.ends_with('\n') {
+                        a.push('\n');
+                    }
+                }
+                last.content.extend(content);
+            }
+            _ => out.push(Message {
+                role: m.role,
+                content,
+            }),
+        }
+    }
+    out
+}
+
+/// Timeouts and retry policy for provider HTTP calls (Analyst PROTOCOL 9).
+#[derive(Debug, Clone)]
+pub struct HttpPolicy {
+    /// Time allowed until response headers arrive.
+    pub first_byte_timeout: Duration,
+    /// Longest silence tolerated between stream chunks.
+    pub idle_timeout: Duration,
+    /// Total attempts before the first byte (1 = no retry).
+    pub max_attempts: u32,
+    /// First backoff delay; doubles per attempt.
+    pub backoff_base: Duration,
+}
+
+impl Default for HttpPolicy {
+    fn default() -> Self {
+        HttpPolicy {
+            first_byte_timeout: Duration::from_secs(300),
+            idle_timeout: Duration::from_secs(180),
+            max_attempts: 4,
+            backoff_base: Duration::from_secs(1),
+        }
+    }
+}
+
+/// A refusal by the network gate, in words a user can act on.
+pub fn egress_message(e: &EgressError) -> String {
+    match e {
+        EgressError::Denied { destination, .. } => format!(
+            "the request was not sent: {destination} is not a configured model endpoint. The app only contacts the `base_url` of providers listed in config.toml; add or correct the provider there"
+        ),
+        EgressError::BadDestination(d) => format!(
+            "the request was not sent: `{d}` is not a usable http(s) URL; check the provider's `base_url` in config.toml"
+        ),
+        EgressError::Ledger(why) => format!(
+            "the request was not sent: the network ledger (egress.jsonl in the app home) could not be written ({why}). Nothing leaves the machine unrecorded; make the home directory writable"
+        ),
+        EgressError::Client(why) => format!("the HTTP client could not be built: {why}"),
+    }
+}
+
+/// A unique id for a tool call whose provider did not supply one.
+pub(crate) fn generated_call_id() -> String {
+    format!("call_{}", &uuid::Uuid::new_v4().simple().to_string()[..16])
+}
+
+/// Arguments for a tool call whose JSON could not be parsed. `_truncated` is set when the
+/// response stopped at the output token limit, so the agent can tell the model to split the
+/// edit instead of executing garbage.
+pub(crate) fn unparsed_arguments(raw: &str, truncated: bool) -> serde_json::Value {
+    let mut v = serde_json::json!({ "_raw": wire::truncate_bytes(raw, 2000) });
+    if truncated {
+        v["_truncated"] = serde_json::json!(true);
+    }
+    v
 }
 
 /// Turn a receiver of events into a boxed stream (adapters push from a spawned task).
@@ -232,4 +360,167 @@ pub async fn collect(mut stream: BoxStream<'static, ModelEvent>) -> Collected {
         }
     }
     c
+}
+
+#[cfg(test)]
+pub(crate) mod testserver {
+    //! A minimal scripted HTTP server for adapter tests: each connection gets the next
+    //! canned response; request bodies are recorded.
+
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    pub struct Canned {
+        pub status: u16,
+        pub headers: Vec<(&'static str, String)>,
+        pub body: String,
+    }
+
+    impl Canned {
+        pub fn sse(body: &str) -> Canned {
+            Canned {
+                status: 200,
+                headers: vec![("content-type", "text/event-stream".into())],
+                body: body.to_string(),
+            }
+        }
+        pub fn status(status: u16, body: &str) -> Canned {
+            Canned {
+                status,
+                headers: vec![],
+                body: body.to_string(),
+            }
+        }
+    }
+
+    pub struct Server {
+        pub url: String,
+        pub requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Server {
+        pub fn bodies(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    async fn read_request(sock: &mut tokio::net::TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut tmp).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..pos]).to_lowercase();
+                let len = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                while buf.len() < pos + 4 + len {
+                    let n = sock.read(&mut tmp).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                return String::from_utf8_lossy(&buf[pos + 4..]).to_string();
+            }
+        }
+        String::new()
+    }
+
+    pub async fn serve(responses: Vec<Canned>) -> Server {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        // Tests name their fake endpoint to the gate, as configuration does for real ones.
+        wb_net::gate().allow_model_endpoint(&url).unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let rec = requests.clone();
+        tokio::spawn(async move {
+            for r in responses {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let body = read_request(&mut sock).await;
+                rec.lock().unwrap().push(body);
+                let mut head = format!("HTTP/1.1 {} X\r\nconnection: close\r\n", r.status);
+                for (k, v) in &r.headers {
+                    head.push_str(&format!("{k}: {v}\r\n"));
+                }
+                head.push_str("\r\n");
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(r.body.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        Server { url, requests }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A1 and A4: adjacent same-role messages merge and whitespace-only text disappears.
+    /// A request to a host nobody configured is never sent: the stream ends with an error
+    /// that says why, and the fake server sees nothing.
+    #[tokio::test]
+    async fn an_unconfigured_endpoint_is_refused_before_any_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let c = openai_compat::OpenAiCompatClient::new(url.clone(), None, "m".into()).unwrap();
+        let got = collect(c.stream(ChatRequest::default())).await;
+        assert_eq!(got.stop, Some(StopReason::Error));
+        let msg = got.stop_message.unwrap();
+        assert!(
+            msg.contains("not a configured model endpoint") && msg.contains("config.toml"),
+            "{msg}"
+        );
+        assert!(c.list_models().await.is_err());
+        let accepted = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+        assert!(accepted.is_err(), "a connection was opened");
+        // Naming the endpoint (as the provider configuration does) lets requests through.
+        wb_net::gate().allow_model_endpoint(&url).unwrap();
+        assert!(wb_net::gate()
+            .request(
+                wb_net::reqwest::Method::POST,
+                &format!("{url}/chat/completions"),
+                "chat"
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn normalize_merges_roles_and_drops_blank_text() {
+        let msgs = vec![
+            Message::user_text("one"),
+            Message::user_text("two"),
+            Message::assistant_text("  \n "),
+            Message::user_text("three"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentPart::Text { text: "\n".into() },
+                    ContentPart::ToolCall {
+                        id: "c".into(),
+                        name: "t".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                ],
+            },
+            Message::assistant_text("after"),
+        ];
+        let n = normalize_messages(&msgs);
+        assert_eq!(n.len(), 2);
+        assert_eq!(n[0].role, Role::User);
+        assert_eq!(n[0].text(), "one\ntwo\nthree");
+        assert_eq!(n[1].role, Role::Assistant);
+        assert_eq!(n[1].content.len(), 2);
+        assert!(matches!(n[1].content[0], ContentPart::ToolCall { .. }));
+    }
 }

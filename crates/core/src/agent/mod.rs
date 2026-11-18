@@ -21,7 +21,6 @@ pub use approver::{
 
 use crate::checkpoint;
 use crate::policy::{Decision as PolicyDecision, Policy, ScopeChange};
-use crate::providers::ModelClient;
 use crate::tools::proposals::{self, Proposal};
 use crate::tools::registry::{self, ToolClass};
 use crate::tools::ToolContext;
@@ -29,15 +28,16 @@ use crate::util::{estimate_tokens, now_rfc3339, truncate_bytes};
 use analyst_protocol::config::DEFAULT_MAX_OUTPUT_TOKENS;
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::{Diagnostic, Severity};
-use analyst_protocol::model::{
-    ChatRequest, ContentPart, Message, ModelCapabilities, ModelEvent, Role, StopReason,
-};
 use analyst_protocol::transcript::{DecidedBy, Decision, Event, ProposalKind};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
+use wb_providers::model::{
+    ChatRequest, ContentPart, Message, ModelCapabilities, ModelEvent, Role, StopReason,
+};
+use wb_providers::ModelClient;
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -354,6 +354,7 @@ impl Agent {
             messages: self.history.clone(),
             tools: registry::defs_for_mode(self.config.mode),
             max_tokens: Some(self.config.effective_max_tokens()),
+            audit_tag: None,
         }
     }
 
@@ -381,6 +382,8 @@ impl Agent {
                     name,
                     arguments,
                 } => c.calls.push((id, name, arguments)),
+                // No documents are sent, so no citations come back.
+                ModelEvent::Citation { .. } => {}
                 ModelEvent::Usage {
                     input_tokens,
                     output_tokens,
@@ -1073,6 +1076,7 @@ impl Agent {
                         transcript.push_str(&format!("RESULT {}\n", truncate_bytes(content, 1500)))
                     }
                     ContentPart::Image { .. } => transcript.push_str("[image]\n"),
+                    ContentPart::Document { .. } => transcript.push_str("[document]\n"),
                 }
             }
         }
@@ -1090,8 +1094,9 @@ impl Agent {
             messages: vec![Message::user_text(format!("Summarize this conversation segment:\n\n{transcript}"))],
             tools: vec![],
             max_tokens: Some(1500.min(self.config.effective_max_tokens())),
+            audit_tag: Some("compaction".into()),
         };
-        let c = crate::providers::collect(self.model.stream(req)).await;
+        let c = wb_providers::collect(self.model.stream(req)).await;
         let ok = matches!(c.stop, Some(StopReason::End) | Some(StopReason::MaxTokens));
         (ok && !c.text.trim().is_empty()).then_some(c.text)
     }
@@ -1112,7 +1117,9 @@ fn message_tokens(m: &Message) -> usize {
         .iter()
         .map(|p| match p {
             ContentPart::Text { text } => estimate_tokens(text),
-            ContentPart::Image { data, .. } => data.len() / 4 / 3,
+            ContentPart::Image { data, .. } | ContentPart::Document { data, .. } => {
+                data.len() / 4 / 3
+            }
             ContentPart::ToolCall { arguments, .. } => estimate_tokens(&arguments.to_string()) + 10,
             ContentPart::ToolResult { content, .. } => estimate_tokens(content) + 10,
         })
@@ -1172,7 +1179,7 @@ fn elide_value(v: &mut Value, limit: usize) {
     }
 }
 
-/// Shorten tool results, text-protocol results, and large string arguments in every message
+/// Shorten tool results and large string arguments in every message
 /// except the last `keep_recent`. Structure (roles, call ids, pairing) is untouched.
 fn shrink_old_parts(history: &mut [Message], keep_recent: usize, limit: usize) {
     let n = history.len().saturating_sub(keep_recent);
@@ -1186,15 +1193,14 @@ fn shrink_old_parts(history: &mut [Message], keep_recent: usize, limit: usize) {
                 }
                 ContentPart::ToolCall { arguments, .. } => elide_value(arguments, limit),
                 ContentPart::Text { text } => {
-                    // Text is shortened only when it is a tool result in the text protocol,
-                    // or when hard-truncating everything (`keep_recent == 0`).
-                    if keep_recent == 0 || text.starts_with("tool_result ") {
+                    // Text is shortened only when hard-truncating everything.
+                    if keep_recent == 0 {
                         if let Some(short) = elide(text, limit) {
                             *text = short;
                         }
                     }
                 }
-                ContentPart::Image { .. } => {}
+                ContentPart::Image { .. } | ContentPart::Document { .. } => {}
             }
         }
     }
@@ -1249,7 +1255,7 @@ fn mechanical_digest(older: &[Message]) -> String {
 /// - the first message is a user message, and the last is an assistant message, so the next
 ///   user message can follow (`closing_note` is used when one has to be added).
 pub(crate) fn repair_history(history: &mut Vec<Message>, closing_note: &str) {
-    let mut msgs = crate::providers::normalize_messages(history);
+    let mut msgs = wb_providers::normalize_messages(history);
     let mut out: Vec<Message> = Vec::with_capacity(msgs.len() + 2);
     let mut i = 0;
     while i < msgs.len() {
@@ -1326,7 +1332,7 @@ pub(crate) fn repair_history(history: &mut Vec<Message>, closing_note: &str) {
             }
         }
     }
-    let mut out = crate::providers::normalize_messages(&out);
+    let mut out = wb_providers::normalize_messages(&out);
     if out.first().map(|m| m.role) == Some(Role::Assistant) {
         out.insert(0, Message::user_text("(earlier conversation omitted)"));
     }
@@ -1354,9 +1360,9 @@ fn compact_args(args: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::ScriptedModelClient;
     use crate::session::Session;
     use analyst_protocol::config::{EditPolicy, PolicyConfig, ProjectConfig};
+    use wb_providers::ScriptedModelClient;
 
     fn setup(
         edits: EditPolicy,

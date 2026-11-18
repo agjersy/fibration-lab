@@ -162,7 +162,6 @@ impl Summarizer for ModelSummarizer {
             ))],
             tools: vec![],
             max_tokens: Some(self.max_tokens),
-            temperature: Some(0.0),
             audit_tag: self.audit_tag.clone(),
         };
         let c = wb_providers::collect(self.client.stream(req)).await;
@@ -692,7 +691,6 @@ mod tests {
         let req = &client.recorded()[0];
         assert_eq!(req.system.as_deref(), Some(SUMMARIZER_SYSTEM));
         assert!(req.tools.is_empty());
-        assert_eq!(req.temperature, Some(0.0));
         assert!(req.messages[0]
             .text()
             .starts_with("Summarize this conversation segment:\n\nUSER: first task"));

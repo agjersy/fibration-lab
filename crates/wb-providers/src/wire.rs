@@ -8,12 +8,14 @@ use crate::audit::{AuditRecord, AuditSink, AuditStatus};
 use crate::config::{AuthKind, Location, ProviderConfig};
 use crate::model::{ChatRequest, ModelCapabilities, ModelEvent, StopReason};
 use crate::sse::{SseEvent, SseParser};
+use crate::HttpPolicy;
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use wb_net::reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use wb_net::reqwest::{self, Method, RequestBuilder};
 
@@ -259,12 +261,12 @@ impl Endpoint {
 
 /// A refusal by the network gate, worded for the user.
 pub(crate) fn egress_error(provider: &str, e: &wb_net::EgressError) -> anyhow::Error {
-    let who = if provider.is_empty() {
-        "the request".to_string()
+    let why = crate::egress_message(e);
+    if provider.is_empty() {
+        anyhow!(why)
     } else {
-        format!("the request to provider `{provider}`")
-    };
-    anyhow!("{who} was not sent: {e}")
+        anyhow!("provider `{provider}`: {why}")
+    }
 }
 
 /// The ledger label of a streaming request. Probe requests are named after what they probe;
@@ -298,6 +300,8 @@ pub(crate) struct OptionalField {
 /// Turns SSE events into model events for one response.
 pub(crate) trait Decoder: Default + Send + 'static {
     fn feed(&mut self, ev: &SseEvent) -> Vec<ModelEvent>;
+    /// The body ended. Must yield `Stop { reason: Error }` when no terminal event was seen:
+    /// a dropped connection is not a normal end (Analyst REVIEW B6).
     fn finish(&mut self) -> Vec<ModelEvent>;
     /// The endpoint declined to answer.
     fn refused(&self) -> bool;
@@ -369,7 +373,7 @@ fn error_chain(e: &dyn std::error::Error) -> String {
     s
 }
 
-fn truncate_bytes(s: &str, max: usize) -> &str {
+pub(crate) fn truncate_bytes(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }
@@ -428,6 +432,7 @@ pub(crate) fn run_stream<D: Decoder>(
     ep: Arc<Endpoint>,
     spec: WireSpec,
     req: ChatRequest,
+    policy: HttpPolicy,
 ) -> BoxStream<'static, ModelEvent> {
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     tokio::spawn(async move {
@@ -438,7 +443,7 @@ pub(crate) fn run_stream<D: Decoder>(
             stop: None,
             closed: false,
         };
-        let (mut status, mut error) = drive::<D>(&ep, &spec, &req, &mut out).await;
+        let (mut status, mut error) = drive::<D>(&ep, &spec, &req, &policy, &mut out).await;
         if out.closed && out.stop.is_none() {
             status = AuditStatus::Error;
             error = Some("cancelled".to_string());
@@ -464,73 +469,161 @@ pub(crate) fn run_stream<D: Decoder>(
     crate::channel_stream(rx)
 }
 
+/// Why a request produced no usable response.
+#[derive(Debug)]
+enum SendFailure {
+    Http {
+        status: u16,
+        body: String,
+    },
+    Transport(String),
+    /// The network gate refused the destination; never retried.
+    Egress(String),
+}
+
+impl SendFailure {
+    fn message(&self) -> String {
+        match self {
+            SendFailure::Http { status, body } => {
+                format!("HTTP {status}: {}", truncate_bytes(body, 2000))
+            }
+            SendFailure::Transport(e) => format!("request failed: {e}"),
+            SendFailure::Egress(e) => e.clone(),
+        }
+    }
+
+    /// Classification for the audit log (never free text).
+    fn audit_code(&self) -> String {
+        match self {
+            SendFailure::Http { status, .. } => format!("http_{status}"),
+            SendFailure::Transport(_) => "transport".into(),
+            SendFailure::Egress(_) => "egress_denied".into(),
+        }
+    }
+}
+
+fn retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 425 | 429) || (500..=599).contains(&status)
+}
+
+/// Send a request, retrying with exponential backoff on connection errors, 429, 5xx, and
+/// overload (529) responses. Nothing has been streamed to the caller at this point, so a
+/// retry cannot duplicate output. `Retry-After` (seconds) is honoured up to 30 s.
+async fn send_with_retry<F>(make: F, policy: &HttpPolicy) -> Result<reqwest::Response, SendFailure>
+where
+    F: Fn() -> Result<RequestBuilder>,
+{
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let request = make().map_err(|e| SendFailure::Egress(e.to_string()))?;
+        let sent = tokio::time::timeout(policy.first_byte_timeout, request.send()).await;
+        let (failure, retry_after) = match sent {
+            Ok(Ok(resp)) if resp.status().is_success() => return Ok(resp),
+            Ok(Ok(resp)) => {
+                let status = resp.status().as_u16();
+                let retry_after = resp
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok());
+                let body = resp.text().await.unwrap_or_default();
+                let failure = SendFailure::Http { status, body };
+                if !retryable_status(status) {
+                    return Err(failure);
+                }
+                (failure, retry_after)
+            }
+            Ok(Err(e)) => (SendFailure::Transport(error_chain(&e)), None),
+            Err(_) => (
+                SendFailure::Transport(format!(
+                    "no response within {} s",
+                    policy.first_byte_timeout.as_secs()
+                )),
+                None,
+            ),
+        };
+        if attempt >= policy.max_attempts.max(1) {
+            return Err(failure);
+        }
+        let backoff = policy.backoff_base * 2u32.saturating_pow(attempt - 1);
+        let delay = match retry_after {
+            Some(s) => Duration::from_secs(s.min(30)).max(backoff),
+            None => backoff,
+        };
+        tracing::warn!(
+            "model request failed ({}); retry {attempt}/{} in {:?}",
+            failure.message(),
+            policy.max_attempts - 1,
+            delay
+        );
+        tokio::time::sleep(delay).await;
+    }
+}
+
 async fn drive<D: Decoder>(
     ep: &Endpoint,
     spec: &WireSpec,
     req: &ChatRequest,
+    policy: &HttpPolicy,
     out: &mut Outlet,
 ) -> (AuditStatus, Option<String>) {
     let mut body = (spec.build)(req, &ep.features.snapshot());
-    let mut retried = false;
+    let mut downgraded = false;
     let resp = loop {
-        let builder = match ep.request(Method::POST, &spec.url, purpose_of(req), spec.fixed_headers)
-        {
-            Ok(b) => b,
-            Err(e) => {
-                out.fail(e.to_string()).await;
-                return (AuditStatus::Error, Some("egress_denied".into()));
-            }
+        let make = || {
+            Ok(ep
+                .request(Method::POST, &spec.url, purpose_of(req), spec.fixed_headers)?
+                .json(&body))
         };
-        let sent = builder.json(&body).send().await;
-        let resp = match sent {
-            Ok(r) => r,
-            Err(e) => {
-                out.fail(format!("request failed: {}", error_chain(&e)))
-                    .await;
-                return (AuditStatus::Error, Some("transport".into()));
-            }
+        let failure = match send_with_retry(make, policy).await {
+            Ok(resp) => break resp,
+            Err(f) => f,
         };
-        let status = resp.status();
-        if status.is_success() {
-            break resp;
-        }
-        let text = resp.text().await.unwrap_or_default();
-        if status == reqwest::StatusCode::BAD_REQUEST && !retried {
-            let rejected = rejected_fields(spec.optional, &body, &text);
-            if !rejected.is_empty() {
-                for field in &rejected {
-                    tracing::warn!(
-                        provider = %ep.provider,
-                        model = %ep.model,
-                        field,
-                        "endpoint rejected an optional request field; retrying without it"
-                    );
-                    ep.features.mark_unsupported(field);
+        // Unknown-field downgrade: one retry without the optional fields the endpoint named.
+        if let SendFailure::Http { status, body: text } = &failure {
+            if matches!(*status, 400 | 422) && !downgraded {
+                let rejected = rejected_fields(spec.optional, &body, text);
+                if !rejected.is_empty() {
+                    for field in &rejected {
+                        tracing::warn!(
+                            provider = %ep.provider,
+                            model = %ep.model,
+                            field,
+                            "endpoint rejected an optional request field; retrying without it"
+                        );
+                        ep.features.mark_unsupported(field);
+                    }
+                    body = (spec.build)(req, &ep.features.snapshot());
+                    downgraded = true;
+                    continue;
                 }
-                body = (spec.build)(req, &ep.features.snapshot());
-                retried = true;
-                continue;
             }
         }
-        out.fail(format!("HTTP {status}: {}", truncate_bytes(&text, 2000)))
-            .await;
-        return (
-            AuditStatus::Error,
-            Some(format!("http_{}", status.as_u16())),
-        );
+        out.fail(failure.message()).await;
+        return (AuditStatus::Error, Some(failure.audit_code()));
     };
 
     use futures::StreamExt;
     let mut bytes = resp.bytes_stream();
     let mut parser = SseParser::new();
     let mut state = D::default();
-    while let Some(chunk) = bytes.next().await {
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
+    loop {
+        let chunk = match tokio::time::timeout(policy.idle_timeout, bytes.next()).await {
+            Err(_) => {
+                out.fail(format!(
+                    "the model stream stalled: no data for {} s",
+                    policy.idle_timeout.as_secs()
+                ))
+                .await;
+                return (AuditStatus::Error, Some("stream_stalled".into()));
+            }
+            Ok(None) => break,
+            Ok(Some(Err(e))) => {
                 out.fail(format!("stream error: {}", error_chain(&e))).await;
                 return (AuditStatus::Error, Some("stream".into()));
             }
+            Ok(Some(Ok(c))) => c,
         };
         for ev in parser.push(&chunk) {
             for me in state.feed(&ev) {

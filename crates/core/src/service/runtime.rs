@@ -334,7 +334,7 @@ pub struct SessionRuntime {
     closed: AtomicBool,
     last_sync_hash: tokio::sync::Mutex<Option<String>>,
     /// Test hook: a model client used for every conversation instead of the configured one.
-    model_override: Mutex<Option<Arc<dyn crate::providers::ModelClient>>>,
+    model_override: Mutex<Option<Arc<dyn wb_providers::ModelClient>>>,
     /// `Weak` self reference so background tasks and approvers can reach the runtime.
     this: std::sync::Weak<SessionRuntime>,
 }
@@ -444,13 +444,13 @@ impl SessionRuntime {
     }
 
     /// Use `client` for every conversation (tests with `ScriptedModelClient`).
-    pub fn set_model_override(&self, client: Option<Arc<dyn crate::providers::ModelClient>>) {
+    pub fn set_model_override(&self, client: Option<Arc<dyn wb_providers::ModelClient>>) {
         if let Ok(mut m) = self.model_override.lock() {
             *m = client;
         }
     }
 
-    pub fn model_override(&self) -> Option<Arc<dyn crate::providers::ModelClient>> {
+    pub fn model_override(&self) -> Option<Arc<dyn wb_providers::ModelClient>> {
         self.model_override.lock().ok().and_then(|m| m.clone())
     }
 
