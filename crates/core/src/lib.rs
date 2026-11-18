@@ -8,6 +8,7 @@ pub mod egress;
 pub mod evals;
 pub mod init;
 pub mod kernel;
+pub mod migrate;
 pub mod model_client;
 pub mod service;
 pub mod session;
