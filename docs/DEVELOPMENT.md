@@ -25,6 +25,8 @@ present/python/        present_kernel (the deck kernel) and present_sdk (deck bu
 evals/tasks/           model-agnostic analysis evaluation tasks with fixture repos
 present/evals/         deck evaluation tasks and templates, run by the same `analyst eval run`
 tools/deck_walkthrough.sh  the deck commands end to end against the scripted model server
+tools/dev_setup.sh     prepare a fresh checkout (prerequisites, environments, renderer, binaries)
+tools/make_sample_deck.sh  a sample .pptx with every element type, to open in PowerPoint
 docs/                  vision, architecture, protocol, decisions
 ```
 
@@ -36,6 +38,17 @@ docs/                  vision, architecture, protocol, decisions
 - For sandboxed runs: `bwrap` (Linux) or macOS. Without either the kernel falls back to resource limits and reports `sandbox: "limits"`.
 - For remote targets: OpenSSH client and `git` locally; `git`, `tar`, and the target's Python version on the host (the app installs neither `git` nor Python there)
 - For the SSH sync integration test (`crates/core/tests/sync_ssh.rs`): `sshd`, `ssh`, and `ssh-keygen` (`apt-get install -y openssh-server openssh-client`). The test starts its own server on a localhost port with throwaway keys and is skipped when they are missing; `ANALYST_REQUIRE_SSHD=1` turns the skip into a failure
+
+## Quick start
+
+`tools/dev_setup.sh` prepares a fresh checkout on Linux (Debian/Ubuntu or Fedora) or macOS: it checks the prerequisites below and prints the install command for anything missing (`--install-system` installs the system packages with apt-get, dnf or brew; Rust, uv and Node are never installed by it), runs `uv sync` in the three Python projects, `pnpm install` and the renderer build, and builds `analyst`, `analyst-desktop` and `wb-sandbox` (`--with-serve` adds `analyst-serve`). It is idempotent, and ends by printing how to start the app and where to put a model provider and its key.
+
+`tools/make_sample_deck.sh [folder]` (default `./sample-deck`, ignored by git) then builds a sample deck with no model: `analyst init`, a run of the parameter-sweep fixture script, and a deck on the corp test template with bullets, a combo chart with embedded data, a table, process and timeline diagrams, a free image with alt text, notes, sections, two native equations placed with `analyst deck place-equation`, and the run's figure placed with `analyst deck place-figure`. It writes `sample.pptx` (and `sample.pdf` when LibreOffice is installed) to the folder and prints what to check in PowerPoint.
+
+```sh
+tools/dev_setup.sh
+tools/make_sample_deck.sh
+```
 
 ## Setup
 
@@ -77,6 +90,8 @@ analyst deck eject && analyst deck build             # code generation mode
 analyst deck history list                            # git checkpoints: code and decks together
 analyst deck history revert-turn <conversation>-<n>  # as `analyst chat` prints it
 analyst deck template inspect corp.potx --catalog
+analyst deck place-figure --run <run id> --artifact <figure path> --slide <slide id>   # with the run's citation
+analyst deck place-equation --path analysis/models.py --function <name> --slide <slide id>
 ```
 
 `analyst chat` offers the deck tools whenever the repository has a deck; `--mode` takes `plan`, `build`, `run`, `outline`, `slides`, or `polish`. Deck kernels need `present/python/kernel/.venv` (`uv sync` there) in a checkout, or `PRESENT_RUNTIME_PYTHON`. Tests and the walkthrough set `PRESENT_FONT_DIRS=$PWD/present/vendor/fonts` (the variable keeps its name).

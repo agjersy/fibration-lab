@@ -173,6 +173,17 @@ jobs:
       - name: Deck commands walk-through against the scripted model server
         shell: bash
         run: tools/deck_walkthrough.sh
+      - name: Sample deck for checking in PowerPoint (no model)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: tools/make_sample_deck.sh "$RUNNER_TEMP/sample-deck"
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: sample-deck
+          path: |
+            ${{ runner.temp }}/sample-deck/sample.pptx
+            ${{ runner.temp }}/sample-deck/sample.pdf
       - name: Deck evaluations through the one loop against the scripted model server
         shell: bash
         working-directory: present
