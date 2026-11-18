@@ -3,9 +3,9 @@
 
 mod common;
 
+use analyst_deck_protocol::kernel::*;
+use analyst_deck_protocol::template::TemplateSidecar;
 use common::{fixture_json, round_trip_json, round_trip_jsonl, round_trip_value};
-use present_protocol::kernel::*;
-use present_protocol::template::TemplateSidecar;
 use serde_json::{json, Value};
 
 /// Round-trips the fixture's `params` and `result` for one method.
@@ -258,7 +258,7 @@ fn error_codes_match_protocol_1_2() {
     for (constant, documented) in table {
         assert_eq!(constant, documented);
     }
-    assert_eq!(present_protocol::PROTOCOL_VERSION, 1);
+    assert_eq!(analyst_deck_protocol::PROTOCOL_VERSION, 1);
 }
 
 #[test]

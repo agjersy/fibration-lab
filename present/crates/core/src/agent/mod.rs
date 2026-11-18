@@ -10,11 +10,11 @@ pub mod tools;
 
 use crate::audit::AuditLog;
 use crate::workspace::Workspace;
+use analyst_deck_protocol::config::SnapshotReason;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use dispatch::{Change, Prepared, ToolOutcome, ToolState};
 use futures::StreamExt;
-use present_protocol::config::SnapshotReason;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -241,7 +241,7 @@ impl Agent {
         self.ws
             .deck()
             .read_deck()
-            .map(|d| d.mode == present_protocol::deck::DeckMode::Code)
+            .map(|d| d.mode == analyst_deck_protocol::deck::DeckMode::Code)
             .unwrap_or(false)
     }
 
@@ -392,7 +392,7 @@ impl Agent {
 
     fn audit(&self, turn_id: &str, c: &Collected, excerpts: &[(String, u64)], images: &[String]) {
         let Some(log) = &self.audit else { return };
-        let record = present_protocol::audit::AuditRecord {
+        let record = analyst_deck_protocol::audit::AuditRecord {
             ts: crate::util::now_iso(),
             project: self
                 .ws
@@ -405,10 +405,10 @@ impl Agent {
             provider: self.config.provider.clone(),
             location: match self.config.provider_location {
                 wb_providers::config::Location::Internal => {
-                    present_protocol::config::Location::Internal
+                    analyst_deck_protocol::config::Location::Internal
                 }
                 wb_providers::config::Location::External => {
-                    present_protocol::config::Location::External
+                    analyst_deck_protocol::config::Location::External
                 }
             },
             base_url_host: self.config.base_url_host.clone(),
@@ -420,7 +420,7 @@ impl Agent {
                 .filter_map(|(cite, chars)| {
                     cite.parse()
                         .ok()
-                        .map(|cite| present_protocol::audit::AuditRef {
+                        .map(|cite| analyst_deck_protocol::audit::AuditRef {
                             cite,
                             chars: *chars,
                         })
@@ -428,15 +428,15 @@ impl Agent {
                 .collect(),
             images: images
                 .iter()
-                .map(|id| present_protocol::audit::AuditImage {
-                    source: present_protocol::audit::AuditImageSource::Slide,
+                .map(|id| analyst_deck_protocol::audit::AuditImage {
+                    source: analyst_deck_protocol::audit::AuditImageSource::Slide,
                     id: id.clone(),
                 })
                 .collect(),
             status: if c.stop == StopReason::Error {
-                present_protocol::audit::AuditStatus::Error
+                analyst_deck_protocol::audit::AuditStatus::Error
             } else {
-                present_protocol::audit::AuditStatus::Ok
+                analyst_deck_protocol::audit::AuditStatus::Ok
             },
             error: if c.stop == StopReason::Error {
                 Some("model_error".into())

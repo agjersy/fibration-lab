@@ -1,9 +1,9 @@
 //! End to end through the workspace: references in, search, render, check, export.
 
-use present_core::deck_store::Position;
-use present_core::project::Project;
-use present_core::workspace::{OpenOptions, Workspace};
-use present_protocol::deck::DeckMode;
+use analyst_deck::deck_store::Position;
+use analyst_deck::project::Project;
+use analyst_deck::workspace::{OpenOptions, Workspace};
+use analyst_deck_protocol::deck::DeckMode;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -53,7 +53,7 @@ async fn references_search_render_check_export() {
         "the email attachment is a reference of its own: {}",
         rows.len()
     );
-    let manifest = present_core::refs::load_manifest(&project.root).unwrap();
+    let manifest = analyst_deck::refs::load_manifest(&project.root).unwrap();
     assert!(manifest
         .refs
         .iter()
@@ -83,7 +83,7 @@ async fn references_search_render_check_export() {
         "{passage}"
     );
 
-    let slide: present_protocol::deck::Slide = serde_json::from_value(json!({
+    let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(json!({
         "id": "s-w001", "kind": "layout", "layout": "Title and Content", "elements": [],
         "placeholders": {
             "title": {"type": "text", "id": "e-t1", "text": {"paragraphs": [{"runs": [{"t": "Sourced slide"}]}]}},

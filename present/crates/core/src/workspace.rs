@@ -8,9 +8,9 @@ use crate::project::Project;
 use crate::refs::{self, Added};
 use crate::snapshots::SnapshotStore;
 use crate::util::now_iso;
+use analyst_deck_protocol::config::{RefEntry, RefSource, SnapshotReason, SnapshotRef};
+use analyst_deck_protocol::ids::{RefId, SnapshotId};
 use anyhow::{anyhow, Context};
-use present_protocol::config::{RefEntry, RefSource, SnapshotReason, SnapshotRef};
-use present_protocol::ids::{RefId, SnapshotId};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -254,7 +254,7 @@ impl Workspace {
         }
         let kind = refs::kind_of(Path::new(&file))
             .ok_or_else(|| anyhow::anyhow!("unsupported reference format: {file}"))?;
-        let origin = present_protocol::config::AnalystOrigin {
+        let origin = analyst_deck_protocol::config::AnalystOrigin {
             repo: out["analyst"]["repo"]
                 .as_str()
                 .unwrap_or(repo_abs)
@@ -424,14 +424,14 @@ impl Workspace {
             .read_deck()
             .map_err(|e| KernelError::Other(e.to_string()))?;
         match deck.mode {
-            present_protocol::deck::DeckMode::Structured => {
+            analyst_deck_protocol::deck::DeckMode::Structured => {
                 let mut params = json!({"out": out, "snapshot_id": snapshot_id});
                 if let Some(s) = slides {
                     params["slides"] = json!(s);
                 }
                 self.kernel.call_value("deck.render", params).await
             }
-            present_protocol::deck::DeckMode::Code => {
+            analyst_deck_protocol::deck::DeckMode::Code => {
                 let timeout = self
                     .project
                     .config()

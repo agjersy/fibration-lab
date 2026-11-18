@@ -1,16 +1,16 @@
 //! `present`: the headless harness for phase 0 and evaluations (BUILD-SPEC W13).
 
+use analyst_deck::agent::tools::Mode;
+use analyst_deck::agent::{ApprovalDecision, ApprovalRequest, Approver, AutoApprover};
+use analyst_deck::config::{default_home, load_global};
+use analyst_deck::project::Project;
+use analyst_deck::session::{build_agent, policy_for, resolve_model};
+use analyst_deck::workspace::{OpenOptions, Workspace};
+use analyst_deck::{evals, refs};
+use analyst_deck_protocol::deck::DeckMode;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use clap::{Parser, Subcommand};
-use present_core::agent::tools::Mode;
-use present_core::agent::{ApprovalDecision, ApprovalRequest, Approver, AutoApprover};
-use present_core::config::{default_home, load_global};
-use present_core::project::Project;
-use present_core::session::{build_agent, policy_for, resolve_model};
-use present_core::workspace::{OpenOptions, Workspace};
-use present_core::{evals, refs};
-use present_protocol::deck::DeckMode;
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -306,7 +306,7 @@ async fn run(cli: &Cli) -> Result<i32> {
             let _ = std::fs::remove_dir_all(&tmp);
             let desc = desc?;
             let shown = if *catalog {
-                present_core::agent::dispatch::layout_catalog(&desc)
+                analyst_deck::agent::dispatch::layout_catalog(&desc)
             } else {
                 desc
             };
@@ -426,11 +426,11 @@ async fn run(cli: &Cli) -> Result<i32> {
         }
         Command::Eject => {
             let ws = open(cli, &home).await?;
-            let mut state = present_core::agent::dispatch::ToolState::default();
-            let change = present_core::agent::dispatch::Change::ModeSwitch {
+            let mut state = analyst_deck::agent::dispatch::ToolState::default();
+            let change = analyst_deck::agent::dispatch::Change::ModeSwitch {
                 reason: "requested from the command line".into(),
             };
-            let result = present_core::agent::dispatch::apply(&ws, &mut state, &change).await;
+            let result = analyst_deck::agent::dispatch::apply(&ws, &mut state, &change).await;
             ws.close().await;
             let out = result.map_err(|e| anyhow!(e))?;
             println!(
@@ -459,7 +459,7 @@ async fn run(cli: &Cli) -> Result<i32> {
         Command::History { command } => {
             let root = cli.project.clone().unwrap_or(std::env::current_dir()?);
             let project = Project::open(&root)?;
-            let snaps = present_core::snapshots::SnapshotStore::new(&project.root);
+            let snaps = analyst_deck::snapshots::SnapshotStore::new(&project.root);
             match command {
                 HistoryCommand::List => {
                     for r in snaps.log()? {

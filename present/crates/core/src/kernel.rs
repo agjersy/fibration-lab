@@ -3,9 +3,9 @@
 //! Adapted from Personal Analyst `crates/core/src/kernel/client.rs` and `transport.rs` at
 //! commit f229e4d, reduced to the local stdio transport Present needs.
 
-use present_protocol::kernel::{HelloParams, KernelHello, Method};
-use present_protocol::rpc::RpcError;
-use present_protocol::PROTOCOL_VERSION;
+use analyst_deck_protocol::kernel::{HelloParams, KernelHello, Method};
+use analyst_deck_protocol::rpc::RpcError;
+use analyst_deck_protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};

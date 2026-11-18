@@ -1,15 +1,15 @@
 //! W12 acceptance: the agent loop driven by a scripted model against the real kernel.
 
-use async_trait::async_trait;
-use present_core::agent::dispatch::Change;
-use present_core::agent::tools::Mode;
-use present_core::agent::{
+use analyst_deck::agent::dispatch::Change;
+use analyst_deck::agent::tools::Mode;
+use analyst_deck::agent::{
     Agent, AgentConfig, ApprovalDecision, ApprovalRequest, Approver, AutoApprover,
 };
-use present_core::deck_store::Position;
-use present_core::project::Project;
-use present_core::workspace::{OpenOptions, Workspace};
-use present_protocol::deck::{DeckMode, Slide};
+use analyst_deck::deck_store::Position;
+use analyst_deck::project::Project;
+use analyst_deck::workspace::{OpenOptions, Workspace};
+use analyst_deck_protocol::deck::{DeckMode, Slide};
+use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -281,7 +281,7 @@ async fn review_mode_pauses_then_accept_reject_and_accept_modified() {
     assert!(!store.slide_path_exists("s-new2"));
     let (third, _) = store.read_slide(&"s-new3".parse().unwrap()).unwrap();
     assert_eq!(
-        present_core::agent::dispatch::title_of(&third),
+        analyst_deck::agent::dispatch::title_of(&third),
         "Third slide, as the user rewrote it"
     );
     let requests = approver.requests();
@@ -360,7 +360,7 @@ async fn auto_mode_applies_in_scope_and_asks_out_of_scope() {
     let summary = agent.run_turn("Reword slide A").await.unwrap();
     let store = rig.ws.deck();
     let title = |id: &str| {
-        present_core::agent::dispatch::title_of(&store.read_slide(&id.parse().unwrap()).unwrap().0)
+        analyst_deck::agent::dispatch::title_of(&store.read_slide(&id.parse().unwrap()).unwrap().0)
     };
     assert_eq!(title("s-aaaa"), "Slide A, reworded");
     assert_eq!(title("s-bbbb"), "Slide B");
@@ -432,13 +432,13 @@ async fn locked_slides_and_elements_are_never_changed() {
     assert_eq!(summary.slides_changed, ["s-part"]);
     let store = rig.ws.deck();
     assert_eq!(
-        present_core::agent::dispatch::title_of(
+        analyst_deck::agent::dispatch::title_of(
             &store.read_slide(&"s-lock".parse().unwrap()).unwrap().0
         ),
         "Locked slide"
     );
     assert_eq!(
-        present_core::agent::dispatch::title_of(
+        analyst_deck::agent::dispatch::title_of(
             &store.read_slide(&"s-part".parse().unwrap()).unwrap().0
         ),
         "Partly locked"
@@ -503,7 +503,7 @@ async fn polish_mode_rejects_new_slides_and_new_claims() {
         .deck()
         .read_slide(&"s-aaaa".parse().unwrap())
         .unwrap();
-    assert!(present_core::agent::dispatch::slide_text(&slide).contains("A crisper point"));
+    assert!(analyst_deck::agent::dispatch::slide_text(&slide).contains("A crisper point"));
     assert_eq!(rig.ws.deck().read_deck().unwrap().slide_ids().count(), 1);
 }
 
@@ -570,7 +570,7 @@ async fn checker_findings_come_back_and_the_model_fixes_an_overflow() {
     assert!(summary.open_issues.is_empty());
     let diags = rig
         .ws
-        .check(present_core::agent::dispatch::AGENT_PPTX, None, None, false)
+        .check(analyst_deck::agent::dispatch::AGENT_PPTX, None, None, false)
         .await
         .unwrap();
     assert!(!diags.iter().any(|d| d["rule"] == "fit.overflow"));

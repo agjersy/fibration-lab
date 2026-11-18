@@ -5,9 +5,9 @@ use super::tools::Mode;
 use crate::deck_store::Position;
 use crate::util::{new_id, sha256_hex};
 use crate::workspace::Workspace;
+use analyst_deck_protocol::deck::{DeckMode, Slide};
+use analyst_deck_protocol::ids::SlideId;
 use base64::Engine as _;
-use present_protocol::deck::{DeckMode, Slide};
-use present_protocol::ids::SlideId;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1329,7 +1329,7 @@ pub async fn apply(
         }
         Change::ModeSwitch { .. } => {
             ws.snapshot(
-                present_protocol::config::SnapshotReason::ModeSwitch,
+                analyst_deck_protocol::config::SnapshotReason::ModeSwitch,
                 None,
                 Some("before switching to code mode"),
             )

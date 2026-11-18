@@ -1,10 +1,10 @@
 //! Personal Present desktop backend (Tauri 2). The commands in [`commands`] are thin wrappers
-//! over `present_core::service`; project events reach the renderer through a
+//! over `analyst_deck::service`; project events reach the renderer through a
 //! `tauri::ipc::Channel<ProjectEvent>` opened with `project_subscribe`.
 
 pub mod commands;
 
-use present_core::service::Workbench;
+use analyst_deck::service::Workbench;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -53,7 +53,7 @@ impl AppState {
 /// Windows). `PRESENT_ENGINE`, `PRESENT_SANDBOX`, and `PRESENT_PYTHON` override the rendering
 /// engine, the sandbox kind, and the kernel's interpreter.
 pub fn workbench_from_env() -> Arc<Workbench> {
-    let home = present_core::config::default_home();
+    let home = analyst_deck::config::default_home();
     let workbench = Workbench::new(&home);
     {
         let mut options = workbench.options.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,7 +331,7 @@ mod tests {
     fn a_bundled_runtime_is_used_unless_the_environment_says_otherwise() {
         let tmp = tempfile::tempdir().unwrap();
         let resources = tmp.path().join("res");
-        let wb = present_core::service::Workbench::new(&tmp.path().join("home"));
+        let wb = analyst_deck::service::Workbench::new(&tmp.path().join("home"));
         assert!(!super::apply_bundled_runtime(&wb, &resources));
 
         let runtime = resources.join("runtime");

@@ -1,14 +1,14 @@
 //! W10 acceptance: deck store, snapshots, references, index, audit.
 
-use present_core::audit::AuditLog;
-use present_core::deck_store::{DeckError, Position};
-use present_core::index::{ChunkRow, Index, RefRow};
-use present_core::project::Project;
-use present_core::refs::{self, Added};
-use present_core::snapshots::{Prune, SnapshotStore};
-use present_protocol::audit::{AuditRecord, AuditStatus};
-use present_protocol::config::{Location, SnapshotReason};
-use present_protocol::deck::{DeckMode, Slide};
+use analyst_deck::audit::AuditLog;
+use analyst_deck::deck_store::{DeckError, Position};
+use analyst_deck::index::{ChunkRow, Index, RefRow};
+use analyst_deck::project::Project;
+use analyst_deck::refs::{self, Added};
+use analyst_deck::snapshots::{Prune, SnapshotStore};
+use analyst_deck_protocol::audit::{AuditRecord, AuditStatus};
+use analyst_deck_protocol::config::{Location, SnapshotReason};
+use analyst_deck_protocol::deck::{DeckMode, Slide};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::BTreeMap;
@@ -47,7 +47,7 @@ fn deck_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
     {
         if entry.file_type().is_file() {
             out.insert(
-                present_core::util::rel_slash(root, entry.path()),
+                analyst_deck::util::rel_slash(root, entry.path()),
                 std::fs::read(entry.path()).unwrap(),
             );
         }
@@ -181,7 +181,7 @@ fn random_edit_snapshot_restore_prune_sequences_never_lose_pinned_state() {
         let mut rng = StdRng::seed_from_u64(seed);
         let mut live: Vec<String> = Vec::new();
         let mut saved: Vec<(
-            present_protocol::ids::SnapshotId,
+            analyst_deck_protocol::ids::SnapshotId,
             BTreeMap<String, Vec<u8>>,
             SnapshotReason,
         )> = Vec::new();
@@ -488,7 +488,7 @@ fn audit_log_holds_metadata_only_and_exports_csv() {
         model: "claude-opus-5-5".into(),
         input_tokens: 1200,
         output_tokens: 300,
-        refs: vec![present_protocol::audit::AuditRef {
+        refs: vec![analyst_deck_protocol::audit::AuditRef {
             cite: "ref:r-q3rep@3f9a1c2b7e01#p11:c120-188".parse().unwrap(),
             chars: 68,
         }],
@@ -529,7 +529,7 @@ fn audit_log_holds_metadata_only_and_exports_csv() {
 #[test]
 fn built_in_skills_load_without_diagnostics() {
     let tmp = tempfile::tempdir().unwrap();
-    let set = present_core::session::discover_skills(&tmp.path().join("home"), tmp.path());
+    let set = analyst_deck::session::discover_skills(&tmp.path().join("home"), tmp.path());
     let mut names = set.names();
     names.sort();
     assert_eq!(

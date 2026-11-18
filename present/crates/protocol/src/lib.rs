@@ -1,4 +1,4 @@
-//! present-protocol: serde types for every boundary fixed in docs/PROTOCOL.md.
+//! analyst-deck-protocol: serde types for every boundary fixed in docs/PROTOCOL.md.
 //!
 //! - [`deck`]: the deck document, schema version 1 (PROTOCOL 2).
 //! - [`ids`]: validated slide, element, reference, and snapshot ids (PROTOCOL 2.1, 2.3, 4.4).

@@ -4,14 +4,14 @@
 
 mod common;
 
+use analyst_deck_protocol::audit::*;
+use analyst_deck_protocol::config::*;
+use analyst_deck_protocol::deck::{DeckMode, ThemeColor};
+use analyst_deck_protocol::evals::*;
+use analyst_deck_protocol::kernel::{RefKind, Severity};
+use analyst_deck_protocol::template::*;
+use analyst_deck_protocol::transcript::{DecidedBy, Decision, Event, ProposalKind};
 use common::{fixture, round_trip_json, round_trip_jsonl, round_trip_toml, round_trip_value};
-use present_protocol::audit::*;
-use present_protocol::config::*;
-use present_protocol::deck::{DeckMode, ThemeColor};
-use present_protocol::evals::*;
-use present_protocol::kernel::{RefKind, Severity};
-use present_protocol::template::*;
-use present_protocol::transcript::{DecidedBy, Decision, Event, ProposalKind};
 use serde_json::json;
 
 // ---- template ----

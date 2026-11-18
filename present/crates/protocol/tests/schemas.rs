@@ -2,10 +2,10 @@
 //! types generate (PROTOCOL 2). Rewrite them with:
 //!
 //! ```text
-//! PRESENT_UPDATE_SCHEMAS=1 cargo test -p present-protocol --test schemas
+//! PRESENT_UPDATE_SCHEMAS=1 cargo test -p analyst-deck-protocol --test schemas
 //! ```
 
-use present_protocol::schema::{
+use analyst_deck_protocol::schema::{
     deck_schema_json, slide_schema_json, DECK_SCHEMA_FILE, SLIDE_SCHEMA_FILE,
 };
 use serde_json::Value;
@@ -32,7 +32,7 @@ fn check_or_update(file: &str, generated: &str) {
     }
     let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "read {}: {e}\nrun `PRESENT_UPDATE_SCHEMAS=1 cargo test -p present-protocol --test schemas` to create it",
+            "read {}: {e}\nrun `PRESENT_UPDATE_SCHEMAS=1 cargo test -p analyst-deck-protocol --test schemas` to create it",
             path.display()
         )
     });
@@ -41,7 +41,7 @@ fn check_or_update(file: &str, generated: &str) {
     assert!(
         committed == generated,
         "schemas/{file} is out of date with crates/protocol.\n\
-         Run `PRESENT_UPDATE_SCHEMAS=1 cargo test -p present-protocol --test schemas` and commit the result.\n\
+         Run `PRESENT_UPDATE_SCHEMAS=1 cargo test -p analyst-deck-protocol --test schemas` and commit the result.\n\
          First difference at line {}.",
         first_difference(&committed, generated)
     );

@@ -103,6 +103,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "analyst-deck"
+version = "0.0.1"
+dependencies = [
+ "analyst-deck-protocol",
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "futures",
+ "hex",
+ "json-patch",
+ "rand 0.8.8",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "walkdir",
+ "wb-net",
+ "wb-policy",
+ "wb-providers",
+ "wb-sandbox",
+ "wb-skills",
+ "wb-transcript",
+ "zstd",
+]
+
+[[package]]
+name = "analyst-deck-protocol"
+version = "0.0.1"
+dependencies = [
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 0.8.23",
+ "ts-rs",
+ "wb-policy",
+]
+
+[[package]]
 name = "analyst-desktop"
 version = "0.0.1"
 dependencies = [
@@ -2877,12 +2923,12 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 name = "present-cli"
 version = "0.0.1"
 dependencies = [
+ "analyst-deck",
+ "analyst-deck-protocol",
  "anyhow",
  "async-trait",
  "chrono",
  "clap",
- "present-core",
- "present-protocol",
  "serde_json",
  "tokio",
  "tracing-subscriber",
@@ -2893,45 +2939,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "present-core"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.22.1",
- "chrono",
- "futures",
- "hex",
- "json-patch",
- "present-protocol",
- "rand 0.8.8",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "walkdir",
- "wb-net",
- "wb-policy",
- "wb-providers",
- "wb-sandbox",
- "wb-skills",
- "wb-transcript",
- "zstd",
-]
-
-[[package]]
 name = "present-desktop"
 version = "0.0.1"
 dependencies = [
+ "analyst-deck",
+ "analyst-deck-protocol",
  "anyhow",
- "present-core",
- "present-protocol",
  "serde",
  "serde_json",
  "tauri",
@@ -2941,19 +2954,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "present-protocol"
-version = "0.0.1"
-dependencies = [
- "schemars 0.8.22",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml 0.8.23",
- "ts-rs",
- "wb-policy",
 ]
 
 [[package]]

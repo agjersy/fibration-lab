@@ -2,11 +2,11 @@
 
 use crate::deck_store::DeckStore;
 use crate::util::{new_id, now_iso, sha256_hex, to_json_pretty, write_atomic};
-use anyhow::{anyhow, Context};
-use present_protocol::config::{
+use analyst_deck_protocol::config::{
     SnapshotFile, SnapshotLogRecord, SnapshotManifest, SnapshotReason, SnapshotRef,
 };
-use present_protocol::ids::SnapshotId;
+use analyst_deck_protocol::ids::SnapshotId;
+use anyhow::{anyhow, Context};
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};

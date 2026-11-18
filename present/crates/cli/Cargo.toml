@@ -10,8 +10,8 @@ name = "present"
 path = "src/main.rs"
 
 [dependencies]
-present-core = { path = "../core" }
-present-protocol = { path = "../protocol" }
+analyst-deck = { path = "../core" }
+analyst-deck-protocol = { path = "../protocol" }
 wb-net = { path = "../../../crates/wb-net" }
 wb-policy = { path = "../../../crates/wb-policy" }
 wb-providers = { path = "../../../crates/wb-providers" }

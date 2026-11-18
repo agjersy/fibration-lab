@@ -3,10 +3,10 @@
 //! Every error is serialized as `IpcError`.
 
 use crate::{AppState, Subscription};
-use present_core::service::ProjectRuntime;
-use present_protocol::deck::{DeckMode, Slide};
-use present_protocol::kernel::LayoutThumbnail;
-use present_protocol::ui::*;
+use analyst_deck::service::ProjectRuntime;
+use analyst_deck_protocol::deck::{DeckMode, Slide};
+use analyst_deck_protocol::kernel::LayoutThumbnail;
+use analyst_deck_protocol::ui::*;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

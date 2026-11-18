@@ -2,10 +2,10 @@
 
 use crate::deck_store::DeckStore;
 use crate::util::{now_iso, write_atomic};
+use analyst_deck_protocol::config::ProjectConfig;
+use analyst_deck_protocol::deck::{Deck, DeckMode, Section};
+use analyst_deck_protocol::SCHEMA_VERSION;
 use anyhow::{anyhow, Context};
-use present_protocol::config::ProjectConfig;
-use present_protocol::deck::{Deck, DeckMode, Section};
-use present_protocol::SCHEMA_VERSION;
 use std::path::{Path, PathBuf};
 
 pub const DIRS: &[&str] = &[

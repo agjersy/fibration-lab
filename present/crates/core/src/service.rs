@@ -14,11 +14,11 @@ use crate::project::Project;
 use crate::session::{self, ResolvedModel};
 use crate::util::{now_iso, sha256_hex, write_atomic};
 use crate::workspace::{OpenOptions, Workspace};
+use analyst_deck_protocol::config::GlobalConfig;
+use analyst_deck_protocol::deck::{DeckMode, Slide};
+use analyst_deck_protocol::ids::SlideId;
+use analyst_deck_protocol::ui::*;
 use async_trait::async_trait;
-use present_protocol::config::GlobalConfig;
-use present_protocol::deck::{DeckMode, Slide};
-use present_protocol::ids::SlideId;
-use present_protocol::ui::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -733,7 +733,7 @@ impl ProjectRuntime {
             .collect()
     }
 
-    async fn template(&self) -> R<present_protocol::template::TemplateDescription> {
+    async fn template(&self) -> R<analyst_deck_protocol::template::TemplateDescription> {
         let cached = self.lock().tool_state_template.clone();
         let value = match cached {
             Some(v) => v,
@@ -1103,7 +1103,7 @@ impl ProjectRuntime {
             }
             st.diagnostics.extend(diags.iter().cloned());
         }
-        let typed: Vec<present_protocol::kernel::Diagnostic> = diags
+        let typed: Vec<analyst_deck_protocol::kernel::Diagnostic> = diags
             .iter()
             .filter_map(|d| serde_json::from_value(d.clone()).ok())
             .collect();
@@ -1374,7 +1374,7 @@ impl ProjectRuntime {
                 .kernel
                 .call_value("refs.table", json!({"cite": cite}))
                 .await?;
-            let parsed: present_protocol::deck::Table =
+            let parsed: analyst_deck_protocol::deck::Table =
                 serde_json::from_value(table).map_err(|e| IpcError::internal(e.to_string()))?;
             passage.highlight_cells =
                 Some((0, 0, parsed.rows.len() as u32, parsed.columns.len() as u32));
@@ -1448,7 +1448,10 @@ impl ProjectRuntime {
         Ok(out)
     }
 
-    fn after_restore(self: &Arc<Self>, id: present_protocol::ids::SnapshotId) -> R<SnapshotView> {
+    fn after_restore(
+        self: &Arc<Self>,
+        id: analyst_deck_protocol::ids::SnapshotId,
+    ) -> R<SnapshotView> {
         self.lock().tool_state_template = None;
         let ids: Vec<String> = self
             .ws
@@ -1623,7 +1626,7 @@ impl ProjectRuntime {
                         return Err(IpcError::invalid("switching back needs via: \"revert\" (importing a built deck is not available yet)"));
                     }
                     let log = rt.ws.snapshots().log().map_err(internal)?;
-                    let before = log.iter().rev().find(|r| r.reason == present_protocol::config::SnapshotReason::ModeSwitch).ok_or_else(|| IpcError::not_found("no snapshot from before the switch to code mode"))?;
+                    let before = log.iter().rev().find(|r| r.reason == analyst_deck_protocol::config::SnapshotReason::ModeSwitch).ok_or_else(|| IpcError::not_found("no snapshot from before the switch to code mode"))?;
                     rt.ws.snapshots().restore(&before.snapshot_id).map_err(internal)?;
                 }
                 _ => return Ok(Some("already in that mode".into())),
@@ -2070,9 +2073,9 @@ impl ProjectRuntime {
     }
 }
 
-fn empty_deck() -> present_protocol::deck::Deck {
-    present_protocol::deck::Deck {
-        schema_version: present_protocol::SCHEMA_VERSION,
+fn empty_deck() -> analyst_deck_protocol::deck::Deck {
+    analyst_deck_protocol::deck::Deck {
+        schema_version: analyst_deck_protocol::SCHEMA_VERSION,
         mode: DeckMode::Structured,
         title: String::new(),
         author: None,
@@ -2086,7 +2089,7 @@ fn empty_deck() -> present_protocol::deck::Deck {
     }
 }
 
-fn locate(deck: &present_protocol::deck::Deck, id: &SlideId) -> (u32, String) {
+fn locate(deck: &analyst_deck_protocol::deck::Deck, id: &SlideId) -> (u32, String) {
     let mut index = 0;
     for section in &deck.sections {
         for s in &section.slides {

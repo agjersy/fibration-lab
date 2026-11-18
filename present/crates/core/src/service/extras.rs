@@ -3,9 +3,9 @@
 //! assets, and provider keys.
 
 use super::*;
+use analyst_deck_protocol::kernel::LayoutThumbnail;
+use analyst_deck_protocol::ui::{AnalystItem, AssetView};
 use base64::Engine;
-use present_protocol::kernel::LayoutThumbnail;
-use present_protocol::ui::{AnalystItem, AssetView};
 
 const ASSET_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "emf", "wmf"];
 
@@ -143,7 +143,7 @@ impl ProjectRuntime {
         let updated =
             toml::to_string_pretty(&doc).map_err(|e| IpcError::internal(e.to_string()))?;
         // Refuse values the configuration does not accept before anything is written.
-        toml::from_str::<present_protocol::config::ProjectConfig>(&updated)
+        toml::from_str::<analyst_deck_protocol::config::ProjectConfig>(&updated)
             .map_err(|e| IpcError::invalid(format!("not a valid policy: {e}")))?;
         write_atomic(&path, updated.as_bytes()).map_err(|e| err(IpcErrorCode::Io, e))
     }
@@ -194,7 +194,7 @@ impl ProjectRuntime {
             let _ = std::fs::remove_file(rt.ws.project.root.join(&probe_rel));
             rt.ws
                 .snapshot(
-                    present_protocol::config::SnapshotReason::Manual,
+                    analyst_deck_protocol::config::SnapshotReason::Manual,
                     None,
                     Some("before replacing the template"),
                 )

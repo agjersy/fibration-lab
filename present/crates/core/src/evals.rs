@@ -12,11 +12,11 @@ use crate::agent::AutoApprover;
 use crate::project::Project;
 use crate::session::{build_agent, policy_for, ResolvedModel};
 use crate::workspace::{OpenOptions, Workspace};
-use anyhow::{anyhow, Context, Result};
-use present_protocol::deck::{DeckMode, Slide};
-use present_protocol::evals::{
+use analyst_deck_protocol::deck::{DeckMode, Slide};
+use analyst_deck_protocol::evals::{
     Check, CheckResult, NativeKind, Scorecard, ScorecardSummary, TaskFile, TaskResult,
 };
+use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

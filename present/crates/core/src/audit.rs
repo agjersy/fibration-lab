@@ -1,6 +1,6 @@
 //! The local audit log of model requests (PROTOCOL 10): metadata only, never content.
 
-use present_protocol::audit::AuditRecord;
+use analyst_deck_protocol::audit::AuditRecord;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

@@ -19,8 +19,8 @@ crate-type = ["lib"]
 tauri-build = { workspace = true, features = [] }
 
 [dependencies]
-present-core = { path = "../../../crates/core" }
-present-protocol = { path = "../../../crates/protocol" }
+analyst-deck = { path = "../../../crates/core" }
+analyst-deck-protocol = { path = "../../../crates/protocol" }
 tauri = { workspace = true, features = ["protocol-asset"] }
 tauri-plugin-dialog.workspace = true
 serde.workspace = true

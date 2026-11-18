@@ -1,12 +1,12 @@
 [package]
-name = "present-core"
+name = "analyst-deck"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-present-protocol = { path = "../protocol" }
+analyst-deck-protocol = { path = "../protocol" }
 wb-net = { path = "../../../crates/wb-net" }
 wb-sandbox = { path = "../../../crates/wb-sandbox" }
 wb-providers = { path = "../../../crates/wb-providers" }

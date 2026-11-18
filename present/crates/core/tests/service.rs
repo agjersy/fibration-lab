@@ -1,10 +1,10 @@
 //! D3 acceptance: the service layer the desktop shell calls, against the real kernel
 //! and a scripted model.
 
-use present_core::service::{ProjectRuntime, Workbench};
-use present_core::session::ResolvedModel;
-use present_protocol::deck::DeckMode;
-use present_protocol::ui::{IpcErrorCode, ProjectEvent, ProposalDecision};
+use analyst_deck::service::{ProjectRuntime, Workbench};
+use analyst_deck::session::ResolvedModel;
+use analyst_deck_protocol::deck::DeckMode;
+use analyst_deck_protocol::ui::{IpcErrorCode, ProjectEvent, ProposalDecision};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,7 +26,7 @@ struct Rig {
     rt: Arc<ProjectRuntime>,
 }
 
-fn scripted(scripts: Vec<Vec<ModelEvent>>) -> present_core::service::ModelFactory {
+fn scripted(scripts: Vec<Vec<ModelEvent>>) -> analyst_deck::service::ModelFactory {
     let client = Arc::new(ScriptedModelClient::new(scripts));
     Arc::new(move |_spec: Option<&str>| {
         let client = client.clone();
@@ -155,7 +155,7 @@ async fn manual_editing_history_and_registry() {
     // A stale hash is a conflict; the current one applies.
     let mut doc = serde_json::to_value(&created.slide).unwrap();
     doc["notes"] = json!({"paragraphs": [{"runs": [{"t": "Speaker note"}]}]});
-    let edited: present_protocol::deck::Slide = serde_json::from_value(doc).unwrap();
+    let edited: analyst_deck_protocol::deck::Slide = serde_json::from_value(doc).unwrap();
     let stale = rt
         .slide_update(edited.clone(), Some("sha256:0000"))
         .unwrap_err();
@@ -465,8 +465,8 @@ const PIXEL: &[u8] = &[
 
 #[tokio::test]
 async fn assets_previews_analyst_imports_and_template_replacement() {
+    use analyst_deck_protocol::ui::ThumbKind;
     use base64::Engine;
-    use present_protocol::ui::ThumbKind;
     let Some(rig) = rig(vec![]).await else { return };
     let rt = &rig.rt;
     let mut rx = rt.subscribe();
@@ -591,7 +591,7 @@ async fn assets_previews_analyst_imports_and_template_replacement() {
     assert!(!refused);
 
     // A persisted policy change survives; an invalid one is refused and writes nothing.
-    use present_protocol::ui::PolicyPatch;
+    use analyst_deck_protocol::ui::PolicyPatch;
     let patch = PolicyPatch {
         edits: Some("auto".into()),
         max_steps: Some(12),

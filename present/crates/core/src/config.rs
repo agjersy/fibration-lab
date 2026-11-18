@@ -1,7 +1,7 @@
 //! Home directory resolution and configuration loading (PROTOCOL 4.1, 4.2).
 
+use analyst_deck_protocol::config::{GlobalConfig, ProjectConfig};
 use anyhow::Context;
-use present_protocol::config::{GlobalConfig, ProjectConfig};
 use std::path::{Path, PathBuf};
 
 /// `PRESENT_HOME`, else `%APPDATA%\Present` on Windows, else `~/.present`.
