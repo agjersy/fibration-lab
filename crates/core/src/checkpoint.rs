@@ -557,6 +557,63 @@ mod tests {
         dir
     }
 
+    /// Deck documents are files of the repository: a checkpoint covers them with the code,
+    /// a restore limited to one deck's documents leaves everything else alone, and the
+    /// history says why each checkpoint was taken. This is what replaced the deck
+    /// workbench's own snapshot store.
+    #[test]
+    fn checkpoints_cover_decks_and_restore_one_deck() {
+        let repo = temp_repo();
+        let r = repo.path();
+        let slides = r.join("decks/q3/deck/slides");
+        std::fs::create_dir_all(&slides).unwrap();
+        std::fs::write(r.join("decks/q3/deck/deck.json"), "{\"mode\":\"structured\"}").unwrap();
+        std::fs::write(slides.join("s-1.json"), "{\"title\":\"one\"}").unwrap();
+        std::fs::create_dir_all(r.join("decks/q3/exports")).unwrap();
+        std::fs::write(r.join("decks/q3/.gitignore"), "exports/\n").unwrap();
+        std::fs::write(r.join("decks/q3/exports/q3.pptx"), "built").unwrap();
+        let index_before = std::fs::read(r.join(".git/index")).unwrap();
+
+        create_labeled(r, "deck-q3-1", "before switching the deck to code mode").unwrap();
+        // The switch: the slides become a script; meanwhile the user edits code.
+        std::fs::remove_file(slides.join("s-1.json")).unwrap();
+        std::fs::write(r.join("decks/q3/deck/deck.json"), "{\"mode\":\"code\"}").unwrap();
+        std::fs::write(r.join("decks/q3/deck/build.py"), "deck = 1\n").unwrap();
+        std::fs::write(r.join("a.py"), "a = 2\n").unwrap();
+
+        restore_paths(r, "deck-q3-1", &["decks/q3/deck".to_string()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(r.join("decks/q3/deck/deck.json")).unwrap(),
+            "{\"mode\":\"structured\"}"
+        );
+        assert!(slides.join("s-1.json").is_file());
+        assert!(!r.join("decks/q3/deck/build.py").exists(), "the script is gone");
+        // Outside the deck's documents nothing moved: code, exports, the user's index.
+        assert_eq!(std::fs::read_to_string(r.join("a.py")).unwrap(), "a = 2\n");
+        assert!(r.join("decks/q3/exports/q3.pptx").is_file());
+        assert_eq!(std::fs::read(r.join(".git/index")).unwrap(), index_before);
+
+        // A whole-tree restore takes code and deck back together.
+        create(r, "turn-2").unwrap();
+        std::fs::write(r.join("a.py"), "a = 3\n").unwrap();
+        std::fs::write(slides.join("s-2.json"), "{\"title\":\"two\"}").unwrap();
+        restore(r, "turn-2").unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("a.py")).unwrap(), "a = 2\n");
+        assert!(!slides.join("s-2.json").exists());
+
+        let h = history(r).unwrap();
+        assert_eq!(
+            h.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["deck-q3-1", "turn-2"]
+        );
+        assert_eq!(
+            h[0].label.as_deref(),
+            Some("before switching the deck to code mode")
+        );
+        assert!(h[1].label.is_none() && h[1].created > 0);
+        assert!(restore_paths(r, "missing", &["decks/q3/deck".to_string()]).is_err());
+    }
+
     #[test]
     fn checkpoint_restore_and_prune() {
         let repo = temp_repo();
