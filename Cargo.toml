@@ -11,6 +11,7 @@ members = [
     # Analysis workbench
     "crates/protocol",
     "crates/core",
+    "crates/evals",
     "crates/cli",
     "crates/serve",
     "apps/desktop/src-tauri",

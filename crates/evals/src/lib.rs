@@ -7,11 +7,11 @@
 //! is judged per edit against the scope in force when that edit was decided. Each task runs
 //! with its own temporary analyst home.
 
-use crate::agent::{Agent, AgentConfig, AutoApprover};
-use crate::kernel::{KernelArgs, KernelClient, LocalStdio};
-use crate::session::Session;
-use crate::tools::gate::Policy;
-use crate::tools::ToolContext;
+use analyst_core::agent::{Agent, AgentConfig, AutoApprover};
+use analyst_core::kernel::{wait_for_run, KernelArgs, KernelClient, LocalStdio};
+use analyst_core::session::Session;
+use analyst_core::tools::gate::Policy;
+use analyst_core::tools::ToolContext;
 use analyst_protocol::config::{EditPolicy, ProjectConfig, RunPolicy};
 use analyst_protocol::evals::*;
 use analyst_protocol::kernel::*;
@@ -105,9 +105,9 @@ pub fn prepare_fixture(task: &LoadedTask, dest: &Path) -> Result<()> {
     if !gi.is_file() {
         std::fs::write(&gi, "out/\n.venv/\n__pycache__/\n.analyst/env.sh\n")?;
     }
-    crate::checkpoint::git(dest, &["init", "-q"], None)?;
-    crate::checkpoint::git(dest, &["add", "-A"], None)?;
-    crate::checkpoint::git(
+    analyst_core::checkpoint::git(dest, &["init", "-q"], None)?;
+    analyst_core::checkpoint::git(dest, &["add", "-A"], None)?;
+    analyst_core::checkpoint::git(
         dest,
         &["commit", "-q", "--allow-empty", "-m", "fixture"],
         None,
@@ -153,36 +153,6 @@ fn pair_key(p: &SimilarPair) -> (String, String, String, String) {
     )
 }
 
-/// Wait for a run to finish, collecting its notifications. `rx` must have been subscribed
-/// before the run started.
-pub async fn wait_for_run(
-    rx: &mut tokio::sync::broadcast::Receiver<KernelNotification>,
-    run_id: &str,
-    timeout: Duration,
-) -> (Option<RunDone>, String, String, Vec<Artifact>) {
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    let mut artifacts = Vec::new();
-    loop {
-        let n = match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-            _ => return (None, stdout, stderr, artifacts),
-        };
-        if n.run_id() != Some(run_id) {
-            continue;
-        }
-        match n {
-            KernelNotification::Stdout(o) => stdout.push_str(&o.chunk),
-            KernelNotification::Stderr(o) => stderr.push_str(&o.chunk),
-            KernelNotification::Artifact(a) => artifacts.push(a.artifact),
-            KernelNotification::Done(d) => return (Some(d), stdout, stderr, artifacts),
-            KernelNotification::Other { .. } => {}
-        }
-    }
-}
-
 fn result(kind: &str, passed: bool, detail: impl Into<String>) -> CheckResult {
     CheckResult {
         kind: kind.to_string(),
@@ -225,7 +195,7 @@ pub fn judged_edits(events: &[Event]) -> Vec<JudgedEdit> {
                 if is_declare_scope(name) {
                     declares.insert(id.clone(), arguments.clone());
                 } else if let Some(p) = arguments.get("path").and_then(|p| p.as_str()) {
-                    if let Ok(n) = crate::util::normalize_rel_path(p) {
+                    if let Ok(n) = analyst_core::util::normalize_rel_path(p) {
                         call_paths.insert(id.clone(), n);
                     }
                 }
@@ -240,7 +210,7 @@ pub fn judged_edits(events: &[Event]) -> Vec<JudgedEdit> {
                         .map(|a| {
                             a.iter()
                                 .filter_map(|v| v.as_str())
-                                .filter_map(|s| crate::util::normalize_rel_path(s).ok())
+                                .filter_map(|s| analyst_core::util::normalize_rel_path(s).ok())
                                 .collect::<BTreeSet<_>>()
                         })
                         .unwrap_or_default();
@@ -292,7 +262,7 @@ pub fn agent_runs(events: &[Event]) -> Vec<(String, String)> {
 /// Paths that differ from `HEAD` in the working tree (modified, deleted, or untracked and not
 /// ignored).
 pub fn tree_changes(repo: &Path) -> Result<Vec<String>> {
-    let out = crate::checkpoint::git(
+    let out = analyst_core::checkpoint::git(
         repo,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         None,
@@ -603,13 +573,13 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
     std::fs::create_dir_all(&task_home)?;
     // Commit the prepared environment (for example a `uv.lock` written by `uv sync`), so the
     // tree diff after the turn shows only what happened during the task.
-    crate::checkpoint::git(&repo, &["add", "-A"], None)?;
-    crate::checkpoint::git(
+    analyst_core::checkpoint::git(&repo, &["add", "-A"], None)?;
+    analyst_core::checkpoint::git(
         &repo,
         &["commit", "-q", "--allow-empty", "-m", "pre-task baseline"],
         None,
     )?;
-    let mut project = crate::config::load_project(&repo)?;
+    let mut project = analyst_core::config::load_project(&repo)?;
     if env.auto {
         project.policy.edits = EditPolicy::Auto;
         project.policy.runs = RunPolicy::Auto;
@@ -630,7 +600,7 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
             };
             match KernelClient::connect(
                 Box::new(LocalStdio::with_launcher(launcher.clone(), args)),
-                crate::CORE_VERSION,
+                analyst_core::CORE_VERSION,
             )
             .await
             {
@@ -738,9 +708,9 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
 /// Session interpreter for a fixture: `uv sync` when a `pyproject.toml` exists and `uv` is on
 /// PATH, then `.venv/bin/python`; else `python3`.
 async fn fixture_python(repo: &Path) -> String {
-    if repo.join("pyproject.toml").is_file() && crate::util::find_tool("uv").is_some() {
-        match crate::target::run_command(
-            &crate::egress::uv_install("uv", &["sync"], &["-q"]),
+    if repo.join("pyproject.toml").is_file() && analyst_core::util::find_tool("uv").is_some() {
+        match analyst_core::target::run_command(
+            &analyst_core::egress::uv_install("uv", &["sync"], &["-q"]),
             Some(repo),
         )
         .await
@@ -753,7 +723,7 @@ async fn fixture_python(repo: &Path) -> String {
     if venv.is_file() {
         venv.to_string_lossy().to_string()
     } else {
-        crate::util::tool("python3")
+        analyst_core::util::tool("python3")
     }
 }
 
@@ -851,7 +821,7 @@ pub fn write_scorecard(results_dir: &Path, sc: &Scorecard) -> Result<PathBuf> {
             }
         })
         .collect();
-    let path = results_dir.join(format!("{safe}-{}.json", crate::util::now_stamp()));
+    let path = results_dir.join(format!("{safe}-{}.json", analyst_core::util::now_stamp()));
     std::fs::write(&path, serde_json::to_string_pretty(sc)?)?;
     Ok(path)
 }
@@ -863,7 +833,7 @@ mod tests {
     use wb_providers::ScriptedModelClient;
 
     fn fake_kernel_launcher() -> Vec<String> {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake_kernel.py");
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/tests/fake_kernel.py");
         vec!["python3".into(), p.to_string_lossy().to_string()]
     }
 
@@ -1060,12 +1030,12 @@ count = 1
     async fn no_edits_sees_changes_that_bypass_proposals() {
         let repo = tempfile::tempdir().unwrap();
         let r = repo.path();
-        crate::checkpoint::git(r, &["init", "-q"], None).unwrap();
+        analyst_core::checkpoint::git(r, &["init", "-q"], None).unwrap();
         std::fs::write(r.join(".gitignore"), "out/\n").unwrap();
         std::fs::write(r.join("a.py"), "a = 1\n").unwrap();
         std::fs::write(r.join("b.py"), "b = 1\n").unwrap();
-        crate::checkpoint::git(r, &["add", "-A"], None).unwrap();
-        crate::checkpoint::git(r, &["commit", "-q", "-m", "base"], None).unwrap();
+        analyst_core::checkpoint::git(r, &["add", "-A"], None).unwrap();
+        analyst_core::checkpoint::git(r, &["commit", "-q", "-m", "base"], None).unwrap();
         assert!(tree_changes(r).unwrap().is_empty());
         // What a snippet would do: no proposal, no decision event.
         std::fs::write(r.join("a.py"), "a = 2\n").unwrap();

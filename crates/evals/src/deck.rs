@@ -9,11 +9,11 @@
 //! finished deck, its build and checker report, and the turn's summary.
 
 use super::EvalEnv;
-use crate::agent::{Agent, AgentConfig, AutoApprover};
-use crate::service::decks::{self, DeckOptions};
-use crate::session::Session;
-use crate::tools::gate::Policy;
-use crate::tools::ToolContext;
+use analyst_core::agent::{Agent, AgentConfig, AutoApprover};
+use analyst_core::service::decks::{self, DeckOptions};
+use analyst_core::session::Session;
+use analyst_core::tools::gate::Policy;
+use analyst_core::tools::ToolContext;
 use analyst_deck::tools::dispatch::{slide_text, title_of};
 use analyst_deck::workspace::Workspace;
 use analyst_deck_protocol::deck::{DeckMode, Slide};
@@ -117,9 +117,9 @@ pub fn prepare(
         .with_context(|| format!("{} needs a TEMPLATE file", fixture.display()))?;
     let template = templates_dir.join(template_name.trim());
     std::fs::create_dir_all(repo)?;
-    crate::init::init_repo(
+    analyst_core::init::init_repo(
         repo,
-        &crate::init::InitOptions {
+        &analyst_core::init::InitOptions {
             run_uv: false,
             git: false,
         },
@@ -509,7 +509,7 @@ async fn run_in(
     let task_home = work.join("home");
     std::fs::create_dir_all(&task_home)?;
 
-    let mut project: ProjectConfig = crate::config::load_project(&repo)?;
+    let mut project: ProjectConfig = analyst_core::config::load_project(&repo)?;
     // Deck evaluations run unattended: edits apply inside the declared scope.
     project.policy.edits = EditPolicy::Auto;
     project.policy.runs = RunPolicy::Auto;
@@ -548,9 +548,9 @@ async fn run_in(
         }
     }
     // The prepared project is the baseline the turn's checkpoint and scope start from.
-    crate::checkpoint::git(&repo, &["init", "-q"], None)?;
-    crate::checkpoint::git(&repo, &["add", "-A"], None)?;
-    crate::checkpoint::git(
+    analyst_core::checkpoint::git(&repo, &["init", "-q"], None)?;
+    analyst_core::checkpoint::git(&repo, &["add", "-A"], None)?;
+    analyst_core::checkpoint::git(
         &repo,
         &["commit", "-q", "--allow-empty", "-m", "fixture"],
         None,

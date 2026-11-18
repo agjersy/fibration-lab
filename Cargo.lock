@@ -51,6 +51,7 @@ dependencies = [
  "analyst-core",
  "analyst-deck",
  "analyst-deck-protocol",
+ "analyst-evals",
  "analyst-protocol",
  "anyhow",
  "async-trait",
@@ -169,6 +170,26 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "analyst-evals"
+version = "0.0.1"
+dependencies = [
+ "analyst-core",
+ "analyst-deck",
+ "analyst-deck-protocol",
+ "analyst-protocol",
+ "anyhow",
+ "glob",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "walkdir",
+ "wb-providers",
 ]
 
 [[package]]

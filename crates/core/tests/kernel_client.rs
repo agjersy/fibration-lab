@@ -101,7 +101,7 @@ async fn hello_info_index_run_and_shutdown() {
     assert!(started.out_dir.starts_with("out/hello/"));
 
     let (done, stdout, _stderr, artifacts) =
-        analyst_core::evals::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20)).await;
+        analyst_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20)).await;
     let done = done.expect("run.done");
     assert_eq!(done.status, RunStatus::Done);
     assert_eq!(done.exit_code, Some(0));
@@ -166,7 +166,7 @@ async fn reconnect_reattaches_running_runs() {
     // After reconnect, run.attach replays from the recorded offsets: the remaining ticks and
     // run.done arrive on the same subscription.
     let (done, after, _, _) =
-        analyst_core::evals::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20)).await;
+        analyst_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20)).await;
     let done = done.expect("run.done after reconnect");
     assert_eq!(done.status, RunStatus::Done);
     let all = format!("{before}{after}");
@@ -340,7 +340,7 @@ async fn cancel_guard_cancels_the_run_when_dropped() {
     assert_eq!(guard.run_id(), started.run_id);
     drop(guard);
     let (done, _, _, _) =
-        analyst_core::evals::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(15)).await;
+        analyst_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(15)).await;
     assert_eq!(done.expect("run.done").status, RunStatus::Cancelled);
 
     // A disarmed guard leaves the run alone.
@@ -398,7 +398,7 @@ async fn dropping_a_run_script_call_cancels_the_run() {
         .map(|r| r.run_id.clone())
         .expect("a run was started");
     let (done, _, _, _) =
-        analyst_core::evals::wait_for_run(&mut rx, &run_id, Duration::from_secs(15)).await;
+        analyst_core::kernel::wait_for_run(&mut rx, &run_id, Duration::from_secs(15)).await;
     let status = match done {
         Some(d) => d.status,
         None => client.run_status(&run_id).await.unwrap().status,
