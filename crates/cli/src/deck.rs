@@ -85,6 +85,41 @@ enum DeckCmd {
         #[command(subcommand)]
         cmd: HistoryCmd,
     },
+    /// Place a figure of one of the project's runs on a slide, with the run's citation (as
+    /// "Place on slide" in the app). See `analyst run` for run ids and artifact paths.
+    PlaceFigure {
+        /// The run id (`analyst run` prints it).
+        #[arg(long)]
+        run: String,
+        /// The figure's path as the run reported it.
+        #[arg(long)]
+        artifact: String,
+        /// The slide id (`s-...`).
+        #[arg(long)]
+        slide: String,
+        /// The placeholder (default: the first free one of the layout that takes an image).
+        #[arg(long)]
+        placeholder: Option<String>,
+        /// Alt text (default: the figure's title).
+        #[arg(long)]
+        alt: Option<String>,
+    },
+    /// Place the equation of a function on a slide as a native equation, extracted and
+    /// checked by the analysis kernel.
+    PlaceEquation {
+        /// The source file, relative to the repository.
+        #[arg(long)]
+        path: String,
+        /// The function's name (or `Class.method`).
+        #[arg(long)]
+        function: String,
+        /// The slide id (`s-...`).
+        #[arg(long)]
+        slide: String,
+        /// The placeholder (default: the first free non-title one that takes text or an image).
+        #[arg(long)]
+        placeholder: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -232,6 +267,12 @@ pub async fn run(app: &App, args: DeckArgs) -> Result<i32> {
             cmd: TemplateCmd::Inspect { file, catalog },
         } => template_inspect(app, &args, file, *catalog).await,
         DeckCmd::History { cmd } => history_cmd(app, cmd).await,
+        DeckCmd::PlaceFigure { .. } | DeckCmd::PlaceEquation { .. } => {
+            let (services, svc) = open(app, &args).await?;
+            let outcome = place(app, &svc, &args.cmd).await;
+            services.shutdown().await;
+            outcome
+        }
         _ => {
             let (services, svc) = open(app, &args).await?;
             let outcome = deck_cmd(&svc, &args.cmd).await;
@@ -301,6 +342,65 @@ async fn history_cmd(app: &App, cmd: &HistoryCmd) -> Result<i32> {
             println!("reverted turn {turn} (restored checkpoint {id})");
         }
     }
+    Ok(0)
+}
+
+/// `deck place-figure` and `deck place-equation`: the core placement functions the app and
+/// the agent use, written at once as a user edit against the slide as it was read.
+async fn place(app: &App, svc: &Arc<DeckService>, cmd: &DeckCmd) -> Result<i32> {
+    use analyst_core::service::{artifacts, provenance, runs::RunService};
+    let placed = match cmd {
+        DeckCmd::PlaceFigure {
+            run,
+            artifact,
+            slide,
+            placeholder,
+            alt,
+        } => {
+            let session = app.deck_session()?;
+            let runs = RunService::standalone(&session, Target::Local, app.project.clone());
+            artifacts::place_figure(
+                &runs,
+                &session,
+                &app.repo,
+                svc,
+                slide,
+                run,
+                artifact,
+                placeholder.as_deref(),
+                alt.as_deref(),
+            )
+            .await
+        }
+        DeckCmd::PlaceEquation {
+            path,
+            function,
+            slide,
+            placeholder,
+        } => {
+            let kernel = app.connect(&Target::Local).await?;
+            let placed = provenance::place_equation(
+                &kernel,
+                &app.repo,
+                svc,
+                slide,
+                path,
+                function,
+                placeholder.as_deref(),
+            )
+            .await;
+            let _ = kernel.shutdown().await;
+            placed
+        }
+        _ => unreachable!("only the placement commands"),
+    }
+    .map_err(|e| anyhow!("{}", e.message))?;
+    let slide: analyst_deck_protocol::deck::Slide =
+        serde_json::from_value(placed.slide).context("the placed slide")?;
+    let id = slide.id.to_string();
+    svc.slide_update(slide, Some(&placed.hash))
+        .map_err(|e| anyhow!("{}", e.message))?;
+    println!("placed on slide {id}");
     Ok(0)
 }
 
@@ -426,8 +526,10 @@ async fn deck_cmd(svc: &Arc<DeckService>, cmd: &DeckCmd) -> Result<i32> {
         DeckCmd::List
         | DeckCmd::Init { .. }
         | DeckCmd::Template { .. }
-        | DeckCmd::History { .. } => {
-            unreachable!("handled without opening the deck")
+        | DeckCmd::History { .. }
+        | DeckCmd::PlaceFigure { .. }
+        | DeckCmd::PlaceEquation { .. } => {
+            unreachable!("handled before")
         }
     }
 }

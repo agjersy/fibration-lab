@@ -1295,11 +1295,71 @@ mod tests {
             vec!["analyst", "deck", "history", "list", "--limit", "5"],
             vec!["analyst", "deck", "history", "restore", "abc"],
             vec!["analyst", "deck", "history", "revert-turn", "c-1"],
+            vec![
+                "analyst",
+                "deck",
+                "place-figure",
+                "--run",
+                "20261118-1200-ab12",
+                "--artifact",
+                "out/figures/fig-1.png",
+                "--slide",
+                "s-fig",
+                "--alt",
+                "Decay curve",
+            ],
+            vec![
+                "analyst",
+                "deck",
+                "--deck",
+                "q3",
+                "place-equation",
+                "--path",
+                "analysis/models.py",
+                "--function",
+                "double_exp",
+                "--slide",
+                "s-eq1",
+                "--placeholder",
+                "body",
+            ],
             vec!["analyst", "eval", "run", "--tasks", "present/evals/tasks"],
             vec!["analyst", "chat", "--mode", "slides", "hello"],
         ] {
             assert!(Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
         }
         assert!(Cli::try_parse_from(["analyst", "deck", "--engine", "keynote", "build"]).is_err());
+        // The placement commands need their run, artifact or function, and the slide.
+        for argv in [
+            vec![
+                "analyst",
+                "deck",
+                "place-figure",
+                "--run",
+                "r",
+                "--slide",
+                "s-1",
+            ],
+            vec![
+                "analyst",
+                "deck",
+                "place-equation",
+                "--path",
+                "a.py",
+                "--slide",
+                "s-1",
+            ],
+            vec![
+                "analyst",
+                "deck",
+                "place-equation",
+                "--path",
+                "a.py",
+                "--function",
+                "f",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(&argv).is_err(), "{argv:?}");
+        }
     }
 }
