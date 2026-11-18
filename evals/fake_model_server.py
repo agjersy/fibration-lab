@@ -69,6 +69,29 @@ def called_tools(messages: list[dict]) -> list[tuple[str, dict]]:
     return out
 
 
+def tool_results(messages: list[dict]) -> dict[str, dict]:
+    """Tool results by call id, parsed as JSON where they are JSON."""
+    out = {}
+    for m in messages:
+        if m.get("role") == "tool":
+            c = m.get("content")
+            if isinstance(c, list):
+                c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+            try:
+                out[m.get("tool_call_id", "")] = json.loads(c or "{}")
+            except json.JSONDecodeError:
+                out[m.get("tool_call_id", "")] = {"text": c}
+    return out
+
+
+def since_last_user(messages: list[dict]) -> list[dict]:
+    """The messages after the last user message: the current turn so far."""
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            return messages[i + 1:]
+    return messages
+
+
 def last_user_text(messages: list[dict]) -> str:
     for m in reversed(messages):
         if m.get("role") == "user":
@@ -88,8 +111,81 @@ def first_user_text(messages: list[dict]) -> str:
     return ""
 
 
+MODELS_DOC_OLD = "    Math:\n        y = amplitude*exp(-t/tau)\n    \"\"\"\n"
+MODELS_DOC_NEW = ("    The residuals of a fit are (observed minus fit).\n\n"
+                  "    Math:\n        y = amplitude*exp(-t/tau)\n    \"\"\"\n")
+DOUBLE_EXP = '''def double_exp(t: np.ndarray, a1: float, tau1: float, a2: float, tau2: float) -> np.ndarray:
+    """Sum of two exponential decays.
+
+    Math:
+        y = a1*exp(-t/tau1) + a2*exp(-t/tau2)
+    """
+    return a1 * np.exp(-t / tau1) + a2 * np.exp(-t / tau2)
+
+
+'''
+
+
+def e2e_decide(messages: list[dict]) -> tuple[str | None, tuple[str, dict] | None] | None:
+    """Scripted turns for the desktop end-to-end tests (apps/desktop/e2e), keyed on the user's
+    message of the current turn. None when the message is not one of them."""
+    text = last_user_text(messages)
+    turn = since_last_user(messages)
+    calls = called_tools(turn)
+    names = [n for n, _ in calls]
+    results = list(tool_results(turn).values())
+    if "double exponential" in text:  # build mode: one edit proposal with two hunks, then a run
+        if "declare_scope" not in names:
+            return None, ("declare_scope", {"files": ["analysis/models.py"],
+                                            "plan": "Add double_exp next to single_exp and document the residuals."})
+        if "fs_propose_edit" not in names:
+            return None, ("fs_propose_edit", {"path": "analysis/models.py", "edits": [
+                {"old": "def single_exp(", "new": DOUBLE_EXP + "def single_exp("},
+                {"old": MODELS_DOC_OLD, "new": MODELS_DOC_NEW},
+            ]})
+        if "run_script" not in names:
+            return None, ("run_script", {"script": "scripts/decay_sim.py", "args": ["--tau", "2.0"]})
+        edited = any(isinstance(r, dict) and r.get("user_modified") for r in results)
+        if edited:
+            return "Applied your edited version of analysis/models.py and ran the decay simulation.", None
+        return "Added double_exp to analysis/models.py and ran the decay simulation.", None
+    if "Sweep tau over 1 and 3" in text:  # run mode: two runs
+        runs = names.count("run_script")
+        if runs < 2:
+            return None, ("run_script", {"script": "scripts/decay_sim.py", "args": ["--tau", ["1.0", "3.0"][runs]]})
+        return "Half-lives: 0.693 at tau = 1 and 2.079 at tau = 3; both fits agree with tau ln 2.", None
+    if "decay simulation at tau = 2" in text:  # run mode: one run
+        if "run_script" not in names:
+            return None, ("run_script", {"script": "scripts/decay_sim.py", "args": ["--tau", "2.0"]})
+        return "Half-life 1.386: the fit agrees with tau ln 2.", None
+    if "action title" in text:  # slides mode: retitle the first slide, then check the deck
+        if "deck_outline" not in names:
+            return None, ("deck_outline", {})
+        outline = next((r for r in results if isinstance(r, dict) and "slides" in r), {})
+        slide_id = (outline.get("slides") or [{}])[0].get("id", "")
+        if "deck_read_slide" not in names:
+            return None, ("deck_read_slide", {"slide_id": slide_id})
+        if "declare_scope" not in names:
+            return None, ("declare_scope", {"slides": [slide_id], "new_slides": 0, "plan": "An action title for the first slide."})
+        if "slide_propose_update" not in names:
+            read = next((r for r in results if isinstance(r, dict) and "slide" in r and "hash" in r), {})
+            slide = dict(read.get("slide") or {})
+            placeholders = dict(slide.get("placeholders") or {})
+            placeholders["title"] = {"type": "text", "text": {"paragraphs": [
+                {"runs": [{"t": "Decay constant recovered within 2% of the input"}]}]}}
+            slide["placeholders"] = placeholders
+            return None, ("slide_propose_update", {"slide_id": slide_id, "slide": slide})
+        if "check_run" not in names:
+            return None, ("check_run", {})
+        return "Retitled the first slide with its finding.", None
+    return None
+
+
 def decide(messages: list[dict]) -> tuple[str | None, tuple[str, dict] | None]:
     """Return (text, tool_call) for the next assistant turn."""
+    scripted = e2e_decide(messages)
+    if scripted is not None:
+        return scripted
     text = last_user_text(messages)
     m = re.search(r'echo_probe tool with token "([^"]+)"', text)
     if m:
@@ -140,7 +236,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "not found"})
         n = int(self.headers.get("content-length", "0"))
         req = json.loads(self.rfile.read(n) or b"{}")
-        text, call = decide(req.get("messages", []))
+        messages = req.get("messages", [])
+        text, call = decide(messages)
+        call_id = f"call_{len(called_tools(messages)) + 1}"
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("cache-control", "no-cache")
@@ -155,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
         chunk({"role": "assistant", "content": ""})
         if call is not None:
             name, args = call
-            chunk({"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": name, "arguments": ""}}]})
+            chunk({"tool_calls": [{"index": 0, "id": call_id, "type": "function", "function": {"name": name, "arguments": ""}}]})
             payload = json.dumps(args)
             for i in range(0, len(payload), 48):
                 chunk({"tool_calls": [{"index": 0, "function": {"arguments": payload[i:i + 48]}}]})

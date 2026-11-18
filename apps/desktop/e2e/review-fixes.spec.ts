@@ -1,23 +1,27 @@
 // End-to-end coverage for the defects of docs/REVIEW.md that only show in the
-// assembled app. Runs against the strict MockBackend (IPC.md sections 6 and 7).
-import { expect, test } from "@playwright/test";
+// assembled app, against the real core through analyst-serve.
 import type { Page } from "@playwright/test";
+import { createSession, expect, expectNoErrors, gotoApp, test, trackErrors } from "./harness";
+import type { Bridge } from "./harness";
 
-const REPO = "/home/user/projects/beam-sim";
-
-type Tracked = Page & { __errors?: string[] };
-
-async function createSession(page: Page) {
-  await page.goto("/");
-  await expect(page.getByTestId("topbar")).toBeVisible();
-  await page.getByTestId("new-session").click();
-  await page.getByLabel("Repository").fill(REPO);
-  await page.getByTestId("create-session").click();
-  const tab = page.getByTestId("session-tab").filter({ hasText: "beam-sim" });
-  await expect(tab).toBeVisible();
-  await expect(tab.locator(".dot.ready")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId("workbench")).toBeVisible();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+/** A closed session with one stored run-mode turn (a run of the decay simulation), made through the real commands. */
+async function seedClosedSession(bridge: Bridge): Promise<void> {
+  const info = await bridge.call<{ id: string; active_conversation: string }>("session_create", { repo_abs: bridge.repo("decay-analysis") });
+  const session = info.id;
+  const conversation = info.active_conversation;
+  await bridge.call("chat_set_mode", { session, conversation, mode: "run" });
+  await bridge.call("chat_send", { session, conversation, text: "Run the decay simulation at tau = 2 and check the fit." });
+  await expect
+    .poll(
+      async () => {
+        const s = await bridge.call<{ conversations: { id: string; busy: boolean; turns: number }[] }>("session_info", { session });
+        const c = s.conversations.find((x) => x.id === conversation);
+        return c !== undefined && !c.busy && c.turns >= 1;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe(true);
+  await bridge.call("session_close", { session });
 }
 
 async function openFileFromFinder(page: Page, query: string, path: string) {
@@ -29,24 +33,16 @@ async function openFileFromFinder(page: Page, query: string, path: string) {
   return editor;
 }
 
-test.describe("review fixes (mock backend)", () => {
-  test.beforeEach(async ({ page }) => {
-    const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(e.message));
-    page.on("console", (m) => {
-      if (m.type() === "error") errors.push(m.text());
-    });
-    (page as Tracked).__errors = errors;
-  });
-
+test.describe("review fixes (real core)", () => {
+  test.beforeEach(({ page }) => trackErrors(page));
   test.afterEach(async ({ page }) => {
-    expect((page as Tracked).__errors ?? [], "no console errors or page errors").toEqual([]);
-    expect(await page.evaluate(() => (globalThis as unknown as { __analystErrors?: string[] }).__analystErrors), "window.__analystErrors").toEqual([]);
+    await expectNoErrors(page);
     await expect(page.locator(".toast.error")).toHaveCount(0);
   });
 
-  test("B2/U5/U8: opening the seeded closed session works on the first click", async ({ page }) => {
-    await page.goto("/");
+  test("B2/U5/U8: opening the seeded closed session works on the first click", async ({ page, bridge }) => {
+    await seedClosedSession(bridge);
+    await gotoApp(page, bridge);
     await expect(page.getByTestId("welcome")).toBeVisible();
     const tab = page.getByTestId("session-tab").filter({ hasText: "decay-analysis" });
     await expect(tab).toBeVisible();
@@ -67,21 +63,18 @@ test.describe("review fixes (mock backend)", () => {
     await expect(chat.getByTestId("mode-select")).toHaveValue("run");
 
     // Runs and figures loaded without waiting for the kernel; the index followed it.
-    await expect(page.getByTestId("figure-tab").filter({ hasText: "decay-simulation" })).toBeVisible();
+    await expect(page.getByTestId("figure-tab").filter({ hasText: "decay" })).toBeVisible();
     await page.locator(".dv-tab", { hasText: "Runs" }).click();
     await expect(page.locator("[data-run]")).toHaveCount(1);
     await page.locator("[data-run]").click();
-    await expect(page.getByTestId("run-stdout")).toContainText("tau_fit");
+    await expect(page.getByTestId("run-stdout")).toContainText('"half_life"');
     await page.locator(".dv-tab", { hasText: "Scripts" }).click();
     await expect(page.locator('[data-script="decay_sim"]')).toBeVisible();
 
     // Events flow: a run started now streams and finishes.
     await page.locator('[data-script="decay_sim"] .script-header').click();
     await page.locator('[data-script="decay_sim"]').getByRole("button", { name: "Run", exact: true }).click();
-    await expect(page.getByTestId("run-output")).toContainText("exit 0", { timeout: 15_000 });
-    // The carriage-return progress bar shows its final state only.
-    await expect(page.getByTestId("run-stderr")).toContainText("fit 100%");
-    await expect(page.getByTestId("run-stderr")).not.toContainText("fit  25%");
+    await expect(page.getByTestId("run-output")).toContainText("exit 0", { timeout: 30_000 });
 
     // Close and reopen: still one click.
     await tab.getByRole("button", { name: /Close session/ }).click();
@@ -92,8 +85,8 @@ test.describe("review fixes (mock backend)", () => {
     await expect(page.getByTestId("chat").getByTestId("user-message")).toContainText("decay simulation");
   });
 
-  test("B9: run form with positional, choices, boolean, count and required options", async ({ page }) => {
-    await createSession(page);
+  test("B9: run form with positional, choices, boolean, count and required options", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     await page.locator(".dv-tab", { hasText: "Scripts" }).click();
     const card = page.locator('[data-script="fit_decay"]');
     await card.locator(".script-header").click();
@@ -127,7 +120,7 @@ test.describe("review fixes (mock backend)", () => {
     await card.getByRole("button", { name: "Run", exact: true }).click();
     const stdout = page.getByTestId("run-stdout");
     await expect(stdout).toContainText('argv: ["--model","double","--label","run 3","--no-plot","--no-weights","--verbose","--verbose","data/sample.csv","--note","two words"]', { timeout: 15_000 });
-    await expect(page.getByTestId("run-output")).toContainText("exit 0", { timeout: 15_000 });
+    await expect(page.getByTestId("run-output")).toContainText("exit 0", { timeout: 30_000 });
 
     // Two scripts open at once: every field has its own label target.
     const other = page.locator('[data-script="decay_sim"]');
@@ -138,8 +131,8 @@ test.describe("review fixes (mock backend)", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  test("proposal review: rejecting one chunk writes only the accepted change", async ({ page }) => {
-    await createSession(page);
+  test("proposal review: rejecting one chunk writes only the accepted change", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     const chat = page.getByTestId("chat");
     const input = chat.getByLabel("Message the agent");
     await input.fill("Add a double exponential model");
@@ -169,11 +162,11 @@ test.describe("review fixes (mock backend)", () => {
     await expect(editor.locator(".cm-content")).toContainText("def single_exp");
   });
 
-  test("B13: a focused terminal receives Ctrl+R and friends; app shortcuts stay off", async ({ page }) => {
-    await createSession(page);
+  test("B13: a focused terminal receives Ctrl+R and friends; app shortcuts stay off", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     await page.keyboard.press("Control+`");
     const term = page.getByTestId("xterm");
-    await expect(term.locator(".xterm-rows")).toContainText("$", { timeout: 15_000 });
+    await expect(term.locator(".xterm-rows")).toHaveText(/\S/, { timeout: 15_000 });
     await term.click();
 
     // Ctrl+R reaches readline instead of toggling the right dock.
@@ -182,6 +175,8 @@ test.describe("review fixes (mock backend)", () => {
     await expect(page.getByTestId("chat")).toBeVisible();
     // Ctrl+B, Ctrl+P, Ctrl+S, Ctrl+G, Ctrl+W, Ctrl+L, Ctrl+J do not toggle docks, open the palette, move focus or close anything.
     for (const key of ["b", "p", "s", "g", "w", "l", "j"]) await page.keyboard.press(`Control+${key}`);
+    // Ctrl+S reached the real terminal as XOFF; Ctrl+Q (XON) lets its output flow again.
+    await page.keyboard.press("Control+q");
     await expect(page.locator('[data-path="scripts"]')).toBeVisible();
     await expect(term).toBeVisible();
     await expect(page.getByTestId("palette")).toHaveCount(0);
@@ -211,13 +206,13 @@ test.describe("review fixes (mock backend)", () => {
 
     // Outside the terminal the same chord is the app's again.
     await page.locator('[data-path="notes.md"]').click();
-    await expect(page.locator('[data-testid="editor"][data-path="notes.md"] .cm-content')).toContainText("Session notes");
+    await expect(page.locator('[data-testid="editor"][data-path="notes.md"] .cm-content')).toContainText("Notes and decisions");
     await page.keyboard.press("Control+r");
     await expect(page.getByTestId("chat")).toBeHidden();
   });
 
-  test("B8/U6/U7: undo after open, unsaved-changes guard on tab close, expanded folders survive file changes", async ({ page }) => {
-    await createSession(page);
+  test("B8/U6/U7: undo after open, unsaved-changes guard on tab close, expanded folders survive file changes", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     await page.locator('[data-path="scripts"]').click();
     await page.locator('[data-path="scripts/decay_sim.py"]').click();
     const editor = page.locator('[data-testid="editor"][data-path="scripts/decay_sim.py"]');
@@ -247,7 +242,7 @@ test.describe("review fixes (mock backend)", () => {
     await page.keyboard.press("ControlOrMeta+s");
     await expect(tab).not.toContainText("•");
     await expect(page.locator('.tree-row[data-path="scripts/decay_sim.py"]')).toBeVisible();
-    await expect(page.locator('[data-path="scripts/bad.py"]')).toBeVisible();
+    await expect(page.locator('[data-path="scripts/fit_decay.py"]')).toBeVisible();
 
     // Edit again and discard: the tab closes and the buffer is released, so reopening shows the saved text.
     await editor.locator(".cm-content").click();
@@ -269,8 +264,8 @@ test.describe("review fixes (mock backend)", () => {
     await expect(page.locator('.tree-row[data-path="scripts/decay_sim.py"]')).toBeVisible();
   });
 
-  test("settings: provider keys, and the unsandboxed badge on a target without a sandbox", async ({ page }) => {
-    await createSession(page);
+  test("settings: provider keys", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     await expect(page.getByTestId("unsandboxed-badge")).toHaveCount(0);
     await page.getByRole("button", { name: "Settings" }).click();
     const dialog = page.getByRole("dialog", { name: "Settings" });
@@ -292,27 +287,35 @@ test.describe("review fixes (mock backend)", () => {
     await anthropic.getByRole("button", { name: "Remove" }).click();
     await expect(anthropic.locator(".badge")).toHaveText("no key");
 
-    // Switching to the target whose sandbox is "limits" shows the persistent badge.
-    await dialog.getByLabel("Target").selectOption("lab-gpu");
-    await dialog.getByRole("button", { name: "Done" }).click();
+  });
+
+  test("the unsandboxed badge on a session whose kernel has no sandbox", async ({ page, unsandboxedBridge }) => {
+    // The real core's one local target is sandboxed; a second bridge runs its kernels with
+    // resource limits only, the state a remote target without bubblewrap puts a session in.
+    await createSession(page, unsandboxedBridge, "decay-analysis");
     const badge = page.getByTestId("unsandboxed-badge");
     await expect(badge).toBeVisible({ timeout: 15_000 });
     await expect(badge).toHaveAttribute("title", /ask(s)? for your approval/);
+    // Closing the session stops its kernel, which shares the project with the other bridge.
+    await page.getByTestId("session-tab").filter({ hasText: "decay-analysis" }).getByRole("button", { name: /Close session/ }).click();
+    await expect(page.getByTestId("welcome")).toBeVisible();
   });
 
-  test("B7: a 5 MiB output stream stays responsive, is bounded, and can be shown in full", async ({ page }) => {
-    await createSession(page);
+  test("B7: a 1.9 MiB output stream stays responsive, is bounded, and can be shown in full", async ({ page, bridge }) => {
+    await createSession(page, bridge);
     await page.locator(".dv-tab", { hasText: "Scripts" }).click();
-    const card = page.locator('[data-script="decay_sim"]');
+    const card = page.locator('[data-script="flood"]');
     await card.locator(".script-header").click();
-    await card.getByLabel("extra arguments").fill("--flood 5");
     await card.getByRole("button", { name: "Run", exact: true }).click();
 
     const panel = page.getByTestId("run-output");
     const stdout = page.getByTestId("run-stdout");
-    // The whole run, 5 MiB included, finishes quickly; the old <pre> needed minutes of main-thread time.
-    await expect(panel).toContainText("exit 0", { timeout: 20_000 });
+    // The whole run finishes quickly; the old <pre> needed minutes of main-thread time.
+    await expect(panel).toContainText("exit 0", { timeout: 30_000 });
     await expect(stdout).toContainText("residual rms");
+    // The carriage-return progress bar shows its final state only.
+    await expect(page.getByTestId("run-stderr")).toContainText("fit 100%");
+    await expect(page.getByTestId("run-stderr")).not.toContainText("fit  25%");
     await expect(page.getByTestId("output-truncated")).toContainText("256.0 KiB");
 
     // Only a window of rows is in the DOM, whatever the size of the text.
@@ -322,10 +325,10 @@ test.describe("review fixes (mock backend)", () => {
     expect(tailRows).toBeGreaterThan(1000);
     expect(tailRows).toBeLessThan(4000);
 
-    // The full output comes from run_get and is still cheap to show and scroll.
+    // The full output (run_get reads up to 2 MiB per stream) is still cheap to show and scroll.
     await page.getByRole("button", { name: "Show full output" }).click();
     await expect(page.getByTestId("output-truncated")).toHaveCount(0);
-    await expect.poll(async () => Number(await stdout.getAttribute("data-rows")), { timeout: 10_000 }).toBeGreaterThan(40_000);
+    await expect.poll(async () => Number(await stdout.getAttribute("data-rows")), { timeout: 10_000 }).toBeGreaterThan(15_000);
     expect(await stdout.locator(".output-row").count()).toBeLessThan(200);
     const t0 = Date.now();
     await stdout.evaluate((el) => (el.scrollTop = 0));

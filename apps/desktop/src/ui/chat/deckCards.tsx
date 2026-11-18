@@ -10,7 +10,7 @@ import { ensureDeckInfo } from "../../state/deckActions";
 import { useDecks, useDeckState } from "../../state/decks";
 import type { OutlineRow } from "../../state/decks";
 import { useActiveSession, useSessionInfo } from "../../state/sessions";
-import { deckFileUrl } from "../../deck/files";
+import { deckFileUrl, useDeckFilesVersion } from "../../deck/files";
 import { slideTitle } from "../../deck/model";
 import { acceptProposal, rejectProposal } from "../editor/review";
 import { openDeckPanel } from "../workbench/controller";
@@ -31,6 +31,8 @@ function SlideThumb({ session, deck, slide, label }: { session: SessionId; deck:
   const d = useDeckState(session, deck);
   const info = useSessionInfo(session);
   const template = d?.info?.template;
+  // Re-render when a deck file fetched over the development bridge arrives.
+  useDeckFilesVersion();
   useEffect(() => {
     if (!template) void ensureDeckInfo(session, deck);
   }, [session, deck, template]);
