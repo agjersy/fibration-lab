@@ -70,7 +70,7 @@ These walkthroughs are the acceptance bar for the first usable version.
 |---|---|---|
 | Agent loop for analysis | Plan, propose, run, verify cycle. Review-gated edits. Script contract enforcement, including CLI-options and shared-logic checks. Run-only mode. Configurable policies and skills. No model-specific code paths. | Multi-model roles (planner, coder, reviewer). Parallel sub-tasks. |
 | Sandboxed Python runtime | Per-session venv via `uv`. Local or remote (SSH) execution target per session, with code synced out and only rendered products synced back; data never moves. Runs start directly on the host or login node. OS-level sandbox on macOS and Linux, local and remote. Runs survive disconnects. | Container backend. Scheduler (Slurm) launcher. Windows. |
-| Editor | Code editor with Python diagnostics, inline diff review, protected regions. | Language server on the target. Vim mode. Multibuffer views. |
+| Editor | Code editor with Python diagnostics, inline diff review, protected paths. | Language server on the target. Vim mode. Multibuffer views. |
 | Figure viewer | Dockable and undockable tabs. Run history. Side-by-side comparison. | Sending figures to vision-capable models. Interactive Plotly and Bokeh output. Figure annotation. |
 | Equation lens | LaTeX derived from pure-expression functions. Declared equations checked numerically against code. Click to jump to source. | Algorithm-level pseudocode views. Unit and dimension checks. |
 | Sessions | Tabs for repo plus venv plus conversation plus layout. Checkpoints and one-click revert. | Session templates. Archival and search across sessions. |

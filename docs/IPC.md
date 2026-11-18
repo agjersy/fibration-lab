@@ -38,7 +38,8 @@ interface SessionSummary {
   created_at: string; last_opened_at: string; open: boolean;
 }
 interface PolicyView {
-  edits: "review" | "auto-new-files" | "auto"; runs: "auto" | "ask";
+  preset: "review" | "auto" | "read-only" | null;   // what the five keys amount to; null when custom
+  edits: "review" | "auto-new-files" | "auto" | "deny"; runs: "auto" | "ask";
   packages: "ask" | "auto" | "deny"; shell: "ask" | "auto" | "deny";
   git: "ask" | "auto" | "deny";   // no network setting: runs never have network
   protected: string[]; max_steps: number;
@@ -145,7 +146,7 @@ Argument names are exact. `session` is always a `SessionId`.
 | `session_subscribe` | `{ session, channel }` | `string` | subscription id; events flow until `session_unsubscribe` or window close |
 | `session_unsubscribe` | `{ subscription }` | `null` | |
 | `session_set_target` | `{ session, target }` | `TaskId` | re-binds env, syncs; `session_changed` on completion |
-| `session_set_policy` | `{ session, policy: Partial<PolicyView> }` | `PolicyView` | session override, not written to project.toml |
+| `session_set_policy` | `{ session, policy: Partial<PolicyView> }` | `PolicyView` | session override, not written to project.toml; `preset` sets the five keys first, detailed keys in the same call override |
 | `layout_get` | `{ session }` | `string \| null` | dockview JSON |
 | `layout_save` | `{ session, layout }` | `null` | |
 | `fs_tree` | `{ session, path?, depth? }` | `FileEntry[]` | respects .gitignore; `out/` shown but collapsed |
@@ -247,7 +248,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 
 - `FigureView` gains `file_abs: string | null`. When non-null and running under Tauri, the renderer displays the figure with `convertFileSrc(file_abs)` (asset protocol; the backend allows each open session's repo and its artifacts directory in the asset scope). `figure_data` remains for remote figures not yet pulled and for browser mode.
 - One figure, one tab: the capture backend writes PNG only by default (`[figures] formats = ["png"]` in `project.toml`; `"svg"` and `"pdf"` may be added). The Figures panel groups files by stem, shows the PNG, and offers other formats as alternates.
-- Policy presets: `policy.preset = "review" | "auto" | "read-only"` in `project.toml` expands to the detailed keys (`review`: edits review, runs auto, packages/shell/git ask; `auto`: edits auto within declared scope, runs auto, packages/shell/git ask; `read-only`: edits, packages, shell, git denied, runs auto). Detailed keys still override. The settings dialog offers the three presets. Comment-marker locked regions are removed; protected globs remain.
+- Policy presets: `policy.preset = "review" | "auto" | "read-only"` in `project.toml` expands to the detailed keys (`review`: edits review, runs auto, packages/shell/git ask; `auto`: edits auto within declared scope, runs auto, packages/shell/git ask; `read-only`: edits, packages, shell, git denied, runs auto). Detailed keys still override. The settings dialog offers the three presets. Comment-marker locked regions are removed; protected globs remain. The expansion lives in `wb-policy`; `edits = "deny"` is the read-only edit gate; `PolicyView.preset` reports the preset the keys amount to and `session_set_policy` accepts `preset`.
 - Models must support native tool calling. The text-protocol tier is removed; a model that fails the tool-calling probe is rejected with a clear error.
 - Contract rules `cli.option-for-every-input` and `lib.near-duplicate` are advisory (`warn`) by default and are not fed back to the agent as must-fix diagnostics.
 - Development and tests in a browser use the real core through `analyst serve` (a local WebSocket bridge speaking the same commands and events); `MockBackend` and the hand-written type mirror are removed.

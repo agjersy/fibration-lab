@@ -58,6 +58,7 @@ Decided (OQ-P11): a third repository will hold code shared with Analyst. That re
 
 - **Now:** the shared-to-be crates and `packages/wb-ui` live in this workspace under `wb-*` names, with no dependency on Present-specific crates (enforced by a CI check that `crates/wb-*` depend only on each other and third-party crates). Their APIs are written for both apps.
 - **Port sources** (from Analyst at the commit in rule 1): `crates/core/src/providers/*` → `wb-providers`; `crates/core/src/policy.rs` → `wb-policy`; transcript and compaction pieces of `crates/core/src/agent/*` and `crates/protocol/src/transcript.rs` → `wb-transcript`; `python/kernel/analyst_kernel/sandbox.py` profile logic → `wb-sandbox` (reimplemented in Rust, same generated profile); `apps/desktop/src/styles/theme.css`, `ui/chat/*`, `ui/common/*`, `ipc/backend.ts` → `packages/wb-ui`.
+- **Since the merge into one repository:** the analysis core uses `wb-providers`, `wb-policy`, `wb-transcript` and `wb-skills` too, and its own copies are deleted. The fixes the analysis copies had received after the port commit were carried into the shared crates first. `wb-policy/src/regions.rs` (comment-marker locked regions) and the text protocol are removed from both.
 - **Later (separate approved task):** move `wb-*` and `packages/wb-ui` into the shared repository with history, switch Present to tag-pinned git dependencies, then switch Analyst in its own change.
 
 ## 5. Phase 0 work packages

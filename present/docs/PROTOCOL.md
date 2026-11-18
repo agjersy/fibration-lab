@@ -367,11 +367,10 @@ name = "Q3 review"
 created = "2026-11-15T10:00:00Z"
 
 [policy]
-edits = "review"                      # review | auto-new-slides | auto
+edits = "review"                      # review | auto-new-slides | auto | deny
 code = "ask"                          # builds and generated slides: ask | auto | deny
 skills_scripts = "ask"                # ask | auto | deny
 code_mode = "allow"                   # allow | deny (switching to code generation mode)
-mcp = "ask"                           # reserved; there is no MCP client
 export = "auto"
 max_steps = 60
 build_timeout_s = 60
@@ -390,6 +389,8 @@ format = "pdf"
 dpi = 150
 file = "{project}-{date}-preread.pdf"
 ```
+
+`[policy]` also takes `preset = "review" | "auto" | "read-only"` (the same key as the analysis workbench, expanded by `wb-policy`): slide and element edits are "edits" and `code` and `skills_scripts` are "runs". `review` sets `edits = "review"`, `code = "auto"`, `skills_scripts = "auto"`; `auto` sets `edits = "auto"` with the same two; `read-only` sets `edits = "deny"` and `code_mode = "deny"` with the same two. A detailed key in the same table overrides the preset. Without `preset` the values above are the defaults. An `mcp` key from an older file is ignored.
 
 ### 4.3 Reference manifest `references/manifest.toml`
 
@@ -472,7 +473,7 @@ deck.save()                                    # writes to the output path provi
 
 ### 6.1 Model wire mapping
 
-Identical to Analyst PROTOCOL section 4 (tool name mapping `.` to `_` and `mcp.<server>.<tool>` to `mcp__<server>__<tool>`, both adapters, the internal `ModelEvent` stream; native tool calling is required and a model that fails the tool-calling probe is rejected), with these additions:
+Identical to Analyst PROTOCOL section 4 (tool name mapping `.` to `_`, both adapters, the internal `ModelEvent` stream; native tool calling is required and a model that fails the tool-calling probe is rejected), with these additions:
 
 - **Auth and headers:** `auth = "bearer"` sends `Authorization: Bearer <key>` instead of `x-api-key`; `headers` are added to every request.
 - **Network:** every request is built by the network gate (`wb_net::gate().request`), which refuses any host and port that is not a configured provider `base_url` and records the decision in `<home>/egress.jsonl`. Connections are direct (no proxy) and verified against the bundled web trust roots (no custom CA bundle).

@@ -14,7 +14,7 @@
 | P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
 | P7 | Skills | Full Anthropic Agent Skills (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every endpoint; scripts in the code sandbox, ask by default | Decided (OQ-P7) |
 | P8 | References | Always copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML, and Personal Analyst outputs. Hybrid search: SQLite FTS5 plus a bundled offline embedding model (endpoint optional). No OCR and no web access in v1. Per-element citations | Decided (OQ-P8) |
-| P9 | Edit gating | Analyst's policy engine applied per slide: review (default), auto-new-slides, auto; locked slides and elements; scope declaration | Decided (shared) |
+| P9 | Edit gating | The shared policy engine (`wb-policy`) applied per slide: review (default), auto-new-slides, auto, deny; the three presets `review`, `auto`, `read-only`; locked slides and elements; scope declaration | Decided (shared) |
 | P10 | Checkpoints | App-owned content-addressed snapshot store in `.present/history/`; no git dependency or integration (a user may still version the folder with git) | Decided (OQ-P10) |
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
 | P12 | Enterprise deployment | Built for you first but enterprise-ready from phase 0: offline bundling with no runtime downloads, a network gate that allows only configured model endpoints (no proxy or custom CA support), local audit log, no telemetry. Managed configuration and organization libraries ship in phase 3 | Decided (OQ-P2) |
@@ -373,14 +373,15 @@ Where the isolation primitive is unavailable (for example AppContainer blocked b
 
 ```toml
 [policy]
-edits    = "review"          # review | auto-new-slides | auto
+preset   = "review"          # optional: review | auto | read-only
+edits    = "review"          # review | auto-new-slides | auto | deny
 skills_scripts = "ask"       # ask | auto | deny
-mcp      = "ask"             # reserved; there is no MCP client
 export   = "auto"
 locked_slides = []           # also set from the UI
 max_steps = 60
 ```
 
+- **Presets.** `preset` is the same key as in the analysis workbench and expands to the detailed keys, which still override: slide and element edits are "edits", deck builds (`code`) and skill scripts (`skills_scripts`) are "runs". `review`: edits reviewed, builds and skill scripts start on their own. `auto`: edits inside the declared scope applied, outside it asked. `read-only`: no edit is applied and the switch to code generation mode is refused; builds and skill scripts still run. Without `preset` the defaults above apply. There is no `mcp` key; a project file that still has one loads and the key is ignored.
 - **Review** pauses on each slide proposal; the card shows before/after thumbnails and a text diff, with accept, reject, or "accept with my edits".
 - **Conflict detection** by content hash per slide, as in Analyst.
 - **Locks** on slides and on individual elements; proposals touching them are denied.
