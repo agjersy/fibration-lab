@@ -28,19 +28,52 @@ pub struct Evaluation {
     pub reason: String,
 }
 
-/// What each conversation mode offers (ARCHITECTURE 5.7).
+/// What each conversation mode offers (ARCHITECTURE 5.7). Modes are permission profiles
+/// over the one loop: these rules decide which tools the model is offered and they are
+/// enforced again when a tool is called, so nothing here depends on the prompt.
 pub fn mode_rules(mode: Mode) -> ModeRules {
+    use analyst_deck::tools::dispatch::{FLAG_NEW_CITATION, FLAG_NEW_ELEMENT};
     let name = mode.to_string();
+    let read_only = || ModeRules::with_classes(mode.to_string(), [CLASS_READ, class::META]);
     match mode {
         Mode::Build => ModeRules::unrestricted(name),
-        Mode::Plan => ModeRules::with_classes(name, [CLASS_READ, class::META]),
-        Mode::Run => ModeRules::with_classes(name, [CLASS_READ, class::META])
+        Mode::Plan => read_only(),
+        Mode::Run => read_only()
             .allow_tool("run.script")
             .allow_tool("exec.snippet"),
+        // The storyline only: nothing is rendered and no slide changes.
+        Mode::Outline => read_only()
+            .allow_tool("outline.propose")
+            .allow_tool("export.run"),
+        // Every deck tool; no code edits, script runs, packages, shell, or git.
+        Mode::Slides => {
+            let mut rules = read_only();
+            for t in analyst_deck::tools::registry() {
+                rules = rules.allow_tool(t.name);
+            }
+            rules.allow_tool(crate::tools::registry::PLACE_FIGURE)
+        }
+        // Wording, layout choice, and order of existing slides: no new slides, no
+        // deletions, no new claims (citations) or elements.
+        Mode::Polish => read_only()
+            .allow_tool("slide.propose_update")
+            .allow_tool("slide.propose_move")
+            .allow_tool("code.propose_edit")
+            .allow_tool("deck.build")
+            .allow_tool("skill.run_script")
+            .allow_tool("export.run")
+            .restrict(wb_policy::FLAG_CREATES_NEW)
+            .restrict(FLAG_NEW_CITATION)
+            .restrict(FLAG_NEW_ELEMENT),
     }
 }
 
-fn class_name(c: ToolClass) -> &'static str {
+/// Whether turns in this mode can change files, so they start with a checkpoint.
+pub fn mode_changes_files(mode: Mode) -> bool {
+    !matches!(mode, Mode::Plan | Mode::Run)
+}
+
+pub(crate) fn class_name(c: ToolClass) -> &'static str {
     match c {
         ToolClass::Read => CLASS_READ,
         ToolClass::Meta => class::META,
@@ -56,6 +89,12 @@ fn class_name(c: ToolClass) -> &'static str {
 pub fn action_for(tool: &str, args: &Value) -> Option<Action> {
     let c = tool_class(tool)?;
     let mut a = Action::new(tool, class_name(c));
+    if crate::tools::registry::is_deck_tool(tool) {
+        // Deck builds, skill scripts, and exports run in the deck kernel's own sandbox, and
+        // deck changes are evaluated with their real targets once they are prepared
+        // ([`Policy::evaluate_action`]).
+        return Some(a);
+    }
     match c {
         ToolClass::Edit => {
             let path = args.get("path").and_then(Value::as_str).unwrap_or("");
@@ -175,6 +214,35 @@ impl Policy {
         self.session.policy.is_locked(path)
     }
 
+    /// Add one target to the declared scope (a slide the agent announced with `new_slides`
+    /// and has now created; a deck's single outline or build script).
+    pub fn add_to_scope(&mut self, target: &str) {
+        let mut scope = self.scope().map(<[String]>::to_vec).unwrap_or_default();
+        if !scope.iter().any(|t| t == target) {
+            scope.push(target.to_string());
+        }
+        self.session.declare_scope(scope);
+    }
+
+    /// Whether the policy applies no edit at all (the `read-only` preset).
+    pub fn edits_denied(&self) -> bool {
+        self.config.edits == analyst_protocol::config::EditPolicy::Deny
+    }
+
+    /// Evaluate an action built by the caller: a deck change with its real targets (the
+    /// slide documents as repo-relative files) and the flags a mode may forbid.
+    pub fn evaluate_action(&self, action: &Action) -> Evaluation {
+        let ev = self.session.evaluate(action);
+        Evaluation {
+            decision: match ev.decision {
+                wb_policy::Decision::Allow => Decision::Allow,
+                wb_policy::Decision::Ask { .. } => Decision::Ask,
+                wb_policy::Decision::Deny { .. } => Decision::Deny,
+            },
+            reason: ev.message,
+        }
+    }
+
     /// Whether a (normalised) path is in the scope declared this turn.
     pub fn in_scope(&self, path: &str) -> bool {
         self.session.in_scope(path)
@@ -188,12 +256,12 @@ impl Policy {
     /// One-paragraph summary for the system prompt.
     pub fn summary(&self) -> String {
         let mut s = self.session.summary();
-        if self.mode == Mode::Build
+        if matches!(self.mode, Mode::Build | Mode::Slides | Mode::Polish)
             && self.scope().is_none_or(|f| f.is_empty())
             && self.config.edits != analyst_protocol::config::EditPolicy::Deny
         {
             s.push_str(
-                " Call declare_scope once with every file you intend to touch before editing.",
+                " Call declare_scope once with every file and slide you intend to touch before changing anything.",
             );
         }
         s

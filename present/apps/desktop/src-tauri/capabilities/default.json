@@ -1,7 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capabilities of the main window, limited to what the renderer uses. The renderer calls only the app's own commands (with a channel for project events) and builds asset URLs; it uses no event, window, webview, or plugin API, so no core or plugin permission is granted. Native dialogs are opened by the app's own dialog_* commands on the Rust side.",
-  "windows": ["main"],
-  "permissions": []
-}

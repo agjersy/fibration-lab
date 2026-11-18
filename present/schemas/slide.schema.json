@@ -495,6 +495,14 @@
             "id": {
               "$ref": "#/definitions/ElementId"
             },
+            "run_cite": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RunCite"
+                }
+              ],
+              "description": "The analysis run this figure came from, when it was placed from a run of the project: a citation of the run itself, not of a reference."
+            },
             "type": {
               "enum": [
                 "image"
@@ -876,6 +884,14 @@
             "id": {
               "$ref": "#/definitions/ElementId"
             },
+            "run_cite": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RunCite"
+                }
+              ],
+              "description": "The analysis run this figure came from, when it was placed from a run of the project: a citation of the run itself, not of a reference."
+            },
             "type": {
               "enum": [
                 "image"
@@ -1016,6 +1032,40 @@
       },
       "required": [
         "t"
+      ],
+      "type": "object"
+    },
+    "RunCite": {
+      "additionalProperties": false,
+      "description": "A citation of an analysis run of the project (PROTOCOL 2.3): the run, the artifact it produced, and what produced it. The image itself is copied into the deck's `assets/` (content-addressed), so the deck stays self-contained; the run's data stays where it is. When `tree_hash` no longer matches the project's working tree, the checker reports the element as stale.",
+      "properties": {
+        "args": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact": {
+          "description": "The artifact's repo-relative path as the run reported it.",
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "script": {
+          "description": "The script that was run, repo-relative.",
+          "type": "string"
+        },
+        "tree_hash": {
+          "description": "The identity of the project tree the run executed (`RunMeta.tree_hash`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact",
+        "run_id",
+        "script"
       ],
       "type": "object"
     },

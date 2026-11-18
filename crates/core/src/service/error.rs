@@ -116,6 +116,30 @@ impl From<KernelError> for ServiceError {
     }
 }
 
+/// A deck service error keeps its code (the deck codes are a subset of the analyst ones) and
+/// its detail.
+impl From<analyst_deck_protocol::ui::IpcError> for ServiceError {
+    fn from(e: analyst_deck_protocol::ui::IpcError) -> Self {
+        use analyst_deck_protocol::ui::IpcErrorCode as D;
+        let code = match e.code {
+            D::NotFound => IpcErrorCode::NotFound,
+            D::Conflict => IpcErrorCode::Conflict,
+            D::PolicyDenied => IpcErrorCode::PolicyDenied,
+            D::KernelOffline => IpcErrorCode::KernelOffline,
+            D::EngineUnavailable => IpcErrorCode::EngineUnavailable,
+            D::SandboxUnavailable => IpcErrorCode::SandboxUnavailable,
+            D::Invalid => IpcErrorCode::Invalid,
+            D::Io => IpcErrorCode::Io,
+            D::Internal => IpcErrorCode::Internal,
+        };
+        ServiceError {
+            code,
+            message: e.message,
+            detail: e.detail,
+        }
+    }
+}
+
 impl From<crate::tools::ToolError> for ServiceError {
     fn from(e: crate::tools::ToolError) -> Self {
         ServiceError::internal(e.message)

@@ -10,14 +10,17 @@ export type TurnId = string;
 
 export type { AppInfo } from "./AppInfo";
 export type { Artifact } from "./Artifact";
+export type { ArtifactEntry } from "./ArtifactEntry";
 export type { ArtifactKind } from "./ArtifactKind";
 export type { AskPolicy } from "./AskPolicy";
 export type { Attachment } from "./Attachment";
 export type { AxesInfo } from "./AxesInfo";
+export type { CheckpointView } from "./CheckpointView";
 export type { ConversationSummary } from "./ConversationSummary";
 export type { Counterexample } from "./Counterexample";
 export type { DecidedBy } from "./DecidedBy";
 export type { Decision } from "./Decision";
+export type { DeckSummary } from "./DeckSummary";
 export type { Diagnostic } from "./Diagnostic";
 export type { EditPolicy } from "./EditPolicy";
 export type { EqCheck } from "./EqCheck";

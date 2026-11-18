@@ -1,15 +1,23 @@
-//! One `#[tauri::command]` per row of docs/IPC.md section 4, with exactly those names and
+//! One `#[tauri::command]` per row of docs/IPC.md sections 4, 7, and 9, with exactly those names and
 //! argument names (`rename_all = "snake_case"` keeps the JS-side keys as written in the doc).
 //! Every error is serialized as `IpcError`.
 
 use crate::{AppState, Subscription};
 use analyst_core::service::{agent_runner, SessionRuntime};
+use analyst_deck_protocol::deck::{DeckMode, Slide};
+use analyst_deck_protocol::kernel::LayoutThumbnail;
+use analyst_deck_protocol::ui::{
+    AssetView, DeckInfo, DeckView, ExportView, FileContent as DeckFileContent,
+    IpcError as DeckIpcError, RefView, SearchHit as RefSearchHit, SlideView, SourcePassage,
+    WriteResult as DeckWriteResult,
+};
 use analyst_protocol::evals::Mode;
 use analyst_protocol::kernel::{
-    Diagnostic, EqCheckResult, Equation, OutListResult, OutReadResult, PackageInfo,
+    ArtifactKind, Diagnostic, EqCheckResult, Equation, OutListResult, OutReadResult, PackageInfo,
 };
 use analyst_protocol::transcript::Event as TranscriptEvent;
 use analyst_protocol::ui::*;
+use serde_json::Value;
 use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
@@ -692,4 +700,515 @@ pub async fn dialog_pick_directory(
             Ok(Some(path.to_string_lossy().to_string()))
         }
     }
+}
+
+// ---- decks (docs/IPC.md section 9) ----
+//
+// Thin glue over the per-deck service of a session: `session` plus `deck` (the slug under
+// `decks/`) where the deck workbench had a project id. A deck's kernel starts on first use.
+// Deck events reach the renderer on the session's channel as `{type: "deck", deck, event}`;
+// commands that return a `TaskId` finish with a `task_done` deck event.
+
+type DeckService = analyst_core::service::decks::DeckService;
+
+async fn deck_of(state: &State<'_, AppState>, session: &str, deck: &str) -> R<Arc<DeckService>> {
+    rt_of(state, session)?
+        .deck(deck)
+        .await
+        .map_err(IpcError::from)
+}
+
+/// A deck service error as an IPC error (same code, message, and detail).
+fn de(e: DeckIpcError) -> IpcError {
+    analyst_core::service::ServiceError::from(e).into()
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn decks_list(state: State<'_, AppState>, session: String) -> R<Vec<DeckSummary>> {
+    Ok(rt_of(&state, &session)?.decks_list())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_create(
+    state: State<'_, AppState>,
+    session: String,
+    title: String,
+    template_abs: String,
+    slug: Option<String>,
+    code: Option<bool>,
+) -> R<DeckSummary> {
+    rt_of(&state, &session)?
+        .deck_create(
+            slug.as_deref(),
+            &title,
+            &template_abs,
+            code.unwrap_or(false),
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_open(state: State<'_, AppState>, session: String, deck: String) -> R<DeckInfo> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .info()
+        .await
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn template_thumbnails(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<LayoutThumbnail>> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .template_thumbnails()
+        .await
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn template_replace(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    template_abs: String,
+) -> R<TaskId> {
+    Ok(deck_of(&state, &session, &deck)
+        .await?
+        .template_replace(template_abs))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_get(state: State<'_, AppState>, session: String, deck: String) -> R<DeckView> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .deck_get()
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_update(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide: Slide,
+    expected_hash: Option<String>,
+) -> R<SlideView> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .slide_update(slide, expected_hash.as_deref())
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_create(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    after: Option<String>,
+    layout: String,
+) -> R<SlideView> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .slide_create(after.as_deref(), &layout)
+        .await
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_delete(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+) -> R<()> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .slide_delete(&slide_id)
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_duplicate(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+) -> R<SlideView> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .slide_duplicate(&slide_id)
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_move(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    after: Option<String>,
+    section: Option<String>,
+) -> R<()> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .slide_move(&slide_id, after.as_deref(), section.as_deref())
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_lock(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    element_id: Option<String>,
+    locked: bool,
+) -> R<()> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .slide_lock(&slide_id, element_id.as_deref(), locked)
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn slide_preview_png(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slide_id: String,
+    png_base64: String,
+) -> R<()> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .slide_preview_png(&slide_id, &png_base64)
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn chart_compute(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    source: Value,
+    steps: Option<Value>,
+) -> R<Value> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .chart_compute(source, steps.unwrap_or(Value::Null))
+        .await
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_code_read(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    path: String,
+) -> R<DeckFileContent> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .code_read(&path)
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_code_write(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    path: String,
+    content: String,
+    expected_hash: Option<String>,
+) -> R<DeckWriteResult> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .code_write(&path, &content, expected_hash.as_deref())
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_build(state: State<'_, AppState>, session: String, deck: String) -> R<TaskId> {
+    Ok(deck_of(&state, &session, &deck).await?.deck_build())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_switch_mode(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    to: DeckMode,
+    via: Option<String>,
+) -> R<TaskId> {
+    Ok(deck_of(&state, &session, &deck)
+        .await?
+        .deck_switch_mode(to, via))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn render_fidelity(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slides: Option<Vec<String>>,
+) -> R<TaskId> {
+    // The engine renders the whole deck in one pass; `slides` only says which thumbnails the
+    // window is waiting for.
+    let _ = slides;
+    let svc = deck_of(&state, &session, &deck).await?;
+    Ok(svc.spawn_task("Rendering slides", |rt| async move {
+        let n = rt.render_thumbnails().await?;
+        Ok(Some(format!("{n} slides rendered")))
+    }))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn deck_check_run(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    slides: Option<Vec<String>>,
+) -> R<Vec<Value>> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .run_checks(slides)
+        .await
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn refs_list(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<RefView>> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .refs_list()
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn refs_add(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    paths_abs: Vec<String>,
+) -> R<TaskId> {
+    Ok(deck_of(&state, &session, &deck).await?.refs_add(paths_abs))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn refs_remove(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    ref_id: String,
+) -> R<()> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .refs_remove(&ref_id)
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn refs_remove_unused(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<String>> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .refs_remove_unused()
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn refs_search(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    query: String,
+    ref_ids: Option<Vec<String>>,
+) -> R<Vec<RefSearchHit>> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .refs_search(&query, ref_ids)
+        .await
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn source_passage(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    cite: String,
+) -> R<SourcePassage> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .source_passage(&cite)
+        .await
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn assets_list(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<AssetView>> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .assets_list()
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn asset_add(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    path_abs: String,
+) -> R<AssetView> {
+    deck_of(&state, &session, &deck)
+        .await?
+        .asset_add(&path_abs)
+        .map_err(de)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn exports_list(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+) -> R<Vec<ExportView>> {
+    Ok(deck_of(&state, &session, &deck).await?.exports_list())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn export_run(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    format: String,
+) -> R<TaskId> {
+    Ok(deck_of(&state, &session, &deck).await?.export_run(format))
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn export_reveal(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    export_id: String,
+) -> R<()> {
+    let path = deck_of(&state, &session, &deck)
+        .await?
+        .export_path(&export_id)
+        .map_err(de)?;
+    reveal_in_file_manager(&path)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn export_open(
+    state: State<'_, AppState>,
+    session: String,
+    deck: String,
+    export_id: String,
+) -> R<()> {
+    let path = deck_of(&state, &session, &deck)
+        .await?
+        .export_path(&export_id)
+        .map_err(de)?;
+    open_with_default_app(&path)
+}
+
+/// Run a desktop helper program; a failure to start is an `io` error.
+fn launch(program: &str, args: &[&std::ffi::OsStr]) -> R<()> {
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| IpcError::new(IpcErrorCode::Io, format!("cannot start {program}: {e}")))
+}
+
+fn reveal_in_file_manager(path: &std::path::Path) -> R<()> {
+    #[cfg(target_os = "macos")]
+    {
+        launch("open", &[std::ffi::OsStr::new("-R"), path.as_os_str()])
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let dir = path.parent().unwrap_or(path);
+        launch("xdg-open", &[dir.as_os_str()])
+    }
+}
+
+fn open_with_default_app(path: &std::path::Path) -> R<()> {
+    #[cfg(target_os = "macos")]
+    {
+        launch("open", &[path.as_os_str()])
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        launch("xdg-open", &[path.as_os_str()])
+    }
+}
+
+// ---- history: one undo timeline (git checkpoints) for code and decks ----
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn history_list(
+    state: State<'_, AppState>,
+    session: String,
+    limit: Option<u32>,
+) -> R<Vec<CheckpointView>> {
+    rt_of(&state, &session)?
+        .history_list(limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn history_restore(
+    state: State<'_, AppState>,
+    session: String,
+    checkpoint: String,
+) -> R<()> {
+    rt_of(&state, &session)?
+        .history_restore(&checkpoint)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn history_revert_turn(
+    state: State<'_, AppState>,
+    session: String,
+    turn: String,
+) -> R<CheckpointView> {
+    rt_of(&state, &session)?
+        .history_revert_turn(&turn)
+        .await
+        .map_err(Into::into)
+}
+
+// ---- artifact index (what runs produced; slides cite runs from it) ----
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn artifacts_list(
+    state: State<'_, AppState>,
+    session: String,
+    run_id: Option<String>,
+    kind: Option<ArtifactKind>,
+    limit: Option<u32>,
+) -> R<Vec<ArtifactEntry>> {
+    Ok(rt_of(&state, &session)?.artifacts_list(run_id.as_deref(), kind, limit))
 }

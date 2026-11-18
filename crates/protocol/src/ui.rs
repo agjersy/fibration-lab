@@ -33,6 +33,10 @@ pub enum IpcErrorCode {
     PolicyDenied,
     KernelOffline,
     TargetOffline,
+    /// A deck command needs a rendering engine (PowerPoint or LibreOffice) and none is there.
+    EngineUnavailable,
+    /// A deck build or skill script needs a sandbox this machine does not have.
+    SandboxUnavailable,
     Invalid,
     Io,
     Internal,
@@ -46,6 +50,8 @@ impl IpcErrorCode {
             IpcErrorCode::PolicyDenied => "policy_denied",
             IpcErrorCode::KernelOffline => "kernel_offline",
             IpcErrorCode::TargetOffline => "target_offline",
+            IpcErrorCode::EngineUnavailable => "engine_unavailable",
+            IpcErrorCode::SandboxUnavailable => "sandbox_unavailable",
             IpcErrorCode::Invalid => "invalid",
             IpcErrorCode::Io => "io",
             IpcErrorCode::Internal => "internal",
@@ -483,6 +489,20 @@ pub struct ProposalView {
     pub message: Option<String>,
     pub in_scope: bool,
     pub reason: ProposalReason,
+    /// Deck changes: the deck (slug), the slides concerned, and the slide document (or
+    /// outline rows, or build script text) before and after, for a visual before/after card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub deck: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub slide_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub before: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub after: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -516,6 +536,54 @@ pub enum Attachment {
     Figure {
         path: String,
     },
+}
+
+/// A deck in the session's repository (`decks/<slug>/`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct DeckSummary {
+    /// The folder name under `decks/`; deck commands and tools take it.
+    pub slug: String,
+    pub title: String,
+    /// `structured` or `code`.
+    pub mode: String,
+    pub slides: u32,
+    /// The template file name.
+    pub template: String,
+    /// Whether the deck's kernel is running in this session.
+    pub open: bool,
+}
+
+/// One artifact of one run, as the artifact index lists it (IPC.md section 7).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct ArtifactEntry {
+    pub run_id: RunId,
+    /// Repo-relative path, as the run reported it.
+    pub path: String,
+    pub kind: crate::kernel::ArtifactKind,
+    pub script: String,
+    pub args: Vec<String>,
+    /// The identity of the project tree the run executed.
+    pub tree_hash: Option<String>,
+    /// The working tree is no longer the tree the run executed.
+    pub stale: bool,
+    /// The figure's title, from its sidecar.
+    pub title: Option<String>,
+    pub size: u64,
+    pub created_at: String,
+    pub target: String,
+}
+
+/// One undo point of the session's repository (a git checkpoint): code and decks together.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct CheckpointView {
+    pub id: String,
+    pub created_at: String,
+    /// Why it was taken, for checkpoints that are not a turn's (`export pptx`, `before
+    /// switching the deck to code mode`, `before restoring <id>`).
+    pub label: Option<String>,
+    /// The conversation and turn that took it, for a turn's checkpoint.
+    pub conversation: Option<String>,
+    pub turn: Option<String>,
 }
 
 // ---- section 3: events ----
@@ -605,6 +673,17 @@ pub enum SessionEvent {
     },
     RunDone {
         run: RunView,
+    },
+    /// An event of one deck of the session. `event` is a `DeckEvent`
+    /// (`generated/deck/DeckEvent.ts`).
+    Deck {
+        deck: String,
+        #[ts(type = "unknown")]
+        event: Value,
+    },
+    /// A deck was created (or removed) in the session's repository.
+    DecksChanged {
+        decks: Vec<DeckSummary>,
     },
     /// Replaces diagnostics for the listed paths.
     Diagnostics {
@@ -746,6 +825,9 @@ mod tests {
         ProposalDecision::export_all(&cfg).unwrap();
         Attachment::export_all(&cfg).unwrap();
         SessionEvent::export_all(&cfg).unwrap();
+        DeckSummary::export_all(&cfg).unwrap();
+        CheckpointView::export_all(&cfg).unwrap();
+        ArtifactEntry::export_all(&cfg).unwrap();
         IpcError::export_all(&cfg).unwrap();
         Event::export_all(&cfg).unwrap();
         OutListResult::export_all(&cfg).unwrap();

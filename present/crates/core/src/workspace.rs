@@ -1,16 +1,17 @@
-//! A project opened for work: the kernel, the index, the deck store, and the snapshot store
-//! behind one handle. The agent's tools and the CLI both go through this.
+//! A deck opened for work: the deck kernel, the reference index, and the deck store behind
+//! one handle. The deck tools of the agent loop and the deck service of the UI both go
+//! through this. The session that owns the deck says where the kernel's home and the index
+//! are; undo is the session's git checkpoints, not a store of its own.
 
 use crate::deck_store::DeckStore;
 use crate::index::{ChunkRow, Hit, Index, RefRow};
 use crate::kernel::{resolve_runtime_python, KernelClient, KernelError, KernelLaunch};
 use crate::project::Project;
 use crate::refs::{self, Added};
-use crate::snapshots::SnapshotStore;
 use crate::util::now_iso;
+use analyst_deck_protocol::config::{RefEntry, RefSource};
+use analyst_deck_protocol::ids::RefId;
 use anyhow::{anyhow, Context};
-use present_protocol::config::{RefEntry, RefSource, SnapshotReason, SnapshotRef};
-use present_protocol::ids::{RefId, SnapshotId};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -18,29 +19,45 @@ use std::sync::Mutex;
 /// Options for opening a workspace.
 #[derive(Debug, Clone)]
 pub struct OpenOptions {
+    /// The app home (`~/.analyst`): the kernel looks for its runtime, rendering engine, and
+    /// embedding model under it.
     pub home: PathBuf,
+    /// The reference index (SQLite), kept with the session that owns the deck.
+    pub index_path: PathBuf,
     pub engine: String,
     pub sandbox: String,
     pub runtime_python: Option<String>,
     pub kernel_env: Vec<(String, String)>,
+    /// Environment variables the kernel must not inherit (provider API keys).
+    pub env_remove: Vec<String>,
 }
 
 impl OpenOptions {
-    pub fn new(home: &Path) -> OpenOptions {
+    pub fn new(home: &Path, index_path: &Path) -> OpenOptions {
         OpenOptions {
             home: home.to_path_buf(),
+            index_path: index_path.to_path_buf(),
             engine: "auto".into(),
             sandbox: "auto".into(),
             runtime_python: None,
             kernel_env: Vec::new(),
+            env_remove: Vec::new(),
         }
     }
 }
+
+/// The identity of the project tree the deck's analysis runs execute: the session supplies
+/// it, the checker compares the run citations on slides with it.
+pub type TreeIdentity = std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// The checker rule for a slide element that cites an analysis run whose code has changed.
+pub const RULE_STALE: &str = "stale";
 
 pub struct Workspace {
     pub project: Project,
     pub home: PathBuf,
     pub kernel: KernelClient,
+    tree_identity: Mutex<Option<TreeIdentity>>,
     index: Mutex<Index>,
     /// Held while the shared scratch render is built and read, so a check started by the
     /// user and one started by the agent never read each other's half-written file.
@@ -52,7 +69,6 @@ pub struct Workspace {
 pub struct Exported {
     pub format: String,
     pub path: String,
-    pub snapshot_id: SnapshotId,
     pub errors: usize,
     pub warnings: usize,
     pub engine: Option<String>,
@@ -62,7 +78,7 @@ impl Workspace {
     pub async fn open(root: &Path, options: &OpenOptions) -> anyhow::Result<Workspace> {
         let project = Project::open(root)?;
         let python = resolve_runtime_python(&options.home, options.runtime_python.as_deref())
-            .ok_or_else(|| anyhow!("no kernel interpreter found: install the Present runtime or set PRESENT_RUNTIME_PYTHON"))?;
+            .ok_or_else(|| anyhow!("no deck kernel interpreter found: install the deck runtime or set PRESENT_RUNTIME_PYTHON"))?;
         let launch = KernelLaunch {
             python,
             project: project.root.clone(),
@@ -70,18 +86,126 @@ impl Workspace {
             engine: options.engine.clone(),
             sandbox: options.sandbox.clone(),
             env: options.kernel_env.clone(),
+            env_remove: options.env_remove.clone(),
         };
         let kernel = KernelClient::connect(&launch)
             .await
             .context("starting the deck kernel")?;
-        let index = Index::open(&project.index_path(&options.home))?;
-        Ok(Workspace {
+        if let Some(dir) = options.index_path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let index = Index::open(&options.index_path)?;
+        let ws = Workspace {
             project,
             home: options.home.clone(),
             kernel,
+            tree_identity: Mutex::new(None),
             index: Mutex::new(index),
             scratch_lock: tokio::sync::Mutex::new(()),
-        })
+        };
+        ws.reindex_missing().await;
+        Ok(ws)
+    }
+
+    /// The index is per-user state and the references are in the repository: a deck opened
+    /// from a fresh clone, or in a new session, indexes the references it finds.
+    async fn reindex_missing(&self) {
+        let Ok(manifest) = refs::load_manifest(&self.project.root) else {
+            return;
+        };
+        let known: Vec<(String, String)> = self
+            .reference_rows()
+            .map(|rows| rows.into_iter().map(|r| (r.id, r.version)).collect())
+            .unwrap_or_default();
+        let mut added = false;
+        for entry in &manifest.refs {
+            if known
+                .iter()
+                .any(|(id, v)| id == entry.id.as_str() && v == &entry.version)
+            {
+                continue;
+            }
+            match self.ingest(entry).await {
+                Ok(v) => {
+                    if let Err(e) = self.index_ingested(entry, &v) {
+                        tracing::warn!("indexing reference {} failed: {e}", entry.id);
+                    }
+                    added = true;
+                }
+                Err(e) => tracing::warn!("reading reference {} failed: {e}", entry.id),
+            }
+        }
+        if added {
+            let _ = self.embed_pending().await;
+        }
+    }
+
+    /// Tell the workspace how to learn the current identity of the project tree, so the
+    /// checker can report stale run citations.
+    pub fn set_tree_identity(&self, f: TreeIdentity) {
+        *self.tree_identity.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    /// Findings for slide elements that cite an analysis run (`run_cite`) whose tree
+    /// identity is not the project's current one: the code has changed since the figure
+    /// was made. A warning; refreshing the figure is the user's (or a later feature's) call.
+    fn stale_run_cites(&self, slides: Option<&[String]>) -> Vec<Value> {
+        let identity = self
+            .tree_identity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let Some(identity) = identity else {
+            return Vec::new();
+        };
+        let Ok((_, docs)) = self.deck().read_all() else {
+            return Vec::new();
+        };
+        let mut current: Option<Option<String>> = None;
+        let mut out = Vec::new();
+        for (index, slide) in docs.iter().enumerate() {
+            if slides.is_some_and(|ids| !ids.iter().any(|i| i == slide.id.as_str())) {
+                continue;
+            }
+            let Ok(v) = serde_json::to_value(slide) else {
+                continue;
+            };
+            let placeholders = v["placeholders"].as_object().into_iter().flat_map(|m| {
+                m.iter()
+                    .map(|(k, item)| (format!("/placeholders/{k}"), item))
+            });
+            let elements = v["elements"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .map(|(i, el)| (format!("/elements/{i}/content"), &el["content"]));
+            for (pointer, item) in placeholders.chain(elements) {
+                let cite = &item["run_cite"];
+                let Some(run_tree) = cite["tree_hash"].as_str() else {
+                    continue;
+                };
+                // The tree identity is computed once, and only when a slide cites a run.
+                let now = current.get_or_insert_with(|| identity());
+                if now.as_deref().is_some_and(|n| n != run_tree) {
+                    out.push(json!({
+                        "rule": RULE_STALE,
+                        "severity": "warn",
+                        "slide_id": slide.id,
+                        "slide_index": index,
+                        "element_id": item["id"],
+                        "pointer": pointer,
+                        "message": format!(
+                            "the figure cites run {} of {}, and the project's code has changed since that run",
+                            cite["run_id"].as_str().unwrap_or("?"),
+                            cite["script"].as_str().unwrap_or("?")
+                        ),
+                        "fix_hint": "run the script again and place the new figure, or keep the figure if the change does not affect it",
+                    }));
+                }
+            }
+        }
+        out
     }
 
     pub async fn close(&self) {
@@ -90,10 +214,6 @@ impl Workspace {
 
     pub fn deck(&self) -> DeckStore {
         self.project.deck()
-    }
-
-    pub fn snapshots(&self) -> SnapshotStore {
-        SnapshotStore::new(&self.project.root)
     }
 
     fn with_index<T>(
@@ -229,86 +349,6 @@ impl Workspace {
         Ok((entry, warnings))
     }
 
-    /// Import one figure or table from a Personal Analyst repository as a reference. Only
-    /// the imported item is copied; the repository is never modified.
-    pub async fn add_analyst_reference(
-        &self,
-        repo_abs: &str,
-        item: &str,
-    ) -> anyhow::Result<RefEntry> {
-        let out = self
-            .kernel
-            .call_value(
-                "analyst.import",
-                json!({"repo_abs": repo_abs, "item": item}),
-            )
-            .await?;
-        let text = |k: &str| out[k].as_str().unwrap_or_default().to_string();
-        let (file, version) = (text("file"), text("version"));
-        if file.is_empty() || version.is_empty() {
-            anyhow::bail!("the import returned no file");
-        }
-        let mut manifest = refs::load_manifest(&self.project.root)?;
-        if let Some(existing) = manifest.refs.iter().find(|r| r.version == version) {
-            return Ok(existing.clone());
-        }
-        let kind = refs::kind_of(Path::new(&file))
-            .ok_or_else(|| anyhow::anyhow!("unsupported reference format: {file}"))?;
-        let origin = present_protocol::config::AnalystOrigin {
-            repo: out["analyst"]["repo"]
-                .as_str()
-                .unwrap_or(repo_abs)
-                .to_string(),
-            item: out["analyst"]["item"].as_str().unwrap_or(item).to_string(),
-            run_id: out["analyst"]["run_id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-        };
-        let original_path = format!("{}/{}", origin.repo.replace('\\', "/"), origin.item);
-        let entry = if let Some(slot) = manifest
-            .refs
-            .iter_mut()
-            .find(|r| r.source == RefSource::Analyst && r.original_path == original_path)
-        {
-            // The same item imported again after a new run: a new version of the reference.
-            slot.previous_versions.push(slot.version.clone());
-            slot.version = version;
-            slot.file = file;
-            slot.imported = now_iso();
-            slot.analyst = origin;
-            slot.clone()
-        } else {
-            let mut id = RefId::new(text("ref_id")).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let mut n = 1;
-            while manifest.get(&id).is_some() {
-                n += 1;
-                id = RefId::new(format!("{}-{n}", text("ref_id")))
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-            }
-            let entry = RefEntry {
-                id,
-                file,
-                kind,
-                title: text("title"),
-                original_path,
-                imported: now_iso(),
-                version,
-                previous_versions: Vec::new(),
-                parent: String::new(),
-                source: RefSource::Analyst,
-                analyst: origin,
-            };
-            manifest.refs.push(entry.clone());
-            entry
-        };
-        refs::save_manifest(&self.project.root, &manifest)?;
-        let ingested = self.ingest(&entry).await?;
-        self.index_ingested(&entry, &ingested)?;
-        self.embed_pending().await?;
-        Ok(entry)
-    }
-
     async fn ingest(&self, entry: &RefEntry) -> Result<Value, KernelError> {
         self.kernel
             .call_value(
@@ -380,36 +420,6 @@ impl Workspace {
         self.with_index(|i| i.remove_ref(id.as_str()))
     }
 
-    // ---- snapshots ------------------------------------------------------------------------
-
-    pub fn snapshot(
-        &self,
-        reason: SnapshotReason,
-        turn: Option<&str>,
-        label: Option<&str>,
-    ) -> anyhow::Result<SnapshotId> {
-        let manifest = refs::load_manifest(&self.project.root)?;
-        let refs_list = manifest
-            .refs
-            .iter()
-            .map(|r| SnapshotRef {
-                id: r.id.clone(),
-                version: r.version.clone(),
-            })
-            .collect();
-        let mut assets = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(self.project.root.join("assets")) {
-            for e in entries.filter_map(|e| e.ok()) {
-                if e.path().is_file() {
-                    assets.push(crate::util::sha256_file(&e.path())?);
-                }
-            }
-        }
-        assets.sort();
-        self.snapshots()
-            .take(reason, turn, label, assets, refs_list)
-    }
-
     // ---- build, check, export -------------------------------------------------------------
 
     /// Build the deck in its current mode into `out` (project-relative).
@@ -424,14 +434,14 @@ impl Workspace {
             .read_deck()
             .map_err(|e| KernelError::Other(e.to_string()))?;
         match deck.mode {
-            present_protocol::deck::DeckMode::Structured => {
+            analyst_deck_protocol::deck::DeckMode::Structured => {
                 let mut params = json!({"out": out, "snapshot_id": snapshot_id});
                 if let Some(s) = slides {
                     params["slides"] = json!(s);
                 }
                 self.kernel.call_value("deck.render", params).await
             }
-            present_protocol::deck::DeckMode::Code => {
+            analyst_deck_protocol::deck::DeckMode::Code => {
                 let timeout = self
                     .project
                     .config()
@@ -456,24 +466,33 @@ impl Workspace {
         if let Some(r) = rules {
             params["rules"] = json!(r);
         }
-        Ok(self
+        let mut diags = self
             .kernel
             .call_value("check.run", params)
             .await?
             .as_array()
             .cloned()
-            .unwrap_or_default())
+            .unwrap_or_default();
+        if rules.is_none_or(|r| r.iter().any(|x| x == RULE_STALE)) {
+            diags.extend(self.stale_run_cites(slides));
+        }
+        Ok(diags)
     }
 
-    /// Export the deck. Takes an `export` snapshot first so the file is tied to an exact state.
-    pub async fn export(&self, format: &str, file_stem: Option<&str>) -> anyhow::Result<Exported> {
-        let snapshot_id = self.snapshot(SnapshotReason::Export, None, Some(format))?;
+    /// Export the deck. `state_id` names the state the file was built from (the session's
+    /// checkpoint id); it is written into the file's properties.
+    pub async fn export(
+        &self,
+        format: &str,
+        file_stem: Option<&str>,
+        state_id: &str,
+    ) -> anyhow::Result<Exported> {
         let deck = self.deck().read_deck()?;
         let stem = file_stem
             .map(str::to_string)
             .unwrap_or_else(|| slug(&deck.title));
         let pptx_rel = format!("exports/{stem}.pptx");
-        self.build(&pptx_rel, snapshot_id.as_str(), None).await?;
+        self.build(&pptx_rel, state_id, None).await?;
         let diags = self.check(&pptx_rel, None, None, false).await?;
         let count = |sev: &str| diags.iter().filter(|d| d["severity"] == sev).count();
         let (errors, warnings) = (count("error"), count("warn"));
@@ -532,7 +551,6 @@ impl Workspace {
         Ok(Exported {
             format: format.to_string(),
             path,
-            snapshot_id,
             errors,
             warnings,
             engine,

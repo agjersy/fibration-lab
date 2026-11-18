@@ -9,7 +9,23 @@ export type TerminalId = string;
 export type ProposalId = string;
 export type TaskId = string;
 export type TurnId = string;
-export type Mode = "plan" | "build" | "run";
+/** Permission profiles over the one agent loop (IPC.md section 9): analysis modes and deck modes. */
+export type Mode = "plan" | "build" | "run" | "outline" | "slides" | "polish";
+/** What a proposal changes; the `slide-*`, `outline`, `code-edit`, and `mode-switch` kinds are deck changes. */
+export type ProposalKind =
+  | "edit"
+  | "create"
+  | "delete"
+  | "package"
+  | "shell"
+  | "commit"
+  | "outline"
+  | "slide-create"
+  | "slide-update"
+  | "slide-delete"
+  | "slide-move"
+  | "code-edit"
+  | "mode-switch";
 export type KernelState = "stopped" | "starting" | "ready" | "error" | "offline";
 
 // ---- kernel-level types (PROTOCOL.md, re-exported unchanged) ----
@@ -138,9 +154,15 @@ export type TranscriptEvent =
       ts: string;
       type: "proposal";
       id: string;
-      kind: "edit" | "create" | "delete" | "package" | "shell" | "commit";
+      kind: ProposalKind;
       summary: string;
       diff?: string;
+      /** Repo-relative files the proposal changes (slide documents for deck changes). */
+      targets?: string[];
+      /** Deck changes: the deck slug and the document before and after. */
+      deck?: string;
+      before?: unknown;
+      after?: unknown;
     }
   | { ts: string; type: "decision"; proposal_id: string; decision: "accept" | "reject" | "auto"; by: "user" | "policy" }
   | { ts: string; type: "run"; run_id: string; script: string; args: string[]; target: string }
@@ -318,7 +340,7 @@ export interface TargetInfo {
 export interface ProposalView {
   id: ProposalId;
   conversation: ConversationId;
-  kind: "edit" | "create" | "delete" | "package" | "shell" | "commit";
+  kind: ProposalKind;
   path: string | null;
   summary: string;
   original: string | null;
@@ -329,6 +351,47 @@ export interface ProposalView {
   message: string | null;
   in_scope: boolean;
   reason: "review" | "ask" | "out_of_scope" | "protected";
+  /** Deck changes: the deck slug, the slides concerned, and the slide document before and after. */
+  deck?: string;
+  slide_ids?: string[];
+  before?: unknown;
+  after?: unknown;
+}
+
+/** A deck in the session's repository (`decks/<slug>/`). */
+export interface DeckSummary {
+  slug: string;
+  title: string;
+  /** `structured` or `code`. */
+  mode: string;
+  slides: number;
+  template: string;
+  open: boolean;
+}
+
+/** One artifact of one run, as the artifact index lists it. */
+export interface ArtifactEntry {
+  run_id: RunId;
+  path: string;
+  kind: Artifact["kind"];
+  script: string;
+  args: string[];
+  tree_hash: string | null;
+  /** The working tree is no longer the tree the run executed. */
+  stale: boolean;
+  title: string | null;
+  size: number;
+  created_at: string;
+  target: string;
+}
+
+/** One undo point of the session's repository: code and decks together. */
+export interface CheckpointView {
+  id: string;
+  created_at: string;
+  label: string | null;
+  conversation: string | null;
+  turn: string | null;
 }
 
 /** Result of `terminal_open` (IPC.md section 7): the id, and whether the shell is off the network. */
@@ -358,7 +421,17 @@ export type Attachment =
   | { kind: "figure"; path: string };
 
 export interface IpcError {
-  code: "not_found" | "conflict" | "policy_denied" | "kernel_offline" | "target_offline" | "invalid" | "io" | "internal";
+  code:
+    | "not_found"
+    | "conflict"
+    | "policy_denied"
+    | "kernel_offline"
+    | "target_offline"
+    | "engine_unavailable"
+    | "sandbox_unavailable"
+    | "invalid"
+    | "io"
+    | "internal";
   message: string;
   detail?: unknown;
 }
@@ -393,6 +466,9 @@ export type SessionEvent =
   | { type: "run_output"; run_id: RunId; stream: "stdout" | "stderr"; chunk: string }
   | { type: "run_artifact"; run_id: RunId; artifact: Artifact; figure: FigureView | null }
   | { type: "run_done"; run: RunView }
+  /** An event of one deck; `event` is a `DeckEvent` of `./generated/deck`. */
+  | { type: "deck"; deck: string; event: unknown }
+  | { type: "decks_changed"; decks: DeckSummary[] }
   | { type: "diagnostics"; paths: string[]; diagnostics: Diagnostic[] }
   | { type: "files_changed"; paths: string[] }
   | { type: "index_changed" }

@@ -10,4 +10,9 @@ original: string | null, proposed: string | null,
 /**
  * Unified diff for display.
  */
-diff: string | null, command: string | null, packages: Array<string> | null, message: string | null, in_scope: boolean, reason: ProposalReason, };
+diff: string | null, command: string | null, packages: Array<string> | null, message: string | null, in_scope: boolean, reason: ProposalReason, 
+/**
+ * Deck changes: the deck (slug), the slides concerned, and the slide document (or
+ * outline rows, or build script text) before and after, for a visual before/after card.
+ */
+deck?: string, slide_ids?: Array<string>, before?: unknown, after?: unknown, };

@@ -379,7 +379,7 @@ async fn dropping_a_run_script_call_cancels_the_run() {
         "c1",
         ProjectConfig::default(),
     );
-    ctx.kernel = Some(client.clone());
+    ctx.set_kernel(Some(client.clone()));
     let mut rx = client.subscribe();
     let args = serde_json::json!({"script": "scripts/hello.py"});
     // The call is still streaming when its future is dropped.

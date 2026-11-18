@@ -60,14 +60,6 @@ impl std::fmt::Display for IpcError {
 
 impl std::error::Error for IpcError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    Outline,
-    Build,
-    Polish,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum KernelState {
@@ -77,99 +69,25 @@ pub enum KernelState {
     Error,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum Platform {
-    Macos,
-    Windows,
-    Linux,
-}
-
+/// A deck of the session: what `deck_open` returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-pub struct AppInfo {
-    pub version: String,
-    pub home_abs: String,
-    pub platform: Platform,
-    pub dev_mode: bool,
-    pub engines: Vec<EngineInfo>,
-    pub sandbox: Option<SandboxInfo>,
-    pub embedding: Option<EmbeddingInfo>,
-    /// How the deck kernel process is kept off the network: `bwrap`, `sandbox-exec`, or
-    /// `none` (no isolation is available on this machine).
-    pub kernel_network: String,
-    /// Why there is no isolation, when `kernel_network` is `none`.
-    pub kernel_network_detail: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-pub struct ProjectSummary {
-    pub id: String,
-    pub name: String,
+pub struct DeckInfo {
+    /// The deck's folder name under `decks/`.
+    pub slug: String,
+    pub title: String,
     pub path_abs: String,
     pub template_name: String,
     pub deck_mode: DeckMode,
     pub slides: u32,
-    pub model: Option<String>,
-    pub created_at: String,
-    pub last_opened_at: String,
-    pub open: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct PolicyView {
-    /// `review` | `auto-new-slides` | `auto` | `deny`.
-    pub edits: String,
-    pub code: String,
-    pub skills_scripts: String,
-    pub code_mode: String,
-    pub export: String,
-    pub max_steps: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-pub struct PolicyPatch {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub edits: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub skills_scripts: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub code_mode: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub export: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub max_steps: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct ConversationSummary {
-    pub id: String,
-    pub title: String,
-    pub model: Option<String>,
-    pub mode: Mode,
-    pub created_at: String,
-    pub turns: u32,
-    pub busy: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-pub struct ProjectInfo {
-    #[serde(flatten)]
-    pub summary: ProjectSummary,
-    pub policy: PolicyView,
     pub kernel: KernelState,
-    pub conversations: Vec<ConversationSummary>,
-    pub active_conversation: String,
+    /// How the deck kernel process is kept off the network: `bwrap`, `sandbox-exec`, or
+    /// `none` (no isolation is available on this machine).
+    pub kernel_network: String,
+    pub engines: Vec<EngineInfo>,
+    pub sandbox: Option<SandboxInfo>,
+    pub embedding: Option<EmbeddingInfo>,
     pub template: TemplateDescription,
     pub deck: Deck,
-    pub head_snapshot: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -264,137 +182,18 @@ pub struct OutlineRow {
     pub sources: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-pub struct ProposalSlide {
-    pub slide_id: String,
-    pub before: Option<Slide>,
-    pub after: Option<Slide>,
-    pub before_png: Option<String>,
-    pub after_png: Option<String>,
-    pub text_diff: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct ProposalCode {
-    pub path: String,
-    pub original: Option<String>,
-    pub proposed: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct ProposalScript {
-    pub skill: Option<String>,
-    pub path: String,
-    pub args: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-pub struct ProposalView {
-    pub id: String,
-    pub conversation: String,
-    pub turn: String,
-    /// `slide-create` | `slide-update` | `slide-delete` | `slide-move` | `outline` | `code-edit`
-    /// | `build` | `skill-script` | `mode-switch` | `export`.
-    pub kind: String,
-    pub summary: String,
-    /// `policy` | `out-of-scope` | `always-ask`.
-    pub reason: Option<String>,
-    pub slides: Vec<ProposalSlide>,
-    pub outline: Option<Vec<OutlineRow>>,
-    pub code: Option<ProposalCode>,
-    pub script: Option<ProposalScript>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "decision", rename_all = "snake_case")]
-pub enum ProposalDecision {
-    Accept,
-    AcceptModified {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        slides: Option<Vec<Slide>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        outline: Option<Vec<OutlineRow>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        code: Option<String>,
-    },
-    Reject {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        note: Option<String>,
-    },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ExportView {
     pub id: String,
     pub format: String,
     pub preset: Option<String>,
     pub path: String,
-    pub snapshot_id: String,
+    /// The session checkpoint taken when the export was made (the state it was built from).
+    pub checkpoint: String,
     pub created_at: String,
     pub errors: u32,
     pub warnings: u32,
     pub engine: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct SnapshotView {
-    pub id: String,
-    pub created: String,
-    pub reason: String,
-    pub label: Option<String>,
-    pub turn: Option<String>,
-    pub slides: u32,
-    pub thumb: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct CapabilitiesView {
-    pub context_window: u32,
-    /// `native` | `none` (a model without native tool calling cannot be used).
-    pub tools: String,
-    pub vision: bool,
-    pub documents: bool,
-    pub caching: bool,
-    pub probed_at: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct ModelEntry {
-    /// `provider/id`.
-    pub name: String,
-    pub provider: String,
-    /// `internal` | `external`.
-    pub location: String,
-    pub capabilities: Option<CapabilitiesView>,
-    pub degraded: bool,
-    pub degraded_reasons: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct SkillView {
-    pub name: String,
-    pub description: String,
-    /// `builtin` | `user` | `project` | `managed`.
-    pub source: String,
-    pub has_scripts: bool,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct AnalystItem {
-    pub id: String,
-    /// `figure` | `table`.
-    pub kind: String,
-    pub title: String,
-    pub run_id: String,
-    pub script: String,
-    pub args: Vec<String>,
-    pub created: String,
-    pub thumb: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -417,85 +216,15 @@ pub struct WriteResult {
     pub hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-pub struct ChatAttachments {
-    #[serde(default)]
-    pub slides: Vec<String>,
-    #[serde(default)]
-    pub cites: Vec<String>,
-    #[serde(default)]
-    pub images_abs: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct TurnSummaryView {
-    pub text: String,
-    pub slides_changed: Vec<String>,
-    pub exports: Vec<String>,
-    pub open_issues: Vec<String>,
-}
-
-/// Events pushed on a project's channel (IPC.md section 3).
+/// Events of one deck, pushed on the session channel inside a `deck` session event
+/// (IPC.md section 7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ProjectEvent {
-    AgentText {
-        conversation: String,
-        turn: String,
-        delta: String,
-    },
-    AgentToolCall {
-        conversation: String,
-        turn: String,
-        id: String,
-        name: String,
-        #[ts(type = "unknown")]
-        arguments: Value,
-    },
-    AgentToolResult {
-        conversation: String,
-        turn: String,
-        id: String,
-        ok: bool,
-        summary: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        image: Option<String>,
-    },
-    Proposal {
-        proposal: Box<ProposalView>,
-    },
-    ProposalResolved {
-        proposal_id: String,
-        decision: String,
-        by: String,
-    },
-    TurnStarted {
-        conversation: String,
-        turn: String,
-    },
-    TurnDone {
-        conversation: String,
-        turn: String,
-        summary: TurnSummaryView,
-    },
-    TurnError {
-        conversation: String,
-        turn: String,
-        message: String,
-    },
-    Usage {
-        conversation: String,
-        input_tokens: u64,
-        output_tokens: u64,
-        context_window: u32,
-        context_used: u64,
-    },
+pub enum DeckEvent {
     DeckChanged {
         deck: Box<Deck>,
         changed: Vec<String>,
         removed: Vec<String>,
-        head_snapshot: Option<String>,
         by: String,
     },
     SlideView {
@@ -529,7 +258,8 @@ pub enum ProjectEvent {
         ok: bool,
         message: Option<String>,
     },
-    ProjectChanged {
-        info: Box<ProjectInfo>,
+    /// The deck's mode, template, or title changed.
+    InfoChanged {
+        info: Box<DeckInfo>,
     },
 }

@@ -25,6 +25,8 @@ use std::time::Duration;
 use wb_providers::model::ModelCapabilities;
 use wb_providers::ModelClient;
 
+pub mod deck;
+
 #[derive(Debug, Clone)]
 pub struct LoadedTask {
     pub dir: PathBuf,
@@ -44,7 +46,8 @@ pub fn load_tasks(tasks_dir: &Path, filter: Option<&str>) -> Result<Vec<LoadedTa
     dirs.sort();
     for dir in dirs {
         let path = dir.join("task.toml");
-        if !path.is_file() {
+        // Deck tasks have their own loader and graders (`deck::load_tasks`).
+        if !path.is_file() || deck::is_deck_task(&dir) {
             continue;
         }
         let text = std::fs::read_to_string(&path)?;
@@ -652,7 +655,7 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
     let session = Session::create(&task_home, &repo, "local", &env.model_name)?;
     let conv_id = "eval".to_string();
     let mut ctx = ToolContext::new(&repo, &task_home, session, &conv_id, project.clone());
-    ctx.kernel = kernel.clone();
+    ctx.set_kernel(kernel.clone());
     let policy = Policy::for_project(&repo, &project, task.file.task.mode)?;
     let config = AgentConfig::new(
         task.file.task.mode,
@@ -1130,6 +1133,10 @@ count = 1
                     kind: ProposalKind::Edit,
                     summary: "".into(),
                     diff: None,
+                    targets: None,
+                    deck: None,
+                    before: None,
+                    after: None,
                 },
                 Event::Decision {
                     ts: "t".into(),

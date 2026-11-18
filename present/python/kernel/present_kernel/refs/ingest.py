@@ -59,8 +59,6 @@ def _store(project: Path, ref_id: str, version: str, doc: dict[str, Any]) -> Non
 
 def extract_file(project: Path, full: Path, ref_id: str, version: str, name: str = "", depth: int = 0) -> dict[str, Any]:
     """Run the extractor for ``full`` and cache the result. Raises 2009 for unsupported or unreadable files."""
-    from . import analyst
-
     display = name or full.name
     ctx = Ctx(project=project, ref_id=ref_id, version=version, name=name, file_name=full.name, depth=depth)
 
@@ -82,11 +80,8 @@ def extract_file(project: Path, full: Path, ref_id: str, version: str, name: str
                 "kind": child["kind"], "title": child["title"], "root_loc": child["root_loc"]}  # fmt: skip
 
     ctx.attach = attach
-    sidecar = analyst.read_import_sidecar(full)
     try:
-        if sidecar is not None:
-            doc = analyst.extract(full, ctx, sidecar)
-        elif kind_for(full.name) is None:
+        if kind_for(full.name) is None:
             raise RpcError(UNSUPPORTED_REFERENCE, f"{display}: {full.suffix or 'files without an extension'} is not a supported reference format")
         else:
             doc = run_extractor(full, ctx)

@@ -4,10 +4,16 @@
 //! tasks, output previews, filesystem operations, and diagnostics.
 
 use super::agent_runner::ConversationRuntime;
+use super::decks::{DeckOptions, DeckServices};
 use super::error::{ServiceError, ServiceResult};
 use super::events::{EventHub, Subscription};
 use super::figures::{self, ScannedRun};
 use super::fs;
+use super::packages;
+pub use super::runs::{
+    tail, MAX_FINISHED_RUNS, RUN_GET_MAX_BYTES, RUN_MEMORY_BYTES, SYNC_DEBOUNCE, TAIL_BYTES,
+};
+use super::runs::{RunRecord, RunService, RunShared, RunSource};
 use super::tasks::{TaskLogger, TaskRegistry};
 use crate::config;
 use crate::kernel::{
@@ -29,18 +35,8 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-/// Last N bytes of stdout/stderr carried in a `RunView`.
-pub const TAIL_BYTES: usize = 4096;
-/// Bytes of each stream kept in memory per run (the full text is in the run's log files).
-pub const RUN_MEMORY_BYTES: usize = 64 * 1024;
-/// `run_get` returns at most this much of each stream (the tail), with a note when cut.
-pub const RUN_GET_MAX_BYTES: u64 = 2 * 1024 * 1024;
-/// Finished runs kept in memory; older ones are served from the session store.
-pub const MAX_FINISHED_RUNS: usize = 200;
 /// Watcher debounce.
 pub const DEBOUNCE: Duration = Duration::from_millis(200);
-/// Minimum time between mirror syncs triggered by index, check, and equation requests (R4).
-pub const SYNC_DEBOUNCE: Duration = Duration::from_secs(2);
 /// A failed background kernel start is not retried by passive requests for this long.
 const START_BACKOFF: Duration = Duration::from_secs(10);
 
@@ -127,6 +123,8 @@ pub struct RuntimeOptions {
     /// The kernel source bundled with a packaged app (used to build a wheel for remote
     /// targets when no development wheel exists).
     pub kernel_source: Option<PathBuf>,
+    /// How deck kernels are started (engine, sandbox, interpreter).
+    pub deck: DeckOptions,
 }
 
 /// `meta.json` in the session directory: workbench-level session state.
@@ -173,105 +171,8 @@ pub fn save_meta(session_dir: &Path, meta: &SessionMeta) -> ServiceResult<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunSource {
-    Kernel,
-    Terminal,
-}
-
-#[derive(Debug, Clone)]
-pub struct RunRecord {
-    pub meta: RunMeta,
-    pub target: String,
-    /// The last [`RUN_MEMORY_BYTES`] of each stream; the full text lives in the log files.
-    pub stdout: String,
-    pub stderr: String,
-    pub artifacts: Vec<Artifact>,
-    pub source: RunSource,
-    pub finished: bool,
-    /// The conversation whose agent turn started the run (IPC.md section 7).
-    pub conversation: Option<String>,
-}
-
-impl RunRecord {
-    pub fn view(&self) -> RunView {
-        RunView {
-            conversation: self.conversation.clone(),
-            meta: self.meta.clone(),
-            target: self.target.clone(),
-            artifacts: self.artifacts.clone(),
-            stdout_tail: tail(&self.stdout, TAIL_BYTES),
-            stderr_tail: tail(&self.stderr, TAIL_BYTES),
-        }
-    }
-}
-
-pub fn tail(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut start = s.len() - max;
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    s[start..].to_string()
-}
-
-/// Append to a bounded in-memory tail.
-fn push_bounded(buf: &mut String, chunk: &str) {
-    buf.push_str(chunk);
-    if buf.len() > RUN_MEMORY_BYTES * 2 {
-        let mut start = buf.len() - RUN_MEMORY_BYTES;
-        while start < buf.len() && !buf.is_char_boundary(start) {
-            start += 1;
-        }
-        buf.drain(..start);
-    }
-}
-
-/// The last `max` bytes of a file as text, with a note in front when the start was cut.
-/// `None` when the file does not exist.
-fn read_log_tail(path: &Path, max: u64) -> Option<String> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
-    let len = f.metadata().ok()?.len();
-    let skip = len.saturating_sub(max);
-    if skip > 0 {
-        f.seek(SeekFrom::Start(skip)).ok()?;
-    }
-    let mut bytes = Vec::with_capacity((len - skip) as usize);
-    f.take(max).read_to_end(&mut bytes).ok()?;
-    let mut start = 0;
-    if skip > 0 {
-        // Do not start in the middle of a UTF-8 sequence.
-        while start < bytes.len() && start < 4 && (bytes[start] & 0xC0) == 0x80 {
-            start += 1;
-        }
-    }
-    let text = String::from_utf8_lossy(&bytes[start..]);
-    Some(if skip > 0 {
-        format!("[... output truncated: the first {skip} bytes are not shown ...]\n{text}")
-    } else {
-        text.to_string()
-    })
-}
-
-fn append_log(path: &Path, chunk: &str) {
-    use std::io::Write;
-    if let Some(p) = path.parent() {
-        let _ = std::fs::create_dir_all(p);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = f.write_all(chunk.as_bytes());
-    }
-}
-
 struct KernelSlot {
-    client: tokio::sync::RwLock<Option<KernelClient>>,
+    client: Arc<RwLock<Option<KernelClient>>>,
     state: Mutex<KernelState>,
     starting: tokio::sync::Mutex<()>,
     /// Bumped whenever the client is replaced; a forwarder of an older generation stops.
@@ -306,17 +207,19 @@ pub struct SessionRuntime {
     pub dir: PathBuf,
     pub opts: RuntimeOptions,
     pub global: RwLock<GlobalConfig>,
-    session: Mutex<Session>,
+    session: Arc<Mutex<Session>>,
     meta: Mutex<SessionMeta>,
-    target: RwLock<Target>,
-    project: RwLock<ProjectConfig>,
+    target: Arc<RwLock<Target>>,
+    project: Arc<RwLock<ProjectConfig>>,
     kernel: KernelSlot,
     events: EventHub,
-    runs: Mutex<HashMap<String, RunRecord>>,
-    /// run id -> conversation, from the transcripts on disk plus the turns of this process.
-    run_conversations: Mutex<HashMap<String, String>>,
-    run_conversations_loaded: AtomicBool,
-    run_registration: tokio::sync::Mutex<()>,
+    /// Runs and mirror sync: shared with the agent's tools.
+    pub runs: Arc<RunService>,
+    /// File access: shared with the agent's tools.
+    pub files: fs::WorkspaceFiles,
+    /// The session's decks (`decks/<slug>/`): shared with the agent's tools. A deck's
+    /// kernel starts when the deck is first used.
+    pub decks: Arc<DeckServices>,
     index_cache: tokio::sync::RwLock<Option<IndexResult>>,
     conversations: Mutex<HashMap<String, Arc<ConversationRuntime>>>,
     pub(super) pending: Mutex<HashMap<ProposalId, PendingProposal>>,
@@ -327,12 +230,8 @@ pub struct SessionRuntime {
     watcher_error: Mutex<Option<String>>,
     /// Whether the remote target was prepared (bootstrap, sync, session env) since it was set.
     remote_prepared: tokio::sync::Mutex<bool>,
-    /// Local files changed since the last mirror sync.
-    mirror_dirty: AtomicBool,
-    last_mirror_sync: Mutex<Option<std::time::Instant>>,
     background: Mutex<Vec<JoinHandle<()>>>,
     closed: AtomicBool,
-    last_sync_hash: tokio::sync::Mutex<Option<String>>,
     /// Test hook: a model client used for every conversation instead of the configured one.
     model_override: Mutex<Option<Arc<dyn wb_providers::ModelClient>>>,
     /// `Weak` self reference so background tasks and approvers can reach the runtime.
@@ -392,6 +291,21 @@ impl SessionRuntime {
         }
         save_meta(&dir, &meta)?;
         let events = EventHub::new();
+        let shared = RunShared::new(session.clone(), target, project);
+        let runs = RunService::new(
+            &repo,
+            &session.home,
+            &dir,
+            opts.control_dir.clone(),
+            shared.clone(),
+            events.clone(),
+        );
+        let decks = DeckServices::new(&repo, &session.home, &dir);
+        decks.set_events(events.clone());
+        decks.set_options(DeckOptions {
+            env_remove: opts.env_remove.clone(),
+            ..opts.deck.clone()
+        });
         let rt = Arc::new_cyclic(|weak| SessionRuntime {
             id: session.id().to_string(),
             repo: repo.clone(),
@@ -399,12 +313,12 @@ impl SessionRuntime {
             dir,
             opts,
             global: RwLock::new(global),
-            session: Mutex::new(session),
+            session: shared.session.clone(),
             meta: Mutex::new(meta),
-            target: RwLock::new(target),
-            project: RwLock::new(project),
+            target: shared.target.clone(),
+            project: shared.project.clone(),
             kernel: KernelSlot {
-                client: tokio::sync::RwLock::new(None),
+                client: shared.kernel.clone(),
                 state: Mutex::new(KernelState::Stopped),
                 starting: tokio::sync::Mutex::new(()),
                 generation: AtomicU64::new(0),
@@ -413,10 +327,9 @@ impl SessionRuntime {
                 net_isolation: Mutex::new(None),
             },
             events,
-            runs: Mutex::new(HashMap::new()),
-            run_conversations: Mutex::new(HashMap::new()),
-            run_conversations_loaded: AtomicBool::new(false),
-            run_registration: tokio::sync::Mutex::new(()),
+            runs,
+            files: fs::WorkspaceFiles::new(&repo).with_artifacts(session.artifacts_dir()),
+            decks,
             index_cache: tokio::sync::RwLock::new(None),
             conversations: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
@@ -425,11 +338,8 @@ impl SessionRuntime {
             watcher: Mutex::new(None),
             watcher_error: Mutex::new(None),
             remote_prepared: tokio::sync::Mutex::new(false),
-            mirror_dirty: AtomicBool::new(true),
-            last_mirror_sync: Mutex::new(None),
             background: Mutex::new(vec![]),
             closed: AtomicBool::new(false),
-            last_sync_hash: tokio::sync::Mutex::new(None),
             model_override: Mutex::new(None),
             this: weak.clone(),
         });
@@ -825,10 +735,11 @@ impl SessionRuntime {
 
     /// The connected kernel client, if any.
     pub async fn kernel_client(&self) -> Option<KernelClient> {
-        let guard = self.kernel.client.read().await;
-        match guard.as_ref() {
-            Some(k) if k.is_connected().await => Some(k.clone()),
-            _ => None,
+        let k = self.kernel.client.read().ok().and_then(|k| k.clone())?;
+        if k.is_connected().await {
+            Some(k)
+        } else {
+            None
         }
     }
 
@@ -907,7 +818,7 @@ impl SessionRuntime {
                 .await
                 .map_err(ServiceError::kernel_offline)?;
         }
-        let existing = self.kernel.client.read().await.clone();
+        let existing = self.kernel.client.read().ok().and_then(|k| k.clone());
         let started = match existing {
             Some(k) => {
                 tokio::time::timeout(Duration::from_secs(90), k.reconnect(crate::CORE_VERSION))
@@ -953,7 +864,9 @@ impl SessionRuntime {
         }
         if is_new {
             self.kernel.generation.fetch_add(1, Ordering::SeqCst);
-            *self.kernel.client.write().await = Some(k.clone());
+            if let Ok(mut c) = self.kernel.client.write() {
+                *c = Some(k.clone());
+            }
             self.start_kernel_forwarder(k.clone());
         }
         Ok(k)
@@ -1005,7 +918,7 @@ impl SessionRuntime {
         // Let a start in flight finish (briefly) so its client is not left behind.
         let _starting =
             tokio::time::timeout(Duration::from_secs(5), self.kernel.starting.lock()).await;
-        let k = self.kernel.client.write().await.take();
+        let k = self.kernel.client.write().ok().and_then(|mut c| c.take());
         // The old client's forwarder must not outlive it (R7).
         self.kernel.generation.fetch_add(1, Ordering::SeqCst);
         if let Some(h) = self.kernel.forwarder.lock().ok().and_then(|mut f| f.take()) {
@@ -1042,7 +955,7 @@ impl SessionRuntime {
                 }
                 tokio::select! {
                     n = rx.recv() => match n {
-                        Ok(n) => rt.handle_notification(n).await,
+                        Ok(n) => rt.runs.handle_notification(n).await,
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             // Output was dropped; the renderer reconciles through run_get.
                             rt.emit(SessionEvent::Resync);
@@ -1131,23 +1044,6 @@ impl SessionRuntime {
             .ok_or_else(|| anyhow::anyhow!("building the kernel wheel produced no file"))
     }
 
-    /// What the egress guard does for an install line when it knows the directory, done
-    /// here because task commands are spawned without telling it: refuse a project that
-    /// names its own package sources, and report a missing interpreter with the version to
-    /// install instead of starting `uv`.
-    async fn check_install(&self, line: &[String]) -> anyhow::Result<()> {
-        if !line.iter().any(|a| a == crate::egress::INDEX_FLAG) {
-            return Ok(());
-        }
-        let repo = self.repo.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::egress::check_project_sources(&repo)?;
-            crate::egress::require_python(&repo, None)
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("install check failed: {e}"))?
-    }
-
     /// The shared "prepare target" step for remote targets: tooling bootstrap, mirror sync,
     /// and the session environment (`uv sync` in the mirror). Runs before the first kernel
     /// start after create, open, and target changes (R3).
@@ -1209,536 +1105,51 @@ impl SessionRuntime {
         }
     }
 
-    // ---- runs ----
-
-    fn run_record(&self, run_id: &str) -> Option<RunRecord> {
-        self.runs.lock().ok().and_then(|r| r.get(run_id).cloned())
-    }
-
-    fn with_run<R>(&self, run_id: &str, f: impl FnOnce(&mut RunRecord) -> R) -> Option<R> {
-        self.runs
-            .lock()
-            .ok()
-            .and_then(|mut r| r.get_mut(run_id).map(f))
-    }
-
-    /// Insert a record and evict the oldest finished ones beyond [`MAX_FINISHED_RUNS`]; they
-    /// stay available through the session store (`runs_list`, `run_get`).
-    pub(super) fn insert_run(&self, rec: RunRecord) {
-        let Ok(mut r) = self.runs.lock() else { return };
-        r.insert(rec.meta.run_id.clone(), rec);
-        let finished = r.values().filter(|x| x.finished).count();
-        if finished > MAX_FINISHED_RUNS {
-            let mut old: Vec<(String, String)> = r
-                .values()
-                .filter(|x| x.finished)
-                .map(|x| (x.meta.started_at.clone(), x.meta.run_id.clone()))
-                .collect();
-            old.sort();
-            for (_, id) in old.into_iter().take(finished - MAX_FINISHED_RUNS) {
-                r.remove(&id);
-            }
-        }
-    }
+    // ---- runs (the run service owns them; these are the UI's entry points) ----
 
     /// Number of run records held in memory.
     pub fn runs_in_memory(&self) -> usize {
-        self.runs.lock().map(|r| r.len()).unwrap_or(0)
-    }
-
-    /// run id -> conversation for every agent run, read once from the transcripts.
-    fn load_run_conversations(&self) {
-        if self.run_conversations_loaded.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let session = self.session_snapshot();
-        let mut found: Vec<(String, String)> = Vec::new();
-        for c in self.meta().conversations {
-            if let Ok(events) = session.read_transcript(&c.id) {
-                for e in events {
-                    if let analyst_protocol::transcript::Event::Run { run_id, .. } = e {
-                        found.push((run_id, c.id.clone()));
-                    }
-                }
-            }
-        }
-        if let Ok(mut m) = self.run_conversations.lock() {
-            for (run, conv) in found {
-                m.entry(run).or_insert(conv);
-            }
-        }
+        self.runs.in_memory()
     }
 
     /// The conversation whose agent turn started a run, if any.
     pub fn run_conversation(&self, run_id: &str) -> Option<String> {
-        self.load_run_conversations();
-        self.run_conversations
-            .lock()
-            .ok()
-            .and_then(|m| m.get(run_id).cloned())
+        self.runs.run_conversation(run_id)
     }
 
-    /// An agent turn of `conversation` started `run_id`. If the run was already announced
-    /// without its conversation, it is announced again (the renderer upserts by run id).
-    pub fn note_agent_run(&self, run_id: &str, conversation: &str) {
-        if let Ok(mut m) = self.run_conversations.lock() {
-            m.insert(run_id.to_string(), conversation.to_string());
-        }
-        let view = self.with_run(run_id, |r| {
-            if r.conversation.is_none() {
-                r.conversation = Some(conversation.to_string());
-                Some(r.view())
-            } else {
-                None
-            }
-        });
-        if let Some(Some(v)) = view {
-            self.emit(SessionEvent::RunStarted { run: v });
-        }
-    }
-
-    fn record_from_meta(&self, meta: RunMeta, source: RunSource) -> RunRecord {
-        let finished = meta.status.is_finished();
-        let conversation = self.run_conversation(&meta.run_id);
-        RunRecord {
-            meta,
-            target: self.target().name().to_string(),
-            stdout: String::new(),
-            stderr: String::new(),
-            artifacts: vec![],
-            source,
-            finished,
-            conversation,
-        }
-    }
-
-    /// A `RunView` for a run known only from the session store.
-    fn stored_view(&self, r: analyst_protocol::session::SessionRun) -> RunView {
-        RunView {
-            conversation: self.run_conversation(&r.meta.run_id),
-            meta: r.meta,
-            target: r.target,
-            artifacts: vec![],
-            stdout_tail: String::new(),
-            stderr_tail: String::new(),
-        }
-    }
-
-    /// Where this session keeps the output of remote runs (the kernel's own log files are on
-    /// the host).
-    fn run_store_dir(&self, run_id: &str) -> PathBuf {
-        self.dir.join("runs").join(run_id)
-    }
-
-    /// Register a kernel run that was started elsewhere (agent tool, terminal through the
-    /// kernel) when its first notification or `run.json` shows up.
-    async fn register_kernel_run(&self, run_id: &str) -> Option<RunRecord> {
-        let _g = self.run_registration.lock().await;
-        if let Some(r) = self.run_record(run_id) {
-            return Some(r);
-        }
-        let k = self.kernel_client().await?;
-        let meta = k.run_status(run_id).await.ok()?;
-        if meta.run_id != run_id {
-            return None;
-        }
-        let rec = self.record_from_meta(meta, RunSource::Kernel);
-        self.insert_run(rec.clone());
-        if let Ok(s) = self.session.lock() {
-            let _ = s.append_run(&rec.meta);
-        }
-        self.emit(SessionEvent::RunStarted { run: rec.view() });
-        if rec.finished {
-            self.emit(SessionEvent::RunDone { run: rec.view() });
-        }
-        Some(rec)
-    }
-
-    async fn handle_notification(&self, n: KernelNotification) {
-        let Some(run_id) = n.run_id().map(|s| s.to_string()) else {
-            return;
-        };
-        // Run ids become path components (session store, pulled artifacts).
-        if !figures::safe_run_id(&run_id) {
-            tracing::warn!("ignoring a kernel notification with an unusable run id");
-            return;
-        }
-        if self.run_record(&run_id).is_none() && self.register_kernel_run(&run_id).await.is_none() {
-            return;
-        }
-        let remote = self.target().is_remote();
-        match n {
-            KernelNotification::Stdout(o) => {
-                self.with_run(&run_id, |r| push_bounded(&mut r.stdout, &o.chunk));
-                if remote {
-                    append_log(&self.run_store_dir(&run_id).join("stdout.log"), &o.chunk);
-                }
-                self.emit(SessionEvent::RunOutput {
-                    run_id,
-                    stream: OutputStream::Stdout,
-                    chunk: o.chunk,
-                });
-            }
-            KernelNotification::Stderr(o) => {
-                self.with_run(&run_id, |r| push_bounded(&mut r.stderr, &o.chunk));
-                if remote {
-                    append_log(&self.run_store_dir(&run_id).join("stderr.log"), &o.chunk);
-                }
-                self.emit(SessionEvent::RunOutput {
-                    run_id,
-                    stream: OutputStream::Stderr,
-                    chunk: o.chunk,
-                });
-            }
-            KernelNotification::Artifact(a) => {
-                // Paths from the kernel are normalised before they are joined to anything.
-                let mut artifact = a.artifact;
-                match normalize_rel_path(&artifact.path) {
-                    Ok(p) => artifact.path = p,
-                    Err(e) => {
-                        tracing::warn!("ignoring an artifact with an unusable path: {e}");
-                        return;
-                    }
-                }
-                let script = self
-                    .with_run(&run_id, |r| {
-                        r.artifacts.retain(|x| x.path != artifact.path);
-                        r.artifacts.push(artifact.clone());
-                        r.meta.script.clone()
-                    })
-                    .unwrap_or_default();
-                let figure = if artifact.kind == ArtifactKind::Figure {
-                    resolve_in_repo(&self.repo, &artifact.path, true)
-                        .ok()
-                        .and_then(|_| {
-                            figures::figure_view(
-                                &self.repo,
-                                &self.repo.join(&artifact.path),
-                                &run_id,
-                                &script,
-                            )
-                        })
-                        .or_else(|| figures::figure_view_from_artifact(&artifact, &run_id, &script))
-                } else {
-                    None
-                };
-                self.emit(SessionEvent::RunArtifact {
-                    run_id,
-                    artifact,
-                    figure,
-                });
-            }
-            KernelNotification::Done(d) => {
-                let meta = match self.kernel_client().await {
-                    Some(k) => k.run_status(&run_id).await.ok(),
-                    None => None,
-                };
-                let view = self.with_run(&run_id, |r| {
-                    match meta {
-                        Some(m) if m.run_id == r.meta.run_id => r.meta = m,
-                        _ => {
-                            r.meta.status = d.status;
-                            r.meta.exit_code = d.exit_code;
-                            r.meta.finished_at = Some(now_rfc3339());
-                        }
-                    }
-                    r.finished = true;
-                    r.view()
-                });
-                let Some(v) = view else { return };
-                if let Ok(s) = self.session.lock() {
-                    let _ = s.append_run(&v.meta);
-                }
-                if !remote {
-                    self.emit(SessionEvent::RunDone { run: v });
-                    return;
-                }
-                // Remote: keep the artifact list with the session, and pull the rendered
-                // artifacts once, off this task (G8). Agent runs are pulled by the tool that
-                // started them, so they are not pulled again here.
-                let store = self.run_store_dir(&v.meta.run_id);
-                let _ = std::fs::create_dir_all(&store);
-                let lines: String = v
-                    .artifacts
-                    .iter()
-                    .filter_map(|a| serde_json::to_string(a).ok())
-                    .map(|l| l + "\n")
-                    .collect();
-                let _ = std::fs::write(store.join("artifacts.jsonl"), lines);
-                if v.conversation.is_some() {
-                    self.emit(SessionEvent::RunDone { run: v });
-                } else if let Some(rt) = self.arc() {
-                    self.spawn(async move {
-                        rt.pull_run_artifacts(&v).await;
-                        rt.emit(SessionEvent::RunDone { run: v });
-                    });
-                }
-            }
-            KernelNotification::Other { .. } => {}
-        }
-    }
-
-    /// On a remote target, pull the run's rendered artifacts (figures, their sidecars,
-    /// `run.json`; nothing else leaves the host) into the repo and the session.
-    async fn pull_run_artifacts(&self, v: &RunView) {
-        let target = self.target();
-        let (Target::Ssh { host, .. }, Some(mirror)) = (&target, target.mirror_dir(&self.repo))
-        else {
-            return;
-        };
-        let out_dir = normalize_rel_path(&v.meta.out_dir).unwrap_or_default();
-        let paths: Vec<String> = target::sync::rendered_paths(&v.artifacts, &out_dir)
-            .into_iter()
-            .filter_map(|p| normalize_rel_path(&p).ok())
-            .filter(|p| !crate::util::is_reserved_path(p))
-            .collect();
-        if let Err(e) = target::sync::pull_rendered(
-            host,
-            &mirror,
-            &paths,
-            &self.repo,
-            self.opts.control_dir.as_deref(),
-        )
-        .await
-        {
-            tracing::warn!("pulling run {} failed: {e}", v.meta.run_id);
-            return;
-        }
-        let session = self.session_snapshot();
-        for a in v.artifacts.iter().filter(|a| a.rendered) {
-            let Ok(src) = resolve_in_repo(&self.repo, &a.path, true) else {
-                continue;
-            };
-            let dst = session.pulled_artifact_path(&v.meta.run_id, &a.path);
-            if let Some(p) = dst.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            let _ = std::fs::copy(&src, &dst);
-        }
-    }
-
-    /// Sync the mirror when the target is remote. Returns the tree hash. Syncs are
-    /// serialised.
+    /// Sync the mirror when the target is remote. Returns the tree hash.
     pub async fn sync_if_needed(&self) -> ServiceResult<Option<String>> {
-        let target = self.target();
-        if !target.is_remote() {
-            return Ok(None);
-        }
-        let mut last = self.last_sync_hash.lock().await;
-        // Changes made while the push runs make the mirror dirty again.
-        self.mirror_dirty.store(false, Ordering::SeqCst);
-        let report = match target::sync::push(
-            &self.repo,
-            &target,
-            self.opts.control_dir.as_deref(),
-            last.as_deref(),
-            false,
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                self.mirror_dirty.store(true, Ordering::SeqCst);
-                return Err(ServiceError::target_offline(format!("sync failed: {e:#}")));
-            }
-        };
-        if let Some(w) = &report.warning {
-            tracing::warn!("{w}");
-        }
-        *last = Some(report.tree_hash.clone());
-        if let Ok(mut t) = self.last_mirror_sync.lock() {
-            *t = Some(std::time::Instant::now());
-        }
-        if let Ok(mut s) = self.session.lock() {
-            let _ = s.set_last_tree_hash(Some(report.tree_hash.clone()));
-        }
-        Ok(Some(report.tree_hash))
+        self.runs.sync_if_needed().await
     }
 
-    /// Bring the mirror up to date before a request that reads it (index, checks, equations)
-    /// on a remote target (R4). Nothing happens when no local file changed since the last
-    /// sync; syncs are at least [`SYNC_DEBOUNCE`] apart.
+    /// Bring the mirror up to date before a request that reads it (R4).
     pub async fn sync_debounced(&self) -> ServiceResult<()> {
-        if !self.target().is_remote() {
-            return Ok(());
-        }
         let watcher_broken = self
             .watcher_error
             .lock()
             .map(|e| e.is_some())
             .unwrap_or(false);
-        if !watcher_broken && !self.mirror_dirty.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-        let since = self
-            .last_mirror_sync
-            .lock()
-            .ok()
-            .and_then(|t| *t)
-            .map(|t| t.elapsed());
-        if let Some(e) = since {
-            if e < SYNC_DEBOUNCE {
-                tokio::time::sleep(SYNC_DEBOUNCE - e).await;
-                if !watcher_broken && !self.mirror_dirty.load(Ordering::SeqCst) {
-                    return Ok(()); // another request synced meanwhile
-                }
-            }
-        }
-        self.sync_if_needed().await.map(|_| ())
+        self.runs.sync_debounced(watcher_broken).await
     }
 
+    /// Start a run from the UI. A run is an explicit action: wait for the kernel (and, on a
+    /// remote target, for the target to be prepared) instead of failing while it starts.
     pub async fn run_start(&self, script: &str, args: Vec<String>) -> ServiceResult<RunView> {
-        let script = normalize_rel_path(script).map_err(ServiceError::invalid)?;
-        let script_abs =
-            resolve_in_repo(&self.repo, &script, true).map_err(ServiceError::not_found)?;
-        if !script_abs.is_file() {
-            return Err(ServiceError::not_found(format!(
-                "script `{script}` not found"
-            )));
-        }
-        // A run is an explicit action: wait for the kernel (and, on a remote target, for the
-        // target to be prepared) instead of failing while it starts.
-        let k = self.ensure_kernel().await?;
-        let tree_hash = match self.sync_if_needed().await? {
-            Some(h) => Some(h),
-            None => {
-                let repo = self.repo.clone();
-                tokio::task::spawn_blocking(move || target::sync::tree_id(&repo).ok())
-                    .await
-                    .ok()
-                    .flatten()
-            }
-        };
-        let eff = config::effective_project(&self.project(), self.target().name());
-        let _g = self.run_registration.lock().await;
-        let started = k
-            .run_start(RunStartParams {
-                script: script.clone(),
-                args: Some(args.clone()),
-                env: None,
-                timeout_s: Some(eff.timeout_s as f64),
-                tree_hash,
-            })
-            .await?;
-        if !figures::safe_run_id(&started.run_id) {
-            return Err(ServiceError::internal(
-                "the kernel returned an unusable run id",
-            ));
-        }
-        let meta = match k.run_status(&started.run_id).await {
-            Ok(m) if m.run_id == started.run_id => m,
-            _ => RunMeta {
-                run_id: started.run_id.clone(),
-                script: script.clone(),
-                args: args.clone(),
-                status: RunStatus::Running,
-                exit_code: None,
-                started_at: now_rfc3339(),
-                finished_at: None,
-                out_dir: started.out_dir.clone(),
-                sandbox: "unknown".into(),
-                tree_hash: None,
-                pid: None,
-                host: "local".into(),
-            },
-        };
-        let rec = self.record_from_meta(meta, RunSource::Kernel);
-        self.insert_run(rec.clone());
-        if let Ok(s) = self.session.lock() {
-            let _ = s.append_run(&rec.meta);
-        }
-        let view = rec.view();
-        self.emit(SessionEvent::RunStarted { run: view.clone() });
-        Ok(view)
+        self.ensure_kernel().await?;
+        self.runs.start(script, args, None, None).await
     }
 
     pub async fn run_cancel(&self, run_id: &str) -> ServiceResult<()> {
-        let k = self.kernel().await?;
-        let r = k.run_cancel(run_id).await?;
-        if !r.ok {
-            return Err(ServiceError::not_found(format!(
-                "run `{run_id}` is not running"
-            )));
-        }
-        Ok(())
+        self.kernel().await?;
+        self.runs.cancel(run_id).await
     }
 
-    /// Runs known to this process plus the session's run history, newest first. Needs no
-    /// kernel.
     pub fn runs_list(&self, limit: Option<u32>) -> Vec<RunView> {
-        let mut views: Vec<RunView> = self
-            .runs
-            .lock()
-            .map(|r| r.values().map(|v| v.view()).collect())
-            .unwrap_or_default();
-        let mut seen: BTreeSet<String> = views.iter().map(|v| v.meta.run_id.clone()).collect();
-        if let Ok(runs) = self.session_snapshot().read_runs() {
-            for r in runs.into_iter().rev() {
-                if seen.insert(r.meta.run_id.clone()) {
-                    views.push(self.stored_view(r));
-                }
-            }
-        }
-        views.sort_by(|a, b| b.meta.started_at.cmp(&a.meta.started_at));
-        views.truncate(limit.unwrap_or(50).max(1) as usize);
-        views
+        self.runs.list(limit)
     }
 
-    /// A run with its output: any run `runs_list` shows, also after a restart. The text comes
-    /// from the run's log files (the kernel's for local runs, the session store for remote
-    /// ones); each stream is cut to its last [`RUN_GET_MAX_BYTES`] with a note. Needs no
-    /// kernel.
     pub fn run_get(&self, run_id: &str) -> ServiceResult<RunDetail> {
-        if !figures::safe_run_id(run_id) {
-            return Err(ServiceError::not_found(format!("run `{run_id}` not found")));
-        }
-        let record = self.run_record(run_id);
-        let mut view = match &record {
-            Some(r) => r.view(),
-            None => {
-                let run = self
-                    .session_snapshot()
-                    .find_run(run_id)?
-                    .ok_or_else(|| ServiceError::not_found(format!("run `{run_id}` not found")))?;
-                self.stored_view(run)
-            }
-        };
-        let dirs = [
-            self.home.join("runs").join(run_id),
-            self.run_store_dir(run_id),
-        ];
-        let read = |name: &str| {
-            dirs.iter()
-                .find_map(|d| read_log_tail(&d.join(name), RUN_GET_MAX_BYTES))
-        };
-        let stdout = read("stdout.log")
-            .or_else(|| record.as_ref().map(|r| r.stdout.clone()))
-            .unwrap_or_default();
-        let stderr = read("stderr.log")
-            .or_else(|| record.as_ref().map(|r| r.stderr.clone()))
-            .unwrap_or_default();
-        if view.artifacts.is_empty() {
-            view.artifacts = dirs
-                .iter()
-                .find_map(|d| {
-                    crate::session::read_jsonl::<Artifact>(&d.join("artifacts.jsonl"))
-                        .ok()
-                        .filter(|a| !a.is_empty())
-                })
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|a| normalize_rel_path(&a.path).is_ok())
-                .collect();
-        }
-        if record.is_none() {
-            view.stdout_tail = tail(&stdout, TAIL_BYTES);
-            view.stderr_tail = tail(&stderr, TAIL_BYTES);
-        }
-        Ok(RunDetail {
-            view,
-            stdout,
-            stderr,
-        })
+        self.runs.get(run_id)
     }
 
     // ---- index and checks ----
@@ -1913,14 +1324,11 @@ impl SessionRuntime {
         Ok(k.env_packages().await?.packages)
     }
 
-    /// `uv add|remove|sync` as a task; `packages_changed` on success.
-    ///
-    /// The local repo is canonical, also for the environment: on a remote target the change
-    /// is made to the local `pyproject.toml` and `uv.lock` first, then the mirror is synced,
-    /// then the host runs `uv sync` (R5). Changing only the mirror would be undone by the
-    /// next push.
+    /// `uv add|remove|sync` as a task; `packages_changed` on success. The work is done by the
+    /// package service, which the agent's `pkg.*` tools call too.
     pub fn env_task(&self, op: &str, packages: Vec<String>) -> ServiceResult<TaskId> {
-        if op != "sync" && packages.is_empty() {
+        let parsed = packages::Op::parse(op).map_err(|e| ServiceError::invalid(e.to_string()))?;
+        if parsed != packages::Op::Sync && packages.is_empty() {
             return Err(ServiceError::invalid(
                 "`packages` must list at least one package",
             ));
@@ -1939,111 +1347,28 @@ impl SessionRuntime {
                 "package changes are denied by policy",
             ));
         }
-        if !matches!(op, "add" | "remove" | "sync") {
-            return Err(ServiceError::invalid(format!(
-                "unknown package operation `{op}`"
-            )));
-        }
-        let has_pyproject = self.repo.join("pyproject.toml").is_file();
-        if op == "sync" && !has_pyproject {
+        if parsed == packages::Op::Sync && !self.repo.join("pyproject.toml").is_file() {
             return Err(ServiceError::invalid(
                 "env_sync needs a pyproject.toml / uv.lock",
             ));
         }
-        let op = op.to_string();
         let id = self.tasks.alloc(&format!("env-{op}"));
         let logger = TaskLogger::new(id.clone(), self.events());
         let Some(rt) = self.arc() else {
             return Err(ServiceError::internal("session runtime gone"));
         };
-        let target = self.target();
-        let uv = crate::util::tool("uv");
         self.spawn(async move {
-            let r: anyhow::Result<()> = async {
-                match &target {
-                    Target::Local => {
-                        // Installs name the configured index (and are authorized when the
-                        // line is spawned); an uninstall needs no index and runs offline.
-                        let mut rest: Vec<String> = Vec::new();
-                        if !has_pyproject {
-                            rest.extend(["--python".into(), rt.session_python()]);
-                        }
-                        if op != "sync" {
-                            rest.push("--".into());
-                            rest.extend(packages);
-                        }
-                        let line = match (op.as_str(), has_pyproject) {
-                            ("add", true) => crate::egress::uv_install(&uv, &["add"], &rest),
-                            ("remove", true) => crate::egress::uv_install(&uv, &["remove"], &rest),
-                            ("sync", _) => crate::egress::uv_install(&uv, &["sync"], &rest),
-                            ("add", false) => {
-                                crate::egress::uv_install(&uv, &["pip", "install"], &rest)
-                            }
-                            _ => {
-                                let mut line = vec![uv, "pip".into(), "uninstall".into()];
-                                line.extend(rest);
-                                line
-                            }
-                        };
-                        rt.check_install(&line).await?;
-                        logger.stream_command(&line, Some(&rt.repo)).await
-                    }
-                    Target::Ssh { host, .. } => {
-                        let control = rt.opts.control_dir.as_deref();
-                        let mirror = target.mirror_dir(&rt.repo).unwrap_or_default();
-                        if has_pyproject {
-                            // 1. Change the canonical project files locally (no local venv).
-                            let mut rest: Vec<String> = Vec::new();
-                            if op != "sync" {
-                                rest.extend(["--no-sync".into(), "--".into()]);
-                                rest.extend(packages);
-                            }
-                            let sub = match op.as_str() {
-                                "add" => "add",
-                                "remove" => "remove",
-                                _ => "lock",
-                            };
-                            // Resolving needs the index even when nothing is installed here.
-                            let line = crate::egress::uv_install(&uv, &[sub], &rest);
-                            rt.check_install(&line).await?;
-                            logger.stream_command(&line, Some(&rt.repo)).await?;
-                            // 2. Push them, 3. bring the remote environment in line.
-                            logger.log("syncing the repository mirror");
-                            rt.mirror_dirty.store(true, Ordering::SeqCst);
-                            rt.sync_if_needed()
-                                .await
-                                .map_err(|e| anyhow::anyhow!("{e}"))?;
-                            let index_flag = crate::egress::remote_index_flag("uv sync (remote)")?;
-                            let cmd = target::bootstrap::session_env_command(&mirror, &index_flag);
-                            let line = target::ssh_command(host, control, &cmd);
-                            logger.stream_command(&line, None).await
-                        } else {
-                            // No project file to keep canonical: change the remote venv.
-                            rt.sync_if_needed()
-                                .await
-                                .map_err(|e| anyhow::anyhow!("{e}"))?;
-                            let pkgs: Vec<String> =
-                                packages.iter().map(|p| crate::util::sh_quote(p)).collect();
-                            let uv_call = if op == "add" {
-                                format!(
-                                    "~/.analyst/bin/uv pip install {}",
-                                    crate::egress::remote_index_flag("uv pip install (remote)")?
-                                )
-                            } else {
-                                "UV_OFFLINE=1 ~/.analyst/bin/uv pip uninstall".to_string()
-                            };
-                            let remote = format!(
-                                "cd {} && {uv_call} --python .venv/bin/python -- {}",
-                                crate::util::sh_quote_path(&mirror),
-                                pkgs.join(" ")
-                            );
-                            let line = target::ssh_command(host, control, &remote);
-                            logger.stream_command(&line, None).await
-                        }
-                    }
-                }
-            }
-            .await;
+            let req = packages::Request {
+                op: parsed,
+                packages,
+                repo: &rt.repo,
+                target: rt.target(),
+                control_dir: rt.opts.control_dir.clone(),
+                session_python: Some(rt.session_python()),
+            };
+            let r = packages::change(&req, &rt.runs, Some(&logger))
+                .await
+                .map(|_| ());
             let ok = r.is_ok();
             logger.finish(r);
             if ok {
@@ -2073,12 +1398,8 @@ impl SessionRuntime {
                 if let Ok(mut t) = rt.target.write() {
                     *t = new_target.clone();
                 }
-                *rt.last_sync_hash.lock().await = None;
+                rt.runs.reset_sync().await;
                 *rt.remote_prepared.lock().await = false;
-                rt.mirror_dirty.store(true, Ordering::SeqCst);
-                if let Ok(mut t) = rt.last_mirror_sync.lock() {
-                    *t = None;
-                }
                 if let Ok(mut f) = rt.kernel.last_failure.lock() {
                     *f = None;
                 }
@@ -2096,7 +1417,7 @@ impl SessionRuntime {
                         &["sync"],
                         &[],
                     );
-                    rt.check_install(&line).await?;
+                    packages::check_install(&rt.repo, &line).await?;
                     logger.stream_command(&line, Some(&rt.repo)).await?;
                 }
                 rt.ensure_kernel()
@@ -2165,10 +1486,10 @@ impl SessionRuntime {
         let mut groups: Vec<FigureGroup> = Vec::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for scanned in figures::scan_out_limited(&self.repo, &out_dir, limit) {
-            let run = match self.run_record(&scanned.run_id) {
+            let run = match self.runs.record(&scanned.run_id) {
                 Some(r) => r.view(),
                 None => match stored.get(&scanned.run_id) {
-                    Some(r) => self.stored_view(r.clone()),
+                    Some(r) => self.runs.stored_view(r.clone()),
                     None => self.synthesized_view(&scanned),
                 },
             };
@@ -2197,9 +1518,10 @@ impl SessionRuntime {
                 seen.insert(id.clone());
                 pulled += 1;
                 let run = self
-                    .run_record(id)
+                    .runs
+                    .record(id)
                     .map(|rec| rec.view())
-                    .unwrap_or_else(|| self.stored_view(r.clone()));
+                    .unwrap_or_else(|| self.runs.stored_view(r.clone()));
                 groups.push(FigureGroup { run, figures: figs });
             }
         }
@@ -2211,11 +1533,11 @@ impl SessionRuntime {
     /// Bytes of a figure (or any file) under the repo; pulled from a remote target on first
     /// access and cached under the session's `artifacts/`.
     pub async fn figure_data(&self, path: &str) -> ServiceResult<FigureData> {
-        let (rel, local) = fs::resolve(&self.repo, path)?;
+        let (rel, local) = self.files.resolve(path)?;
         if rel.is_empty() {
             return Err(ServiceError::invalid("`path` must name a file"));
         }
-        let bytes = match fs::read_binary(&self.repo, &rel) {
+        let bytes = match self.files.read_binary(&rel) {
             Ok((_, b)) => b,
             Err(e) if e.code == IpcErrorCode::NotFound && !local.exists() => {
                 let target = self.target();
@@ -2263,15 +1585,15 @@ impl SessionRuntime {
     // ---- filesystem ----
 
     pub fn fs_tree(&self, path: Option<&str>, depth: Option<u32>) -> ServiceResult<Vec<FileEntry>> {
-        fs::tree(&self.repo, path, depth, &self.out_dir())
+        self.files.tree(path, depth, &self.out_dir())
     }
 
     pub fn fs_read(&self, path: &str) -> ServiceResult<FileContent> {
-        fs::read(&self.repo, path)
+        self.files.read(path)
     }
 
     pub fn fs_read_binary(&self, path: &str) -> ServiceResult<FigureData> {
-        let (rel, bytes) = fs::read_binary(&self.repo, path)?;
+        let (rel, bytes) = self.files.read_binary(path)?;
         Ok(FigureData {
             mime: guess_mime(&rel).to_string(),
             base64: fs::to_base64(&bytes),
@@ -2285,8 +1607,8 @@ impl SessionRuntime {
         content: &str,
         expected_hash: Option<&str>,
     ) -> ServiceResult<WriteResult> {
-        let r = fs::write(&self.repo, path, content, expected_hash)?;
-        self.mirror_dirty.store(true, Ordering::SeqCst);
+        let r = self.files.write(path, content, expected_hash)?;
+        self.runs.mark_dirty();
         if path.ends_with(".py") {
             if let (Some(rt), Ok(rel)) = (self.arc(), normalize_rel_path(path)) {
                 self.spawn(async move {
@@ -2300,15 +1622,15 @@ impl SessionRuntime {
     }
 
     pub fn fs_create(&self, path: &str, is_dir: bool) -> ServiceResult<()> {
-        fs::create(&self.repo, path, is_dir)
+        self.files.create(path, is_dir)
     }
 
     pub fn fs_delete(&self, path: &str) -> ServiceResult<()> {
-        fs::delete(&self.repo, path)
+        self.files.delete(path)
     }
 
     pub fn fs_rename(&self, from: &str, to: &str) -> ServiceResult<()> {
-        fs::rename(&self.repo, from, to)
+        self.files.rename(from, to)
     }
 
     pub async fn fs_search(
@@ -2317,7 +1639,108 @@ impl SessionRuntime {
         glob: Option<&str>,
         max_results: Option<u32>,
     ) -> ServiceResult<Vec<SearchHit>> {
-        fs::search(&self.repo, pattern, glob, max_results).await
+        Ok(self
+            .files
+            .search(
+                pattern,
+                glob,
+                max_results.unwrap_or(200).max(1) as usize,
+                true,
+            )
+            .await?
+            .hits)
+    }
+
+    // ---- decks ----
+
+    /// The decks in the session's repository (`decks/<slug>/`).
+    pub fn decks_list(&self) -> Vec<DeckSummary> {
+        self.decks.list()
+    }
+
+    /// Create a deck from a template file. Nothing is started; the deck's kernel starts
+    /// when the deck is first opened.
+    pub fn deck_create(
+        &self,
+        slug: Option<&str>,
+        title: &str,
+        template_abs: &str,
+        code_mode: bool,
+    ) -> ServiceResult<DeckSummary> {
+        let slug = match slug.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => s.to_string(),
+            None => super::decks::slug_for(title),
+        };
+        let mode = if code_mode {
+            analyst_deck_protocol::deck::DeckMode::Code
+        } else {
+            analyst_deck_protocol::deck::DeckMode::Structured
+        };
+        let created = self
+            .decks
+            .create(&slug, title, Path::new(template_abs), mode)?;
+        self.runs.mark_dirty();
+        Ok(created)
+    }
+
+    /// A deck's service, starting its kernel if it is not running.
+    pub async fn deck(&self, slug: &str) -> ServiceResult<Arc<analyst_deck::service::DeckService>> {
+        self.decks.open(slug).await
+    }
+
+    // ---- artifact index ----
+
+    /// What the session's runs produced, by run id and path (figures, tables, files).
+    pub fn artifacts_list(
+        &self,
+        run_id: Option<&str>,
+        kind: Option<ArtifactKind>,
+        limit: Option<u32>,
+    ) -> Vec<ArtifactEntry> {
+        super::artifacts::list(
+            &self.runs,
+            &self.session_snapshot(),
+            &self.repo,
+            run_id,
+            kind,
+            limit.map(|n| n as usize),
+        )
+    }
+
+    // ---- history: one undo timeline for code and decks ----
+
+    pub fn history_list(&self, limit: Option<u32>) -> ServiceResult<Vec<CheckpointView>> {
+        super::history::list(
+            &self.repo,
+            &self.session_snapshot(),
+            limit.map(|n| n as usize),
+        )
+    }
+
+    /// Restore a checkpoint: scripts and slide documents go back together.
+    pub async fn history_restore(&self, checkpoint: &str) -> ServiceResult<()> {
+        super::history::restore(&self.repo, checkpoint)?;
+        self.after_restore().await;
+        Ok(())
+    }
+
+    /// Undo a turn (`<conversation>-<n>`): everything it changed, code and slides.
+    pub async fn history_revert_turn(&self, turn: &str) -> ServiceResult<CheckpointView> {
+        let id = super::history::revert_turn(&self.repo, &self.session_snapshot(), turn)?;
+        self.after_restore().await;
+        self.history_list(None)?
+            .into_iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| ServiceError::internal("restored checkpoint not found"))
+    }
+
+    async fn after_restore(&self) {
+        self.runs.mark_dirty();
+        *self.index_cache.write().await = None;
+        self.decks.refresh("restore").await;
+        self.emit(SessionEvent::DecksChanged {
+            decks: self.decks.list(),
+        });
     }
 
     // ---- conversations ----
@@ -2729,7 +2152,7 @@ impl SessionRuntime {
             paths: paths.clone(),
         });
         if paths.iter().any(|p| !p.starts_with(&out_prefix)) {
-            self.mirror_dirty.store(true, Ordering::SeqCst);
+            self.runs.mark_dirty();
         }
         let py_changed = paths
             .iter()
@@ -2804,12 +2227,12 @@ impl SessionRuntime {
         if !scanned.has_run_json && scanned.figures.is_empty() {
             return;
         }
-        let existing = self.run_record(&scanned.run_id);
+        let existing = self.runs.record(&scanned.run_id);
         let record = match existing {
             Some(r) => r,
             None => {
                 // A kernel run started elsewhere (agent tool) shows up here too.
-                if let Some(r) = self.register_kernel_run(&scanned.run_id).await {
+                if let Some(r) = self.runs.register_kernel_run(&scanned.run_id).await {
                     r
                 } else {
                     let view = self.synthesized_view(&scanned);
@@ -2821,14 +2244,12 @@ impl SessionRuntime {
                         artifacts: vec![],
                         source: RunSource::Terminal,
                         finished: true,
+                        completed: true,
                         conversation: None,
+                        duration_s: None,
+                        pull_error: None,
                     };
-                    self.insert_run(rec.clone());
-                    if let Ok(s) = self.session.lock() {
-                        let _ = s.append_run(&rec.meta);
-                    }
-                    self.emit(SessionEvent::RunStarted { run: rec.view() });
-                    self.emit(SessionEvent::RunDone { run: rec.view() });
+                    self.runs.record_external(rec.clone());
                     rec
                 }
             }
@@ -2849,7 +2270,8 @@ impl SessionRuntime {
                 sidecar: f.sidecar.clone(),
                 rendered: true,
             };
-            self.with_run(&scanned.run_id, |r| r.artifacts.push(artifact.clone()));
+            self.runs
+                .with_run(&scanned.run_id, |r| r.artifacts.push(artifact.clone()));
             self.emit(SessionEvent::RunArtifact {
                 run_id: scanned.run_id.clone(),
                 artifact,
@@ -2878,6 +2300,7 @@ impl SessionRuntime {
             *w = None;
         }
         self.shutdown_kernel().await;
+        self.decks.shutdown().await;
         let handles: Vec<JoinHandle<()>> = self
             .background
             .lock()
@@ -2924,33 +2347,6 @@ pub fn tooling_python(global: &GlobalConfig, home: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn in_memory_run_output_is_bounded() {
-        let mut buf = String::new();
-        for i in 0..20_000 {
-            push_bounded(&mut buf, &format!("line {i} é\n"));
-        }
-        assert!(buf.len() <= RUN_MEMORY_BYTES * 2);
-        assert!(buf.ends_with("line 19999 é\n"));
-        assert!(tail(&buf, TAIL_BYTES).len() <= TAIL_BYTES);
-    }
-
-    #[test]
-    fn log_tail_is_capped_with_a_note() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("stdout.log");
-        assert_eq!(read_log_tail(&p, 100), None);
-        std::fs::write(&p, "short\n").unwrap();
-        assert_eq!(read_log_tail(&p, 100).as_deref(), Some("short\n"));
-        std::fs::write(&p, format!("{}é-end", "ab".repeat(500))).unwrap();
-        let t = read_log_tail(&p, 6).unwrap();
-        assert!(t.starts_with("[... output truncated: the first 1000 bytes"));
-        assert!(t.ends_with("é-end"), "{t:?}");
-        // A cut in the middle of a multi-byte character does not produce garbage.
-        let t = read_log_tail(&p, 5).unwrap();
-        assert!(t.ends_with("\n-end"), "{t:?}");
-    }
 
     #[test]
     fn tooling_wait_follows_the_state() {

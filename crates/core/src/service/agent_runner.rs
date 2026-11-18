@@ -156,7 +156,31 @@ pub fn proposal_view(
         message: None,
         in_scope,
         reason,
+        deck: None,
+        slide_ids: None,
+        before: None,
+        after: None,
     };
+    if let Some(d) = &req.deck {
+        // A deck change keeps its shape: the slide document before and after, so the card
+        // can show the two slides side by side. `proposed` is what `accept.content` edits.
+        let pretty = |v: &Option<Value>| match v {
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(v) => serde_json::to_string_pretty(v).ok(),
+            None => None,
+        };
+        view.kind = d.kind;
+        view.path = d.targets.first().cloned();
+        view.summary = d.summary.clone();
+        view.diff = Some(d.diff.clone());
+        view.original = pretty(&d.before);
+        view.proposed = pretty(&d.after);
+        view.deck = Some(d.deck.clone());
+        view.slide_ids = Some(d.slide_ids.clone());
+        view.before = d.before.clone();
+        view.after = d.after.clone();
+        return view;
+    }
     if let Some(p) = &req.proposal {
         view.kind = p.kind;
         view.path = Some(p.path.clone());
@@ -563,6 +587,9 @@ async fn run_turn(
         };
         let session = rt.session_snapshot();
         let mut ctx = ToolContext::new(&rt.repo, &rt.home, session, &conv.id, project.clone());
+        ctx.use_runs(rt.runs.clone());
+        ctx.files = rt.files.clone();
+        ctx.decks = rt.decks.clone();
         ctx.kernel = kernel.clone();
         ctx.target = target.clone();
         ctx.control_dir = rt.opts.control_dir.clone();
@@ -604,13 +631,6 @@ async fn run_turn(
     agent.ctx.data_roots = target.data_dirs().to_vec();
     agent.ctx.target = target;
     agent.ctx.project = project.clone();
-    // Runs the turn starts are attributed to this conversation (`RunView.conversation`).
-    let (weak_rt, run_conv) = (Arc::downgrade(rt), conv.id.clone());
-    agent.ctx.on_run_started = Some(Arc::new(move |run_id: &str| {
-        if let Some(rt) = weak_rt.upgrade() {
-            rt.note_agent_run(run_id, &run_conv);
-        }
-    }));
     let scope = agent.policy.scope().map(<[String]>::to_vec);
     let mut policy = Policy::for_project(&rt.repo, &project, meta.mode)
         .map_err(|e| ServiceError::invalid(e.to_string()))?;

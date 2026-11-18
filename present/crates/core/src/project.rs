@@ -1,17 +1,17 @@
-//! Creating and opening projects (ARCHITECTURE 15, PROTOCOL 4).
+//! Creating and opening a deck folder (`<repo>/decks/<slug>/`): `deck/`, `template/`,
+//! `references/`, `assets/`, `exports/`, and the deck config under `.present/`.
 
 use crate::deck_store::DeckStore;
 use crate::util::{now_iso, write_atomic};
+use analyst_deck_protocol::config::ProjectConfig;
+use analyst_deck_protocol::deck::{Deck, DeckMode, Section};
+use analyst_deck_protocol::SCHEMA_VERSION;
 use anyhow::{anyhow, Context};
-use present_protocol::config::ProjectConfig;
-use present_protocol::deck::{Deck, DeckMode, Section};
-use present_protocol::SCHEMA_VERSION;
 use std::path::{Path, PathBuf};
 
 pub const DIRS: &[&str] = &[
     ".present",
     ".present/skills",
-    ".present/history",
     ".present/cache",
     "deck/slides",
     "template",
@@ -34,10 +34,7 @@ impl Project {
         mode: DeckMode,
     ) -> anyhow::Result<Project> {
         if root.join("deck").join("deck.json").exists() {
-            return Err(anyhow!(
-                "{} already contains a Present project",
-                root.display()
-            ));
+            return Err(anyhow!("{} already contains a deck", root.display()));
         }
         let ext = template
             .extension()
@@ -81,11 +78,8 @@ impl Project {
         let mut config = ProjectConfig::default();
         config.project.name = name.to_string();
         config.project.created = now_iso();
-        crate::config::save_project(root, &config)?;
-        write_atomic(
-            &root.join(".gitignore"),
-            b".present/cache/\n.present/history/\nexports/\n",
-        )?;
+        crate::deck_config::save(root, &config)?;
+        write_atomic(&root.join(".gitignore"), b".present/cache/\nexports/\n")?;
         Ok(Project {
             root: root.to_path_buf(),
         })
@@ -94,7 +88,7 @@ impl Project {
     pub fn open(root: &Path) -> anyhow::Result<Project> {
         if !root.join("deck").join("deck.json").is_file() {
             return Err(anyhow!(
-                "{} is not a Present project (deck/deck.json is missing)",
+                "{} is not a deck (deck/deck.json is missing)",
                 root.display()
             ));
         }
@@ -111,16 +105,6 @@ impl Project {
     }
 
     pub fn config(&self) -> anyhow::Result<ProjectConfig> {
-        crate::config::load_project(&self.root)
-    }
-
-    pub fn index_path(&self, home: &Path) -> PathBuf {
-        // The index is derived data; it lives in the project cache so a project folder that is
-        // moved or handed over rebuilds it without depending on the sender's home directory.
-        let _ = home;
-        self.root
-            .join(".present")
-            .join("cache")
-            .join("index.sqlite")
+        crate::deck_config::load(&self.root)
     }
 }

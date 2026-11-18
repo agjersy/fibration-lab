@@ -1,8 +1,8 @@
 //! The Rust core talking to the real Python kernel over stdio.
 
-use present_core::kernel::{resolve_runtime_python, KernelClient, KernelLaunch};
-use present_core::project::Project;
-use present_protocol::deck::DeckMode;
+use analyst_deck::kernel::{resolve_runtime_python, KernelClient, KernelLaunch};
+use analyst_deck::project::Project;
+use analyst_deck_protocol::deck::DeckMode;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +25,7 @@ async fn connect(project: &Path, home: &Path) -> Option<KernelClient> {
             "PRESENT_FONT_DIRS".into(),
             repo().join("vendor/fonts").to_string_lossy().into_owned(),
         )],
+        env_remove: vec![],
     };
     Some(KernelClient::connect(&launch).await.expect("kernel starts"))
 }
@@ -53,7 +54,7 @@ async fn hello_inspect_render_check_and_errors() {
         .unwrap();
     assert_eq!(desc["theme"]["fonts"]["minor"], "Carlito");
     // The typed description parses the kernel's output.
-    let typed: present_protocol::template::TemplateDescription =
+    let typed: analyst_deck_protocol::template::TemplateDescription =
         serde_json::from_value(desc).unwrap();
     assert!(typed.masters[0]
         .layouts
@@ -61,7 +62,7 @@ async fn hello_inspect_render_check_and_errors() {
         .any(|l| l.name == "Layout 7"));
 
     let store = project.deck();
-    let slide: present_protocol::deck::Slide = serde_json::from_value(json!({
+    let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(json!({
         "id": "s-k001", "kind": "layout", "layout": "Title and Content", "elements": [],
         "placeholders": {
             "title": {"type": "text", "id": "e-title", "text": {"paragraphs": [{"runs": [{"t": "From Rust"}]}]}},
@@ -154,6 +155,7 @@ async fn the_kernel_runs_without_network_and_still_nests_its_sandbox() {
             engine: "none".into(),
             sandbox: sandbox.into(),
             env: vec![],
+            env_remove: vec![],
         };
         let kernel = KernelClient::connect(&launch).await.expect("kernel starts");
         assert!(kernel.network_isolation().is_isolated());

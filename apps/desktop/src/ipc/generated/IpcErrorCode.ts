@@ -3,4 +3,4 @@
 /**
  * Error codes of IPC.md section 1.
  */
-export type IpcErrorCode = "not_found" | "conflict" | "policy_denied" | "kernel_offline" | "target_offline" | "invalid" | "io" | "internal";
+export type IpcErrorCode = "not_found" | "conflict" | "policy_denied" | "kernel_offline" | "target_offline" | "engine_unavailable" | "sandbox_unavailable" | "invalid" | "io" | "internal";

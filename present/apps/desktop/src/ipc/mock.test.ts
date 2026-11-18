@@ -341,16 +341,6 @@ describe("MockBackend: references and sources", () => {
     expect(await b.invoke("refs_remove", { project: P, ref_id: "r-x-pdf" })).toBeNull();
   });
 
-  it("analyst_scan lists items and analyst_import adds one as a reference", async () => {
-    const { b } = await setup();
-    const items = await b.invoke("analyst_scan", { project: P, repo_abs: "/repo" });
-    expect(items.map((i) => i.kind)).toEqual(["figure", "table"]);
-    const ref = await b.invoke("analyst_import", { project: P, repo_abs: "/repo", item: items[1]!.id });
-    expect(ref.kind).toBe("analyst-table");
-    expect(await b.invoke("refs_list", { project: P })).toHaveLength(4);
-    await rejects(b.invoke("analyst_import", { project: P, repo_abs: "/repo", item: "bad" }), "invalid");
-  });
-
   it("assets_list holds the demo image; asset_add adds images only", async () => {
     const { b } = await setup();
     const assets = await b.invoke("assets_list", { project: P });

@@ -1,9 +1,0 @@
-{
-  "bundle": {
-    "targets": ["msi", "nsis"],
-    "resources": {
-      "../../../dist-runtime/": "runtime/",
-      "../../../target/release/present-sandbox.exe": "present-sandbox.exe"
-    }
-  }
-}

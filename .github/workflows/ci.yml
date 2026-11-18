@@ -24,9 +24,9 @@ jobs:
           (cd python/kernel && uv sync)
           (cd present/python/kernel && uv sync)
       - run: cargo fmt --all -- --check
-      # The desktop shells need a system WebView toolkit on Linux; they have their own job.
-      - run: cargo clippy --workspace --exclude analyst-desktop --exclude present-desktop --all-targets -- -D warnings
-      - run: cargo test --workspace --exclude analyst-desktop --exclude present-desktop
+      # The desktop shell needs a system WebView toolkit on Linux; it has its own job.
+      - run: cargo clippy --workspace --exclude analyst-desktop --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude analyst-desktop
         env:
           PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
 
@@ -74,7 +74,7 @@ jobs:
       - name: Analysis workbench renderer
         working-directory: apps/desktop
         run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
-      - name: Deck workbench renderer
+      - name: Deck renderer (porting material for the one app, mock backend)
         working-directory: present/apps/desktop
         run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
       - name: Browser tests against the mock backends
@@ -99,9 +99,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libsoup-3.0-dev libxdo-dev patchelf
-      - run: cargo clippy -p analyst-desktop -p present-desktop --all-targets -- -D warnings
-      - run: cargo test -p analyst-desktop -p present-desktop
-      - run: cargo build -p analyst-desktop -p present-desktop
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # The shell embeds the built renderer (`apps/desktop/dist`).
+      - run: pnpm install --frozen-lockfile && pnpm --dir apps/desktop build
+      - run: cargo clippy -p analyst-desktop --all-targets -- -D warnings
+      - run: cargo test -p analyst-desktop
+      - run: cargo build -p analyst-desktop
 
   loop:
     runs-on: ${{ matrix.os }}
@@ -125,7 +132,7 @@ jobs:
       - run: |
           (cd python/kernel && uv sync)
           (cd present/python/kernel && uv sync)
-      - run: cargo build -p analyst-cli -p present-cli -p wb-sandbox
+      - run: cargo build -p analyst-cli -p wb-sandbox
       - name: Analysis loop against the scripted model server
         shell: bash
         env:
@@ -139,22 +146,24 @@ jobs:
           ./target/debug/analyst eval run --model fake/scripted --tasks evals/tasks --task parameter-sweep --auto --results "$ANALYST_HOME/results"
           ./target/debug/analyst eval run --model fake/scripted --tasks evals/tasks --task reuse-library-function --auto --results "$ANALYST_HOME/results"
           kill $server
-      - name: Deck CLI walk-through against the scripted model server
+      - name: Deck commands walk-through against the scripted model server
         shell: bash
-        run: present/tools/cli_walkthrough.sh
-      - name: Deck loop against the scripted model server
+        run: tools/deck_walkthrough.sh
+      - name: Deck evaluations through the one loop against the scripted model server
         shell: bash
         working-directory: present
         env:
-          PRESENT_HOME: ${{ runner.temp }}/present-home
+          ANALYST_HOME: ${{ runner.temp }}/analyst-deck-home
           PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
         run: |
-          mkdir -p "$PRESENT_HOME"
-          printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8766/v1"\nauth = "none"\nlocation = "internal"\n' > "$PRESENT_HOME/config.toml"
+          mkdir -p "$ANALYST_HOME"
+          printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8766/v1"\n' > "$ANALYST_HOME/config.toml"
           python evals/fake_model_server.py --port 8766 &
+          server=$!
           sleep 2
-          ../target/debug/present eval run --task spreadsheet-to-charts --results "$PRESENT_HOME/results"
-          ../target/debug/present eval run --task fix-checker-failures --results "$PRESENT_HOME/results"
+          ../target/debug/analyst eval run --tasks evals/tasks --task spreadsheet-to-charts --results "$ANALYST_HOME/results"
+          ../target/debug/analyst eval run --tasks evals/tasks --task fix-checker-failures --results "$ANALYST_HOME/results"
+          kill $server
 
   desktop-smoke:
     runs-on: ubuntu-latest

@@ -3,9 +3,9 @@
 
 mod common;
 
+use analyst_deck_protocol::kernel::*;
+use analyst_deck_protocol::template::TemplateSidecar;
 use common::{fixture_json, round_trip_json, round_trip_jsonl, round_trip_value};
-use present_protocol::kernel::*;
-use present_protocol::template::TemplateSidecar;
 use serde_json::{json, Value};
 
 /// Round-trips the fixture's `params` and `result` for one method.
@@ -52,8 +52,6 @@ fn every_method_round_trips() {
     check::<ChartCompute>(&all, &mut seen);
     check::<ExportOutlineMd>(&all, &mut seen);
     check::<ExportNotesDocx>(&all, &mut seen);
-    check::<AnalystScan>(&all, &mut seen);
-    check::<AnalystImport>(&all, &mut seen);
 
     // Every method of PROTOCOL 1.3 is declared, checked, and has a fixture; nothing else.
     assert_eq!(seen, METHOD_NAMES);
@@ -67,7 +65,7 @@ fn every_method_round_trips() {
     fixture_names.sort_unstable();
     declared.sort_unstable();
     assert_eq!(fixture_names, declared);
-    assert_eq!(declared.len(), 23);
+    assert_eq!(declared.len(), 21);
 }
 
 #[test]
@@ -258,7 +256,7 @@ fn error_codes_match_protocol_1_2() {
     for (constant, documented) in table {
         assert_eq!(constant, documented);
     }
-    assert_eq!(present_protocol::PROTOCOL_VERSION, 1);
+    assert_eq!(analyst_deck_protocol::PROTOCOL_VERSION, 1);
 }
 
 #[test]

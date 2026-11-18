@@ -21,6 +21,7 @@ tauri-build = { workspace = true, features = [] }
 [dependencies]
 analyst-core = { path = "../../../crates/core" }
 analyst-protocol = { path = "../../../crates/protocol" }
+analyst-deck-protocol = { path = "../../../present/crates/protocol" }
 tauri = { workspace = true, features = [] }
 tauri-plugin-dialog.workspace = true
 serde.workspace = true

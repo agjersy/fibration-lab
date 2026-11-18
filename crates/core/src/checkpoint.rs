@@ -328,13 +328,27 @@ pub fn create(repo: &Path, id: &str) -> Result<String> {
     create_from_tree(repo, id, &tree)
 }
 
+/// [`create`] with a label saying why the checkpoint was taken (`before switching the deck
+/// to code mode`, `export pptx`); [`history`] shows it.
+pub fn create_labeled(repo: &Path, id: &str, label: &str) -> Result<String> {
+    let tree = worktree_tree(repo)?;
+    commit_checkpoint(repo, id, &tree, Some(label))
+}
+
 /// [`create`] for a tree that was already written with [`worktree_tree`].
 pub fn create_from_tree(repo: &Path, id: &str, tree: &str) -> Result<String> {
+    commit_checkpoint(repo, id, tree, None)
+}
+
+fn commit_checkpoint(repo: &Path, id: &str, tree: &str, label: Option<&str>) -> Result<String> {
     let head = git(repo, &["rev-parse", "--verify", "-q", "HEAD"], None)
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let msg = format!("analyst checkpoint {id}");
+    let msg = match label.map(str::trim).filter(|l| !l.is_empty()) {
+        Some(l) => format!("analyst checkpoint {id}\n\n{}", l.replace('\n', " ")),
+        None => format!("analyst checkpoint {id}"),
+    };
     let mut args = vec!["commit-tree", tree, "-m", msg.as_str()];
     if let Some(h) = head.as_deref() {
         args.push("-p");
@@ -367,6 +381,78 @@ pub fn restore(repo: &Path, id: &str) -> Result<()> {
     load_worktree(repo, &env, &excluded_dirs(repo))?;
     git(repo, &["read-tree", "-u", "--reset", &tree], Some(&env))?;
     Ok(())
+}
+
+/// Restore only `paths` (repo-relative files or directories, literal) to a checkpoint: files
+/// under them that the checkpoint does not have are removed, the others are rewritten. The
+/// rest of the working tree and the user's index are untouched.
+pub fn restore_paths(repo: &Path, id: &str, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let tree = tree_of(repo, id)?;
+    let idx = TempIndex::new(repo)?;
+    let env = idx.env();
+    let mut env = with_env(&env);
+    env.push(("GIT_LITERAL_PATHSPECS", "1"));
+    // The temp index knows every current file, so files the checkpoint lacks are removed.
+    load_worktree(repo, &env, &excluded_dirs(repo))?;
+    let mut args = vec![
+        "restore",
+        "--no-overlay",
+        "--staged",
+        "--worktree",
+        "--source",
+        tree.as_str(),
+        "--",
+    ];
+    args.extend(paths.iter().map(String::as_str));
+    git(repo, &args, Some(&env))?;
+    Ok(())
+}
+
+/// One checkpoint as the history shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointInfo {
+    pub id: String,
+    pub commit: String,
+    /// Seconds since the epoch.
+    pub created: u64,
+    /// Why it was taken, when the creator said (`create_labeled`).
+    pub label: Option<String>,
+}
+
+/// Every checkpoint, oldest first, with its date and label.
+pub fn history(repo: &Path) -> Result<Vec<CheckpointInfo>> {
+    let out = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=committerdate",
+            "--format=%(refname)%00%(objectname)%00%(committerdate:unix)%00%(contents:body)%1e",
+            REF_PREFIX,
+        ],
+        None,
+    )?;
+    Ok(out
+        .split('\u{1e}')
+        .filter_map(|rec| {
+            let mut it = rec.trim_start_matches('\n').split('\0');
+            let r = it.next()?;
+            let commit = it.next()?.to_string();
+            let created = it.next().and_then(|d| d.trim().parse().ok()).unwrap_or(0);
+            let label = it
+                .next()
+                .map(|b| b.trim().to_string())
+                .filter(|b| !b.is_empty());
+            Some(CheckpointInfo {
+                id: r.strip_prefix(REF_PREFIX)?.to_string(),
+                commit,
+                created,
+                label,
+            })
+        })
+        .collect())
 }
 
 fn list_with_dates(repo: &Path) -> Result<Vec<(String, String, u64)>> {
@@ -469,6 +555,70 @@ mod tests {
         git(dir.path(), &["add", "-A"], None).unwrap();
         git(dir.path(), &["commit", "-q", "-m", "init"], None).unwrap();
         dir
+    }
+
+    /// Deck documents are files of the repository: a checkpoint covers them with the code,
+    /// a restore limited to one deck's documents leaves everything else alone, and the
+    /// history says why each checkpoint was taken. This is what replaced the deck
+    /// workbench's own snapshot store.
+    #[test]
+    fn checkpoints_cover_decks_and_restore_one_deck() {
+        let repo = temp_repo();
+        let r = repo.path();
+        let slides = r.join("decks/q3/deck/slides");
+        std::fs::create_dir_all(&slides).unwrap();
+        std::fs::write(
+            r.join("decks/q3/deck/deck.json"),
+            "{\"mode\":\"structured\"}",
+        )
+        .unwrap();
+        std::fs::write(slides.join("s-1.json"), "{\"title\":\"one\"}").unwrap();
+        std::fs::create_dir_all(r.join("decks/q3/exports")).unwrap();
+        std::fs::write(r.join("decks/q3/.gitignore"), "exports/\n").unwrap();
+        std::fs::write(r.join("decks/q3/exports/q3.pptx"), "built").unwrap();
+        let index_before = std::fs::read(r.join(".git/index")).unwrap();
+
+        create_labeled(r, "deck-q3-1", "before switching the deck to code mode").unwrap();
+        // The switch: the slides become a script; meanwhile the user edits code.
+        std::fs::remove_file(slides.join("s-1.json")).unwrap();
+        std::fs::write(r.join("decks/q3/deck/deck.json"), "{\"mode\":\"code\"}").unwrap();
+        std::fs::write(r.join("decks/q3/deck/build.py"), "deck = 1\n").unwrap();
+        std::fs::write(r.join("a.py"), "a = 2\n").unwrap();
+
+        restore_paths(r, "deck-q3-1", &["decks/q3/deck".to_string()]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(r.join("decks/q3/deck/deck.json")).unwrap(),
+            "{\"mode\":\"structured\"}"
+        );
+        assert!(slides.join("s-1.json").is_file());
+        assert!(
+            !r.join("decks/q3/deck/build.py").exists(),
+            "the script is gone"
+        );
+        // Outside the deck's documents nothing moved: code, exports, the user's index.
+        assert_eq!(std::fs::read_to_string(r.join("a.py")).unwrap(), "a = 2\n");
+        assert!(r.join("decks/q3/exports/q3.pptx").is_file());
+        assert_eq!(std::fs::read(r.join(".git/index")).unwrap(), index_before);
+
+        // A whole-tree restore takes code and deck back together.
+        create(r, "turn-2").unwrap();
+        std::fs::write(r.join("a.py"), "a = 3\n").unwrap();
+        std::fs::write(slides.join("s-2.json"), "{\"title\":\"two\"}").unwrap();
+        restore(r, "turn-2").unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("a.py")).unwrap(), "a = 2\n");
+        assert!(!slides.join("s-2.json").exists());
+
+        let h = history(r).unwrap();
+        assert_eq!(
+            h.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["deck-q3-1", "turn-2"]
+        );
+        assert_eq!(
+            h[0].label.as_deref(),
+            Some("before switching the deck to code mode")
+        );
+        assert!(h[1].label.is_none() && h[1].created > 0);
+        assert!(restore_paths(r, "missing", &["decks/q3/deck".to_string()]).is_err());
     }
 
     #[test]

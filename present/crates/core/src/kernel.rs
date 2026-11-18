@@ -1,11 +1,11 @@
 //! `KernelClient`: the deck kernel over newline-delimited JSON-RPC on stdio (PROTOCOL 1.1).
 //!
 //! Adapted from Personal Analyst `crates/core/src/kernel/client.rs` and `transport.rs` at
-//! commit f229e4d, reduced to the local stdio transport Present needs.
+//! commit f229e4d, reduced to the local stdio transport decks need (decks are local-only).
 
-use present_protocol::kernel::{HelloParams, KernelHello, Method};
-use present_protocol::rpc::RpcError;
-use present_protocol::PROTOCOL_VERSION;
+use analyst_deck_protocol::kernel::{HelloParams, KernelHello, Method};
+use analyst_deck_protocol::rpc::RpcError;
+use analyst_deck_protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -76,6 +76,8 @@ pub struct KernelLaunch {
     pub sandbox: String,
     /// Extra environment for the kernel process (font directories in tests, model paths).
     pub env: Vec<(String, String)>,
+    /// Environment variables the kernel must not inherit (provider API keys).
+    pub env_remove: Vec<String>,
 }
 
 type Pending = HashMap<i64, oneshot::Sender<Result<Value, RpcError>>>;
@@ -155,6 +157,9 @@ impl KernelClient {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        for name in &launch.env_remove {
+            cmd.env_remove(name);
+        }
         for (k, v) in &launch.env {
             cmd.env(k, v);
         }

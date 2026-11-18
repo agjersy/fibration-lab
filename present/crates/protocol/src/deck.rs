@@ -213,6 +213,11 @@ pub enum PlaceholderContent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         cite: Option<Vec<Cite>>,
+        /// The analysis run this figure came from, when it was placed from a run of the
+        /// project: a citation of the run itself, not of a reference.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        run_cite: Option<RunCite>,
     },
     Chart {
         id: ElementId,
@@ -241,6 +246,27 @@ impl PlaceholderContent {
             PlaceholderContent::Empty => None,
         }
     }
+}
+
+/// A citation of an analysis run of the project (PROTOCOL 2.3): the run, the artifact it
+/// produced, and what produced it. The image itself is copied into the deck's `assets/`
+/// (content-addressed), so the deck stays self-contained; the run's data stays where it is.
+/// When `tree_hash` no longer matches the project's working tree, the checker reports the
+/// element as stale.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RunCite {
+    pub run_id: String,
+    /// The artifact's repo-relative path as the run reported it.
+    pub artifact: String,
+    /// The script that was run, repo-relative.
+    pub script: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// The identity of the project tree the run executed (`RunMeta.tree_hash`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tree_hash: Option<String>,
 }
 
 /// An element outside the layout's placeholders, with an explicit position and size in EMU.
@@ -278,6 +304,11 @@ pub enum ElementContent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         cite: Option<Vec<Cite>>,
+        /// The analysis run this figure came from, when it was placed from a run of the
+        /// project: a citation of the run itself, not of a reference.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        run_cite: Option<RunCite>,
     },
     Chart {
         id: ElementId,
@@ -331,6 +362,7 @@ impl ElementContent {
                 fit,
                 crop,
                 cite,
+                run_cite,
             } => PlaceholderContent::Image {
                 id,
                 asset,
@@ -338,6 +370,7 @@ impl ElementContent {
                 fit,
                 crop,
                 cite,
+                run_cite,
             },
             ElementContent::Chart { id, chart } => PlaceholderContent::Chart { id, chart },
             ElementContent::Table { id, table } => PlaceholderContent::Table { id, table },

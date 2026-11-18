@@ -927,24 +927,6 @@ export class MockBackend implements Backend {
       const m = /c(\d+)-(\d+)/.exec(parsed.loc);
       return { ...base, text, highlight: m ? [Math.min(Number(m[1]), text.length), Math.min(Number(m[2]), text.length)] : null };
     },
-    analyst_scan: ({ project, repo_abs }) => {
-      this.project(project);
-      if (!repo_abs.trim()) throw err("invalid", "no repository given");
-      return [
-        { id: "20261104-1132-ab12/residuals", kind: "figure", title: "Residuals of the margin model", run_id: "20261104-1132-ab12", script: "scripts/margin_model.py", args: ["--quarter", "Q3"], created: "2026-11-04T11:32:00Z", thumb: null },
-        { id: "20261104-1132-ab12/coefficients", kind: "table", title: "Model coefficients", run_id: "20261104-1132-ab12", script: "scripts/margin_model.py", args: ["--quarter", "Q3"], created: "2026-11-04T11:32:00Z", thumb: null },
-      ];
-    },
-    analyst_import: ({ project, repo_abs, item }) => {
-      const p = this.project(project);
-      const [run_id, name] = item.split("/");
-      if (!repo_abs.trim() || !run_id || !name) throw err("invalid", `not an Analyst item: ${item}`);
-      const kind = name === "coefficients" ? "analyst-table" : "analyst-figure";
-      const ref: MockRef = { view: { id: `r-an-${name}`.slice(0, 25), version: mockHash(item).slice(0, 12), kind, title: `${name} (${run_id})`, size_bytes: 12_480, pages: null, status: "ready", error: null, cited_by: [], parent: null }, outline: [] };
-      p.refs = [...p.refs.filter((r) => r.view.id !== ref.view.id), ref];
-      this.emit(p, { type: "refs_changed", refs: this.refViews(p) });
-      return ref.view;
-    },
     assets_list: ({ project }) => this.project(project).assets,
     asset_add: ({ project, path_abs }) => {
       const p = this.project(project);

@@ -13,11 +13,9 @@ members = [
     "crates/core",
     "crates/cli",
     "apps/desktop/src-tauri",
-    # Deck workbench (to be folded into the single app)
+    # Deck workbench: analyst-deck-protocol and analyst-deck (library crates used by the core)
     "present/crates/protocol",
     "present/crates/core",
-    "present/crates/cli",
-    "present/apps/desktop/src-tauri",
 ]
 
 [workspace.package]

@@ -13,6 +13,22 @@ pub enum ProposalKind {
     Package,
     Shell,
     Commit,
+    /// A deck storyline (`outline.propose`).
+    Outline,
+    #[serde(rename = "slide-create")]
+    SlideCreate,
+    #[serde(rename = "slide-update")]
+    SlideUpdate,
+    #[serde(rename = "slide-delete")]
+    SlideDelete,
+    #[serde(rename = "slide-move")]
+    SlideMove,
+    /// An edit of a deck build script (code generation mode).
+    #[serde(rename = "code-edit")]
+    DeckCode,
+    /// Switching a deck to code generation mode.
+    #[serde(rename = "mode-switch")]
+    DeckMode,
 }
 
 impl ProposalKind {
@@ -21,6 +37,20 @@ impl ProposalKind {
         matches!(
             self,
             ProposalKind::Edit | ProposalKind::Create | ProposalKind::Delete
+        )
+    }
+
+    /// A change to a deck: its storyline, a slide, its build script, or its mode.
+    pub fn is_deck_change(self) -> bool {
+        matches!(
+            self,
+            ProposalKind::Outline
+                | ProposalKind::SlideCreate
+                | ProposalKind::SlideUpdate
+                | ProposalKind::SlideDelete
+                | ProposalKind::SlideMove
+                | ProposalKind::DeckCode
+                | ProposalKind::DeckMode
         )
     }
 }
@@ -87,6 +117,22 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         diff: Option<String>,
+        /// Repo-relative files the proposal changes (slide documents for deck changes).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        targets: Option<Vec<String>>,
+        /// The deck (slug) a deck change belongs to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        deck: Option<String>,
+        /// A deck change keeps its shape: the slide document (or outline rows, or script
+        /// text) before and after.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "unknown")]
+        before: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "unknown")]
+        after: Option<Value>,
     },
     Decision {
         ts: String,
@@ -173,6 +219,10 @@ mod tests {
                 kind: ProposalKind::Edit,
                 summary: "edit a.py".into(),
                 diff: Some("--- a\n+++ b\n".into()),
+                targets: None,
+                deck: None,
+                before: None,
+                after: None,
             },
             Event::Decision {
                 ts: "t".into(),

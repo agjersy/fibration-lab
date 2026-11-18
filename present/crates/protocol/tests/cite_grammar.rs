@@ -1,8 +1,8 @@
 //! The citation grammar of PROTOCOL 2.3: every row of the location table, the composite
 //! forms, and malformed inputs.
 
-use present_protocol::cite::{Cite, CiteError, Fraction, Loc, RefKind, Span};
-use present_protocol::ids::RefId;
+use analyst_deck_protocol::cite::{Cite, CiteError, Fraction, Loc, RefKind, Span};
+use analyst_deck_protocol::ids::RefId;
 
 fn loc(s: &str) -> Loc {
     let parsed: Loc = s.parse().unwrap_or_else(|e| panic!("{s}: {e}"));

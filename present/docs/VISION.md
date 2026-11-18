@@ -1,5 +1,7 @@
 # Personal Present — Product Vision
 
+> **Historical design note.** This document describes Personal Present before it was folded into Personal Analyst. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `analyst` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.analyst` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
+
 *Status: workshop decisions closed (2026-11-15). Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Sister product: Personal Analyst (`agjersy/personal-analyst`), whose architecture, conventions, and visual style this product follows.*
 
 ## 1. One line

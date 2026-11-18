@@ -1,5 +1,7 @@
 # Desktop IPC Contract
 
+> **Historical design note.** This document describes Personal Present before it was folded into Personal Analyst. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `analyst` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.analyst` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
+
 *Status: phase 1 baseline. Normative for `apps/desktop/src-tauri` (Rust) and `apps/desktop/src` (React). Shared types live in `crates/protocol/src/ui.rs` with `ts-rs` export to `apps/desktop/src/ipc/generated/`. Deck, template, diagnostic, and citation types are the ones in [PROTOCOL.md](PROTOCOL.md) and are re-exported unchanged. The boundary's shape is the same as Personal Analyst's IPC.md section 1; only the content differs.*
 
 ## 1. Shape of the boundary
