@@ -22,7 +22,6 @@ Phase 0 (headless core) in progress. Built so far, on Linux:
   - Scene state with revisions, a content hash and diffs; masking; snapshots and restore.
   - Rollback when a call fails.
   - A memo that persists on disk and is read back through the restricted reader.
-- **Certified 2D sampler (WP-0.5).**
 - **SDK and runner (WP-0.6).**
   - Operators that issue engine calls.
   - `Truth` raises `Undecided` instead of guessing.
@@ -36,6 +35,7 @@ Phase 0 (headless core) in progress. Built so far, on Linux:
   - Engine and runner without network, through `wb_sandbox::no_network` (`bwrap` here).
 
 **Not built yet:**
+- the certified 2D sampler (WP-0.5, in progress);
 - the agent loop and claims (WP-0.8);
 - the Matplotlib exporter (WP-0.9);
 - the evaluation tasks (WP-0.11);
