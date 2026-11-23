@@ -22,6 +22,11 @@ Phase 0 (headless core) in progress. Built so far, on Linux:
   - Scene state with revisions, a content hash and diffs; masking; snapshots and restore.
   - Rollback when a call fails.
   - A memo that persists on disk and is read back through the restricted reader.
+- **Certified 2D sampler (WP-0.5).** For explicit curves, "certified" means every on-screen point of the true graph is within 0.5 px of the drawn polyline, checked with interval arithmetic.
+  - Poles, jumps (open or closed ends) and removable holes are found and marked; no segment crosses a pole.
+  - Spikes narrower than a pixel are found.
+  - Parametric, polar and region objects can be certified.
+  - Oscillation (`sin(1/x)`), functions interval arithmetic can't evaluate, and implicit curves come back `sampled`, with a reason.
 - **SDK and runner (WP-0.6).**
   - Operators that issue engine calls.
   - `Truth` raises `Undecided` instead of guessing.
@@ -35,7 +40,6 @@ Phase 0 (headless core) in progress. Built so far, on Linux:
   - Engine and runner without network, through `wb_sandbox::no_network` (`bwrap` here).
 
 **Not built yet:**
-- the certified 2D sampler (WP-0.5, in progress);
 - the agent loop and claims (WP-0.8);
 - the Matplotlib exporter (WP-0.9);
 - the evaluation tasks (WP-0.11);

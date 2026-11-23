@@ -160,7 +160,10 @@ Generated from the registry (`describe_api` is authoritative; this table is rege
 
 ## 6. Sampling
 
-See the `sample` method's documentation in `mathimator_engine/sample.py`.
+`sample` returns drawable geometry for one object in a viewport: `{object, viewport, pixels?, params?}` returns `{status: "certified" | "sampled", reason?, segments, markers, ...}`. `params` overrides parameter values for this call only. The full contract and what "certified" guarantees per object kind are in the docstring of `mathimator_engine/sample.py`. In short:
+
+- **Explicit curves** are certified when every on-screen point of the true graph is within 0.5 px of the polyline, except within 0.5 px of a marked breakpoint (`asymptote`, `hole`, `jump_end`, `point`).
+- **Anything that cannot be established** is `sampled`, with the reason. That covers oscillation without a limit, functions interval arithmetic can't evaluate, breakpoints that can't be determined, and every implicit curve.
 
 ## 7. Runner
 
