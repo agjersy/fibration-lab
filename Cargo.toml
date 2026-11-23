@@ -18,6 +18,10 @@ members = [
     # Deck workbench: analyst-deck-protocol and analyst-deck (library crates used by the core)
     "present/crates/protocol",
     "present/crates/core",
+    # Mathimator: math-protocol, math-core, and the mathimator CLI
+    "mathimator/crates/protocol",
+    "mathimator/crates/core",
+    "mathimator/crates/cli",
 ]
 
 [workspace.package]

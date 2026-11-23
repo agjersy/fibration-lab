@@ -181,6 +181,10 @@ Linux build dependencies: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libay
 
 `apps/desktop/smoke/run.sh <repo>` launches the real binary under Xvfb through `tauri-driver` and WebKitWebDriver, creates a session on the given repo, waits for the kernel, runs `scripts/decay_sim.py` from the Scripts form, waits for exit 0 and for its figure to render, and saves a screenshot. Requirements: `cargo install tauri-driver`, `apt-get install webkit2gtk-driver xvfb`, the embedded-frontend build above, and a repo with a venv (the `evals/tasks/parameter-sweep/fixture` files in a repo made by `analyst init` work).
 
+## Mathimator
+
+The Mathimator subtree (`mathimator/`) has its own Python projects and three crates in the workspace. [mathimator/README.md](../mathimator/README.md) has the commands; in short, `cd mathimator/python/engine && uv sync` once (the crates' tests drive that engine), then `uv run pytest -q` there and in `mathimator/python/sdk`, and `cargo run -p mathimator-cli -- run <scene.py>` to replay a scene.
+
 ## Troubleshooting
 
 **A bubblewrap run fails with `Can't chdir to ...`** when the repo or the runs directory lives under `/tmp`: fixed by mounting the fresh `/tmp` before the specific binds; rebuild the kernel environment if you see it on an older checkout.

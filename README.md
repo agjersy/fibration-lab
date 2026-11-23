@@ -18,6 +18,7 @@ Personal Present (the deck workbench) has been folded in: Personal Analyst is on
 | `python/kernel`, `present/python/kernel`, `present/python/sdk` | The analysis kernel, the deck kernel, and the deck build SDK |
 | `evals/`, `present/evals/` | Analysis and deck evaluation tasks, both run by `analyst eval run` |
 | `packages/wb-ui` | Shared UI package |
+| `mathimator/` | Mathimator, the mathematics workbench that also ships as its own app: the SymPy engine, the scene SDK and cell runner, and the `math-core` / `mathimator` crates (see [mathimator/README.md](mathimator/README.md); product documents in `agjersy/mathimator`) |
 
 One Cargo workspace and one pnpm workspace cover everything; `.github/workflows/ci.yml` runs both test suites on Linux and macOS, and the browser tests against the real core through `analyst-serve`. Windows is parked.
 

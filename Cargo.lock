@@ -2344,6 +2344,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "math-core"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "math-protocol",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "wb-sandbox",
+]
+
+[[package]]
+name = "math-protocol"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mathimator-cli"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "math-core",
+ "math-protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
