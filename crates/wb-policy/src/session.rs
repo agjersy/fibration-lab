@@ -1,4 +1,4 @@
-// Ported from the stateful half of Personal Analyst `crates/core/src/policy.rs` as it stood
+// Ported from the stateful half of Fibration Lab `crates/core/src/policy.rs` as it stood
 // after the security review (REVIEW G2, G4, G5, G7), so that both workbenches get it.
 //! Policy state for one conversation: the policy table, the conversation mode, the scope
 //! declared this turn, the sandbox the kernel reported, and (for apps whose edit targets are

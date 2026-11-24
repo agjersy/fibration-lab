@@ -189,7 +189,7 @@ export class FakeBackend implements Backend {
     const sid = args.session as SessionId;
     switch (cmd) {
       case "app_info":
-        return { version: "0.0.1", home_abs: "/home/user/.analyst", platform: "linux", dev_mode: true };
+        return { version: "0.0.1", home_abs: "/home/user/.fibration", platform: "linux", dev_mode: true };
       case "models_list":
         return [{ name: "fake/scripted", provider: "fake", id: "scripted", local: true }];
       case "targets_list":

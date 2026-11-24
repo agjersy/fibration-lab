@@ -1,4 +1,4 @@
-//! The verification ledger of a project: `.analyst/verification.jsonl`, append-only and
+//! The verification ledger of a project: `.fibration/verification.jsonl`, append-only and
 //! committed with the repository (unless the user ignores it).
 //!
 //! Each line records the verification state of one item (an equation, a figure or named result
@@ -11,8 +11,8 @@
 use super::error::{ServiceError, ServiceResult};
 use super::runs::RunService;
 use crate::session::Session;
-use analyst_protocol::kernel::ArtifactKind;
-use analyst_protocol::ui::{
+use fibration_protocol::kernel::ArtifactKind;
+use fibration_protocol::ui::{
     LedgerEntry, SlideUse, VerificationState, VerificationView, Verifier, VerifyItem, VerifyState,
 };
 use serde_json::Value;
@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// The ledger, repo-relative.
-pub const LEDGER_REL: &str = ".analyst/verification.jsonl";
+pub const LEDGER_REL: &str = ".fibration/verification.jsonl";
 
 /// The longest note kept with an entry.
 pub const MAX_NOTE: usize = 2000;
@@ -116,7 +116,7 @@ impl<'a> Cache<'a> {
             .entry((deck.to_string(), slide_id.to_string()))
             .or_insert_with(|| {
                 if super::decks::valid_slug(deck).is_err()
-                    || analyst_deck_protocol::ids::SlideId::new(slide_id.to_string()).is_err()
+                    || fibration_deck_protocol::ids::SlideId::new(slide_id.to_string()).is_err()
                 {
                     return None;
                 }
@@ -236,7 +236,7 @@ impl<'a> Cache<'a> {
 
 /// An element of a slide document by id (placeholder content or a free element's content).
 fn find_element(slide: &Value, element_id: &str) -> Option<Value> {
-    analyst_deck::workspace::slide_items(slide)
+    fibration_deck::workspace::slide_items(slide)
         .into_iter()
         .map(|(_, v)| v)
         .find(|v| v["id"] == element_id)
@@ -247,7 +247,7 @@ fn find_element(slide: &Value, element_id: &str) -> Option<Value> {
 fn cites_analysis(element: &Value) -> bool {
     element.get("run_cite").is_some_and(|v| !v.is_null())
         || element.get("eq_cite").is_some_and(|v| !v.is_null())
-        || analyst_deck::workspace::text_runs(element)
+        || fibration_deck::workspace::text_runs(element)
             .iter()
             .any(|(_, r)| r.get("run_cite").is_some_and(|v| !v.is_null()))
 }
@@ -265,7 +265,7 @@ fn describe_element(e: &Value) -> String {
                 .unwrap_or("?")
         );
     }
-    let bound: Vec<String> = analyst_deck::workspace::text_runs(e)
+    let bound: Vec<String> = fibration_deck::workspace::text_runs(e)
         .iter()
         .filter(|(_, r)| r.get("run_cite").is_some_and(|v| !v.is_null()))
         .map(|(_, r)| r["t"].as_str().unwrap_or("").to_string())
@@ -278,7 +278,7 @@ fn describe_element(e: &Value) -> String {
 
 /// Accepted code proposals (edits, creations, deletions) in the session's transcripts.
 fn accepted_hunks(session: &Session) -> HashMap<String, Hunk> {
-    use analyst_protocol::transcript::Event;
+    use fibration_protocol::transcript::Event;
     let mut proposals: HashMap<String, Hunk> = HashMap::new();
     let mut accepted: Vec<String> = Vec::new();
     let files: Vec<PathBuf> = std::fs::read_dir(session.conversations_dir())
@@ -340,7 +340,7 @@ fn collect(cache: &mut Cache<'_>) -> BTreeMap<String, (VerifyItem, Vec<SlideUse>
         }
     };
     for deck in super::decks::list(scope.repo) {
-        let store = analyst_deck::deck_store::DeckStore::new(&super::decks::deck_root(
+        let store = fibration_deck::deck_store::DeckStore::new(&super::decks::deck_root(
             scope.repo, &deck.slug,
         ));
         let Ok((_, slides)) = store.read_all() else {
@@ -353,7 +353,7 @@ fn collect(cache: &mut Cache<'_>) -> BTreeMap<String, (VerifyItem, Vec<SlideUse>
             cache
                 .slides
                 .insert((deck.slug.clone(), slide.id.to_string()), Some(v.clone()));
-            for (_, el) in analyst_deck::workspace::slide_items(&v) {
+            for (_, el) in fibration_deck::workspace::slide_items(&v) {
                 if !cites_analysis(el) {
                     continue;
                 }
@@ -396,7 +396,7 @@ fn collect(cache: &mut Cache<'_>) -> BTreeMap<String, (VerifyItem, Vec<SlideUse>
                         Some(used.clone()),
                     );
                 }
-                for (_, run) in analyst_deck::workspace::text_runs(el) {
+                for (_, run) in fibration_deck::workspace::text_runs(el) {
                     let rc = &run["run_cite"];
                     if let (Some(run_id), Some(name)) =
                         (rc["run_id"].as_str(), rc["result_name"].as_str())

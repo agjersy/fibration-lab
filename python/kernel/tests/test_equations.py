@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from analyst_kernel.equations import Unsupported, derive_function, simplify_with_budget
+from fibration_kernel.equations import Unsupported, derive_function, simplify_with_budget
 
 
 def by_name(kernel, path="analysis/models.py"):
@@ -147,6 +147,6 @@ def test_sympy_not_imported_at_startup():
     import subprocess
     import sys
 
-    code = "import sys, analyst_kernel.kernel, analyst_kernel.__main__; print('sympy' in sys.modules)"
+    code = "import sys, fibration_kernel.kernel, fibration_kernel.__main__; print('sympy' in sys.modules)"
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout
     assert out.strip() == "False"

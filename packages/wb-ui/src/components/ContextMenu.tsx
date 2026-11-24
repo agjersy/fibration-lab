@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/ui/common/ContextMenu.tsx at commit f229e4d.
+// Ported from Fibration Lab apps/desktop/src/ui/common/ContextMenu.tsx at commit f229e4d.
 import { useEffect, useRef } from "react";
 
 export interface MenuItem {

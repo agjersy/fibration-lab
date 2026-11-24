@@ -1,4 +1,4 @@
-//! analyst-deck-protocol: serde types for every boundary fixed in docs/PROTOCOL.md.
+//! fibration-deck-protocol: serde types for every boundary fixed in docs/PROTOCOL.md.
 //!
 //! - [`deck`]: the deck document, schema version 1 (PROTOCOL 2).
 //! - [`ids`]: validated slide, element, and reference ids, and the state id a build is
@@ -15,7 +15,7 @@
 //!
 //! Types that cross to the desktop UI derive `ts_rs::TS`; the test
 //! `export_typescript_bindings` writes them to `apps/desktop/src/ipc/generated/deck/` (the
-//! one renderer's deck types, next to the analysis types of `analyst-protocol`).
+//! one renderer's deck types, next to the analysis types of `fibration-protocol`).
 
 pub mod cite;
 pub mod config;

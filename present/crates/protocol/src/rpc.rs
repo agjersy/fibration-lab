@@ -1,6 +1,6 @@
 //! JSON-RPC 2.0 envelope types and error codes (PROTOCOL 1.1, 1.2).
 //!
-//! Ported from Personal Analyst `crates/protocol/src/rpc.rs`; the application error codes
+//! Ported from Fibration Lab `crates/protocol/src/rpc.rs`; the application error codes
 //! and the typed `error.data` shapes are Present's.
 
 use serde::{Deserialize, Serialize};

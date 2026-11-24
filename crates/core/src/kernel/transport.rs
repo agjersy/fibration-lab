@@ -7,14 +7,14 @@
 //! the remote kernel is wrapped with `bwrap --unshare-net` on the host when that works
 //! there. [`KernelTransport::network_isolation`] reports which, for display.
 
-use analyst_protocol::config::GlobalConfig;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use fibration_protocol::config::GlobalConfig;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-/// Arguments of `python -m analyst_kernel` (PROTOCOL 1.1).
+/// Arguments of `python -m fibration_kernel` (PROTOCOL 1.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelArgs {
     /// Session interpreter (`--python`).
@@ -209,7 +209,7 @@ pub fn spawn_line_without_env(line: &[String], env_remove: &[String]) -> Result<
 }
 
 /// Local kernel: `<launcher...> --python .. --root .. --runs-dir .. [--out-dir ..] [--sandbox ..]`.
-/// The launcher is normally `[<tooling_python>, "-m", "analyst_kernel"]`; tests inject
+/// The launcher is normally `[<tooling_python>, "-m", "fibration_kernel"]`; tests inject
 /// `["python3", "<fake_kernel.py>"]`.
 #[derive(Debug, Clone)]
 pub struct LocalStdio {
@@ -222,7 +222,11 @@ pub struct LocalStdio {
 impl LocalStdio {
     pub fn new(tooling_python: impl Into<String>, args: KernelArgs) -> Self {
         LocalStdio {
-            launcher: vec![tooling_python.into(), "-m".into(), "analyst_kernel".into()],
+            launcher: vec![
+                tooling_python.into(),
+                "-m".into(),
+                "fibration_kernel".into(),
+            ],
             args,
             env_remove: vec![],
         }
@@ -284,9 +288,9 @@ impl KernelTransport for LocalStdio {
 #[derive(Debug, Clone)]
 pub struct SshStdio {
     pub host: String,
-    /// `$ANALYST_HOME/ssh` for control sockets; `None` disables multiplexing.
+    /// `$FIBRATION_HOME/ssh` for control sockets; `None` disables multiplexing.
     pub control_dir: Option<PathBuf>,
-    /// Remote launcher, e.g. `["~/.analyst/tooling/.venv/bin/python", "-m", "analyst_kernel"]`.
+    /// Remote launcher, e.g. `["~/.fibration/tooling/.venv/bin/python", "-m", "fibration_kernel"]`.
     pub remote_launcher: Vec<String>,
     pub args: KernelArgs,
     /// Wrap the remote kernel in `bwrap --unshare-net` (set when the host's probe says
@@ -367,23 +371,23 @@ impl KernelTransport for SshStdio {
 }
 
 /// Resolve the interpreter of the app tooling environment (the one that hosts
-/// `analyst_kernel`), in this order:
+/// `fibration_kernel`), in this order:
 ///
-/// 1. `ANALYST_TOOLING_PYTHON` environment variable.
+/// 1. `FIBRATION_TOOLING_PYTHON` environment variable.
 /// 2. `tooling_python` in the global config.
 /// 3. Dev mode: `<workspace>/python/kernel/.venv/bin/python` if it exists, where `<workspace>`
 ///    is found by walking up from the current executable's directory and then from the current
 ///    working directory, looking for a directory containing `python/kernel`.
-/// 4. The bootstrapped tooling environment `$ANALYST_HOME/tooling/.venv` (see
+/// 4. The bootstrapped tooling environment `$FIBRATION_HOME/tooling/.venv` (see
 ///    `target::bootstrap::ensure_local`).
 /// 5. `python3` found on the tool search path.
 pub fn resolve_tooling_python(global: &GlobalConfig) -> String {
-    resolve_tooling_python_in(global, &crate::config::analyst_home())
+    resolve_tooling_python_in(global, &crate::config::fibration_home())
 }
 
-/// [`resolve_tooling_python`] for an explicit analyst home.
+/// [`resolve_tooling_python`] for an explicit fibration home.
 pub fn resolve_tooling_python_in(global: &GlobalConfig, home: &Path) -> String {
-    if let Ok(v) = std::env::var("ANALYST_TOOLING_PYTHON") {
+    if let Ok(v) = std::env::var("FIBRATION_TOOLING_PYTHON") {
         if !v.is_empty() {
             return v;
         }
@@ -425,7 +429,7 @@ mod tests {
         KernelArgs {
             python: "/repo/.venv/bin/python".into(),
             root: "/repo".into(),
-            runs_dir: "/home/u/.analyst/runs".into(),
+            runs_dir: "/home/u/.fibration/runs".into(),
             out_dir: None,
             sandbox: Some("auto".into()),
             data_dirs: vec![],
@@ -492,13 +496,13 @@ mod tests {
             vec![
                 "/tooling/bin/python",
                 "-m",
-                "analyst_kernel",
+                "fibration_kernel",
                 "--python",
                 "/repo/.venv/bin/python",
                 "--root",
                 "/repo",
                 "--runs-dir",
-                "/home/u/.analyst/runs",
+                "/home/u/.fibration/runs",
                 "--sandbox",
                 "auto"
             ]
@@ -557,16 +561,16 @@ mod tests {
     fn ssh_command_line() {
         let t = SshStdio {
             host: "lab-gpu".into(),
-            control_dir: Some(PathBuf::from("/home/u/.analyst/ssh")),
+            control_dir: Some(PathBuf::from("/home/u/.fibration/ssh")),
             remote_launcher: vec![
-                "~/.analyst/tooling/.venv/bin/python".into(),
+                "~/.fibration/tooling/.venv/bin/python".into(),
                 "-m".into(),
-                "analyst_kernel".into(),
+                "fibration_kernel".into(),
             ],
             args: KernelArgs {
-                python: "~/analyst/repo/.venv/bin/python".into(),
-                root: "~/analyst/repo".into(),
-                runs_dir: "~/.analyst/runs".into(),
+                python: "~/fibration/repo/.venv/bin/python".into(),
+                root: "~/fibration/repo".into(),
+                runs_dir: "~/.fibration/runs".into(),
                 out_dir: None,
                 sandbox: Some("auto".into()),
                 data_dirs: vec![],
@@ -590,7 +594,7 @@ mod tests {
         let line = t.command_line();
         assert_eq!(line[0], "ssh");
         assert_eq!(line[1..3], ["-o", "ControlMaster=auto"]);
-        assert_eq!(line[3..5], ["-o", "ControlPath=/home/u/.analyst/ssh/%C"]);
+        assert_eq!(line[3..5], ["-o", "ControlPath=/home/u/.fibration/ssh/%C"]);
         assert_eq!(line[5..7], ["-o", "ControlPersist=10m"]);
         assert_eq!(
             line[7..15],
@@ -608,7 +612,7 @@ mod tests {
         assert_eq!(line[15..17], ["--", "lab-gpu"]);
         assert_eq!(
             line[17],
-            "export UV_PYTHON_DOWNLOADS=never; ~/.analyst/tooling/.venv/bin/python -m analyst_kernel --python ~/analyst/repo/.venv/bin/python --root ~/analyst/repo --runs-dir ~/.analyst/runs --sandbox auto"
+            "export UV_PYTHON_DOWNLOADS=never; ~/.fibration/tooling/.venv/bin/python -m fibration_kernel --python ~/fibration/repo/.venv/bin/python --root ~/fibration/repo --runs-dir ~/.fibration/runs --sandbox auto"
         );
     }
 
@@ -619,7 +623,7 @@ mod tests {
             ..Default::default()
         };
         // Cannot set env in parallel tests safely; only check the config path and default order.
-        if std::env::var("ANALYST_TOOLING_PYTHON").is_err() {
+        if std::env::var("FIBRATION_TOOLING_PYTHON").is_err() {
             assert_eq!(resolve_tooling_python(&g), "/cfg/python");
         }
     }

@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from analyst_kernel import sandbox
-from analyst_kernel.errors import SANDBOX_UNAVAILABLE, RpcError
-from analyst_kernel.sandbox import (
+from fibration_kernel import sandbox
+from fibration_kernel.errors import SANDBOX_UNAVAILABLE, RpcError
+from fibration_kernel.sandbox import (
     SandboxSpec,
     bwrap_argv,
     detect,

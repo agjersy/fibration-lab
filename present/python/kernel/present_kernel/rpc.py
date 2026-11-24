@@ -1,5 +1,5 @@
-# Ported from Personal Analyst python/kernel/analyst_kernel/rpc.py at commit f229e4d.
-"""Newline-delimited JSON-RPC 2.0 over stdio (PROTOCOL.md 1.1 and 1.2; same framing as Personal Analyst).
+# Ported from Fibration Lab python/kernel/fibration_kernel/rpc.py at commit f229e4d.
+"""Newline-delimited JSON-RPC 2.0 over stdio (PROTOCOL.md 1.1 and 1.2; same framing as Fibration Lab).
 
 The reader loop runs on the calling thread; each request is dispatched on a worker
 thread so long-running calls do not block others. Notifications may be emitted from

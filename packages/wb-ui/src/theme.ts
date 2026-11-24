@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/ui/theme.ts and the theme part of state/ui.ts at commit
+// Ported from Fibration Lab apps/desktop/src/ui/theme.ts and the theme part of state/ui.ts at commit
 // f229e4d. The preference is passed in so the package holds no app store.
 import { useEffect, useState } from "react";
 

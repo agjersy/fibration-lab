@@ -1,5 +1,5 @@
 // Written for Personal Present PROTOCOL 11; the legacy fields (`triggers`, `paths`, `always`)
-// and their matching follow Personal Analyst `docs/ARCHITECTURE.md` section 5.16 at commit
+// and their matching follow Fibration Lab `docs/ARCHITECTURE.md` section 5.16 at commit
 // f229e4d (Analyst has no skills code at that commit, so there is no source file to port).
 //! Shared-to-be crate `wb-skills` (BUILD-SPEC section 4). Must not depend on Present-specific crates.
 //!

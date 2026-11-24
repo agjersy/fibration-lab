@@ -5,8 +5,8 @@
 
 use super::error::{ServiceError, ServiceResult};
 use crate::util::{is_reserved_path, normalize_rel_path, resolve_in_repo, sha256_hex};
-use analyst_protocol::ui::{FileContent, FileEntry, FileKind, SearchHit, WriteResult};
 use base64::Engine;
+use fibration_protocol::ui::{FileContent, FileEntry, FileKind, SearchHit, WriteResult};
 use std::path::{Path, PathBuf};
 
 /// Directories never shown or searched.
@@ -42,12 +42,12 @@ pub fn resolve(repo: &Path, raw: &str) -> ServiceResult<(String, PathBuf)> {
 
 fn reserved(rel: &str) -> ServiceError {
     ServiceError::policy_denied(format!(
-        "`{rel}` is under a reserved directory (.git/ or .analyst/) and cannot be changed from the app"
+        "`{rel}` is under a reserved directory (.git/ or .fibration/) and cannot be changed from the app"
     ))
 }
 
 /// Resolve a repo-relative path for a mutation (write, create, delete, rename). Paths under
-/// `.git/` and `.analyst/` are refused (G4), lexically and after symlink resolution. With
+/// `.git/` and `.fibration/` are refused (G4), lexically and after symlink resolution. With
 /// `follow_last` the final component may be a symlink to a place inside the repo (writes go
 /// through it); without, the final component itself is addressed (delete and rename act on
 /// the link, never on its target).
@@ -789,7 +789,7 @@ fn map_io(path: &str, e: std::io::Error) -> ServiceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use analyst_protocol::ui::IpcErrorCode;
+    use fibration_protocol::ui::IpcErrorCode;
 
     fn repo() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
@@ -958,20 +958,20 @@ mod tests {
         );
     }
 
-    /// G4: the renderer's file commands cannot change `.git/` or `.analyst/`.
+    /// G4: the renderer's file commands cannot change `.git/` or `.fibration/`.
     #[test]
-    fn mutations_under_git_and_analyst_are_denied_but_reads_work() {
+    fn mutations_under_git_and_fibration_are_denied_but_reads_work() {
         let d = repo();
         std::fs::write(d.path().join(".git/config"), "[core]\n").unwrap();
-        std::fs::create_dir_all(d.path().join(".analyst")).unwrap();
-        std::fs::write(d.path().join(".analyst/project.toml"), "[project]\n").unwrap();
+        std::fs::create_dir_all(d.path().join(".fibration")).unwrap();
+        std::fs::write(d.path().join(".fibration/project.toml"), "[project]\n").unwrap();
         assert_eq!(read(d.path(), ".git/config").unwrap().content, "[core]\n");
-        assert!(read(d.path(), ".analyst/project.toml").is_ok());
+        assert!(read(d.path(), ".fibration/project.toml").is_ok());
         for p in [
             ".git/config",
             ".git/hooks/pre-commit",
             ".GIT/config",
-            ".analyst/project.toml",
+            ".fibration/project.toml",
             "sub/.git/config",
         ] {
             assert_eq!(

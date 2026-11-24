@@ -10,7 +10,7 @@ only through wb-net. This check is static and deliberately blunt:
    network client module and open no sockets.
 4. The desktop shells ship a content security policy with no remote or dev-server origin, and
    neither they nor the renderers pull in an updater or HTTP plugin.
-5. No crate except the development bridge (crates/serve, `analyst-serve`) depends on a
+5. No crate except the development bridge (crates/serve, `fibration-serve`) depends on a
    WebSocket or HTTP server crate, and neither the desktop app nor the CLI links the bridge or
    a server crate (checked through Cargo.lock, transitively). The shipped app has no listener.
 
@@ -26,8 +26,8 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GATE = ROOT / "crates" / "wb-net"
 BRIDGE = ROOT / "crates" / "serve"
-BRIDGE_CRATE = "analyst-serve"
-SHIPPED = ("analyst-desktop", "analyst-cli")
+BRIDGE_CRATE = "fibration-serve"
+SHIPPED = ("fibration-desktop", "fibration-cli")
 SKIP_DIRS = {"target", "node_modules", ".venv", "dist", ".git", "gen", "__pycache__"}
 
 HTTP_CRATES = {
@@ -50,8 +50,8 @@ PY_IMPORT = re.compile(
 )
 PY_SOCKET = re.compile(r"\bsocket\.(socket|create_connection|create_server|socketpair)\s*\(")
 PY_PACKAGES = [
-    "python/kernel/analyst_kernel",
-    "python/kernel/analyst_mpl",
+    "python/kernel/fibration_kernel",
+    "python/kernel/fibration_mpl",
     "present/python/kernel/present_kernel",
     "present/python/sdk/present_sdk",
 ]

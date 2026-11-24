@@ -3,8 +3,8 @@
 
 mod common;
 
-use analyst_deck_protocol::deck::*;
 use common::{fixture_json, round_trip_json};
+use fibration_deck_protocol::deck::*;
 use serde_json::{json, Value};
 
 const SLIDE_FIXTURES: [&str; 9] = [
@@ -254,7 +254,7 @@ fn generated_slide() {
 #[test]
 fn deck_round_trips() {
     let d: Deck = round_trip_json("deck.json");
-    assert_eq!(d.schema_version, analyst_deck_protocol::SCHEMA_VERSION);
+    assert_eq!(d.schema_version, fibration_deck_protocol::SCHEMA_VERSION);
     assert_eq!(d.mode, DeckMode::Structured);
     assert_eq!(d.slide_ids().count(), 9);
     assert_eq!(

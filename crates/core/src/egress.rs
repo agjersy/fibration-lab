@@ -58,8 +58,8 @@ pub const INDEX_ENV_VARS: &[&str] = &[
 /// interpreter that is already installed and never fetch one.
 pub const NO_PYTHON_DOWNLOADS: (&str, &str) = ("UV_PYTHON_DOWNLOADS", "never");
 
-/// The ref the mirror push writes on the host. Nothing outside `refs/analyst/` is pushed.
-pub const SYNC_REF: &str = "refs/analyst/sync";
+/// The ref the mirror push writes on the host. Nothing outside `refs/fibration/` is pushed.
+pub const SYNC_REF: &str = "refs/fibration/sync";
 
 /// Git settings for a process on a remote host: no system or user configuration, so no
 /// hooks path, filter, or helper configured there can run.
@@ -105,7 +105,7 @@ fn refusal(e: &wb_net::EgressError) -> anyhow::Error {
         ),
         BadDestination(d) => anyhow!("`{d}` is not a usable network destination"),
         Ledger(why) => anyhow!(
-            "the network ledger (egress.jsonl in the analyst home) could not be written ({why}); nothing leaves the machine unrecorded, so the command was not run"
+            "the network ledger (egress.jsonl in the fibration home) could not be written ({why}); nothing leaves the machine unrecorded, so the command was not run"
         ),
         Client(why) => anyhow!("{why}"),
     }
@@ -431,7 +431,7 @@ const GIT_ENV_REMOVE: &[&str] = &[
 ];
 
 /// A `git` line: local subcommands pass; the only network use is a push in the form
-/// [`git_push`] builds, to a configured SSH target and a ref under `refs/analyst/`.
+/// [`git_push`] builds, to a configured SSH target and a ref under `refs/fibration/`.
 fn guard_git(args: &[String]) -> Result<Guard> {
     // The subcommand is the first word that is neither an option nor an option's value.
     let mut it = args.iter().enumerate();
@@ -476,9 +476,9 @@ fn guard_git(args: &[String]) -> Result<Guard> {
         .ok_or_else(|| refuse("the destination is not a plain `ssh://host/path` URL"))?;
     if !refspec
         .split_once(':')
-        .is_some_and(|(_, dst)| dst.starts_with("refs/analyst/"))
+        .is_some_and(|(_, dst)| dst.starts_with("refs/fibration/"))
     {
-        return Err(refuse("it may only write refs under refs/analyst/"));
+        return Err(refuse("it may only write refs under refs/fibration/"));
     }
     wb_net::gate()
         .authorize_ssh(authority, "git push")
@@ -622,7 +622,7 @@ pub fn remote_bwrap_prefix() -> String {
 /// The remote command that reports whether `bwrap` can take the network away there.
 pub fn remote_bwrap_probe_command() -> String {
     format!(
-        "{}true >/dev/null 2>&1 && echo analyst-bwrap-yes || echo analyst-bwrap-no",
+        "{}true >/dev/null 2>&1 && echo fibration-bwrap-yes || echo fibration-bwrap-no",
         remote_bwrap_prefix()
     )
 }
@@ -643,7 +643,7 @@ pub async fn remote_bwrap_works(host: &str, control_dir: Option<&Path>) -> Resul
         return Ok(known);
     }
     let out = crate::target::run_ssh(host, control_dir, &remote_bwrap_probe_command()).await?;
-    let works = out.contains("analyst-bwrap-yes");
+    let works = out.contains("fibration-bwrap-yes");
     if let Ok(mut c) = remote_probe_cache().lock() {
         c.insert(host.to_string(), works);
     }
@@ -679,7 +679,7 @@ mod tests {
             "-q",
             "--",
             "/tmp/uv",
-            &format!("me@{host}:.analyst/bin/uv"),
+            &format!("me@{host}:.fibration/bin/uv"),
         ]);
         assert!(guard(&scp).is_err());
         let push = git_push(
@@ -719,11 +719,11 @@ mod tests {
     fn git_reaches_the_network_only_to_push_to_a_configured_target() {
         let tag = crate::util::short_rand().to_lowercase();
         let host = format!("push-{tag}");
-        let ctl = Path::new("/home/u/.analyst/ssh dir");
+        let ctl = Path::new("/home/u/.fibration/ssh dir");
         let push = git_push(
             Path::new("/tmp/scratch"),
             &format!("me@{host}"),
-            "/home/u/my analyst/repo-1a2b3c4d.git",
+            "/home/u/my fibration/repo-1a2b3c4d.git",
             "0123abcd",
             Some(ctl),
         )
@@ -743,7 +743,7 @@ mod tests {
             .unwrap();
         assert!(ssh.starts_with("ssh -o ControlMaster=auto -o "), "{ssh}");
         assert!(
-            ssh.contains("'ControlPath=/home/u/.analyst/ssh dir/%C'"),
+            ssh.contains("'ControlPath=/home/u/.fibration/ssh dir/%C'"),
             "{ssh}"
         );
         assert!(
@@ -759,8 +759,8 @@ mod tests {
             push[push.len() - 3..],
             [
                 "--".to_string(),
-                format!("ssh://me@{host}/home/u/my%20analyst/repo-1a2b3c4d.git"),
-                "0123abcd:refs/analyst/sync".to_string()
+                format!("ssh://me@{host}/home/u/my%20fibration/repo-1a2b3c4d.git"),
+                "0123abcd:refs/fibration/sync".to_string()
             ]
         );
         // Hosts that would change what the URL means are refused before anything runs.
@@ -805,27 +805,27 @@ mod tests {
         let mut branch = push.clone();
         branch[url_at + 1] = "0123abcd:refs/heads/main".into();
         let err = guard(&branch).unwrap_err().to_string();
-        assert!(err.contains("refs/analyst/"), "{err}");
+        assert!(err.contains("refs/fibration/"), "{err}");
         for l in [
             line(&[
                 "git",
                 "push",
                 "--",
                 &format!("{host}:r.git"),
-                "a:refs/analyst/sync",
+                "a:refs/fibration/sync",
             ]),
             line(&[
                 "git",
                 "push",
                 "--",
                 "https://example.org/r.git",
-                "a:refs/analyst/sync",
+                "a:refs/fibration/sync",
             ]),
             line(&[
                 "git",
                 "push",
                 &format!("ssh://{host}/r.git"),
-                "a:refs/analyst/sync",
+                "a:refs/fibration/sync",
             ]),
             line(&["git", "push", "--", &format!("ssh://{host}/r.git")]),
             line(&["git", "-C", "/repo", "fetch", "origin"]),
@@ -883,7 +883,7 @@ mod tests {
         // Remote hosts get the same setting in front of every command.
         assert_eq!(remote_env_prefix(), "export UV_PYTHON_DOWNLOADS=never; ");
         assert!(
-            crate::target::ssh_command("lab", None, "~/.analyst/bin/uv sync")
+            crate::target::ssh_command("lab", None, "~/.fibration/bin/uv sync")
                 .last()
                 .unwrap()
                 .starts_with("export UV_PYTHON_DOWNLOADS=never; ")
@@ -993,8 +993,8 @@ mod tests {
         wb_net::gate().allow_ssh_host(&host).unwrap();
         let flag = remote_index_flag("uv sync (remote)").unwrap();
         let (m_clean, m_dirty) = (
-            format!("~/analyst/clean-{tag}"),
-            format!("~/analyst/dirty-{tag}"),
+            format!("~/fibration/clean-{tag}"),
+            format!("~/fibration/dirty-{tag}"),
         );
         note_mirror(&m_clean, clean.path());
         note_mirror(&m_dirty, dirty.path());
@@ -1094,7 +1094,7 @@ mod tests {
         );
         assert_eq!(
             wb_net::DEFAULT_PACKAGE_INDEX,
-            analyst_protocol::config::DEFAULT_PACKAGE_INDEX
+            fibration_protocol::config::DEFAULT_PACKAGE_INDEX
         );
         let prefix = remote_bwrap_prefix();
         assert!(prefix.starts_with("bwrap --unshare-net ") && prefix.ends_with(" -- "));

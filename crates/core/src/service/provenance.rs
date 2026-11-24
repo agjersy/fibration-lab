@@ -4,9 +4,11 @@
 
 use super::error::{ServiceError, ServiceResult};
 use crate::kernel::KernelClient;
-use analyst_deck::workspace::Provenance;
-use analyst_deck_protocol::deck::{EqCheckRecord, EqCheckState, EqCite, EqCounterexample, EqTier};
-use analyst_protocol::kernel::{
+use fibration_deck::workspace::Provenance;
+use fibration_deck_protocol::deck::{
+    EqCheckRecord, EqCheckState, EqCite, EqCounterexample, EqTier,
+};
+use fibration_protocol::kernel::{
     EqCheckParams, EqCheckStatus, EqExtractParams, EquationStatus, EquationTier,
 };
 use serde_json::{json, Value};
@@ -44,7 +46,7 @@ impl RepoProvenance {
     }
 
     /// With the named results of all runs of this project recorded under `home`, read from the
-    /// run records on disk (no session or kernel): what `analyst deck check` uses.
+    /// run records on disk (no session or kernel): what `fibration deck check` uses.
     pub fn for_project(home: &Path, repo: &Path) -> RepoProvenance {
         let (home, root) = (home.to_path_buf(), repo.to_path_buf());
         RepoProvenance::new(repo).with_results(move |run_id, name| {
@@ -196,14 +198,14 @@ pub async fn equation_record(
 pub async fn place_equation(
     kernel: &KernelClient,
     repo: &Path,
-    svc: &analyst_deck::service::DeckService,
+    svc: &fibration_deck::service::DeckService,
     slide_id: &str,
     path: &str,
     function: &str,
     placeholder: Option<&str>,
 ) -> ServiceResult<super::artifacts::PlacedElement> {
-    use analyst_deck_protocol::template::ContentKind;
-    let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
+    use fibration_deck_protocol::template::ContentKind;
+    let id = fibration_deck_protocol::ids::SlideId::new(slide_id.to_string())
         .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
     let (slide, hash) = svc
         .ws
@@ -260,7 +262,7 @@ pub fn bind_result(
     runs: &super::runs::RunService,
     session: &crate::session::Session,
     repo: &Path,
-    svc: &analyst_deck::service::DeckService,
+    svc: &fibration_deck::service::DeckService,
     slide_id: &str,
     placeholder: &str,
     run_id: &str,
@@ -270,13 +272,13 @@ pub fn bind_result(
     after: Option<&str>,
     cell: Option<(usize, usize)>,
 ) -> ServiceResult<super::artifacts::PlacedElement> {
-    use analyst_protocol::kernel::ArtifactKind;
+    use fibration_protocol::kernel::ArtifactKind;
     let entry = super::artifacts::list(runs, session, repo, Some(run_id), Some(ArtifactKind::Results), Some(1))
         .into_iter()
         .next()
         .ok_or_else(|| {
             ServiceError::not_found(format!(
-                "run `{run_id}` recorded no named results; the script records them with analyst_results.record(name, value, unit)"
+                "run `{run_id}` recorded no named results; the script records them with fibration_results.record(name, value, unit)"
             ))
         })?;
     let result = entry
@@ -296,7 +298,7 @@ pub fn bind_result(
                     .join(", ")
             ))
         })?;
-    let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
+    let id = fibration_deck_protocol::ids::SlideId::new(slide_id.to_string())
         .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
     let (slide, hash) = svc
         .ws

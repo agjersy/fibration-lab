@@ -35,8 +35,8 @@ export function ChatInput({ session, conversation, busy }: ChatInputProps) {
       const a = currentSelection();
       if (a) useChat.getState().addAttachment(conversation, a);
     };
-    el.addEventListener("analyst:attach-selection", onAttach);
-    return () => el.removeEventListener("analyst:attach-selection", onAttach);
+    el.addEventListener("fibration:attach-selection", onAttach);
+    return () => el.removeEventListener("fibration:attach-selection", onAttach);
   }, [conversation]);
 
   const send = () => {

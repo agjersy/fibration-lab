@@ -1,4 +1,4 @@
-"""Spawn ``python -m analyst_kernel`` and talk JSON-RPC over its stdio."""
+"""Spawn ``python -m fibration_kernel`` and talk JSON-RPC over its stdio."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class KernelProc:
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "analyst_kernel", "--python", sys.executable, "--root", str(repo),
+            [sys.executable, "-m", "fibration_kernel", "--python", sys.executable, "--root", str(repo),
              "--runs-dir", str(runs_dir), "--sandbox", "limits"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1,
             cwd=str(KERNEL_DIR), env=env,
@@ -117,16 +117,16 @@ def test_end_to_end(repo: Path, tmp_path: Path):
 
 
 def test_cli_usage_errors():
-    proc = subprocess.run([sys.executable, "-m", "analyst_kernel"], capture_output=True, text=True, cwd=str(KERNEL_DIR))
+    proc = subprocess.run([sys.executable, "-m", "fibration_kernel"], capture_output=True, text=True, cwd=str(KERNEL_DIR))
     assert proc.returncode == 2 and "--python" in proc.stderr
     proc = subprocess.run(
-        [sys.executable, "-m", "analyst_kernel", "--python", sys.executable, "--root", "/nonexistent/dir",
+        [sys.executable, "-m", "fibration_kernel", "--python", sys.executable, "--root", "/nonexistent/dir",
          "--runs-dir", "/tmp/x", "--sandbox", "limits"],
         capture_output=True, text=True, cwd=str(KERNEL_DIR),
     )
     assert proc.returncode == 2
     proc = subprocess.run(
-        [sys.executable, "-m", "analyst_kernel", "--python", sys.executable, "--root", str(KERNEL_DIR),
+        [sys.executable, "-m", "fibration_kernel", "--python", sys.executable, "--root", str(KERNEL_DIR),
          "--runs-dir", "/tmp/x", "--sandbox", "bwrap"],
         capture_output=True, text=True, cwd=str(KERNEL_DIR), input="",
     )

@@ -1,10 +1,10 @@
 //! The deck store, references, and the reference index.
 
-use analyst_deck::deck_store::{DeckError, Position};
-use analyst_deck::index::{ChunkRow, Index, RefRow};
-use analyst_deck::project::Project;
-use analyst_deck::refs::{self, Added};
-use analyst_deck_protocol::deck::{DeckMode, Slide};
+use fibration_deck::deck_store::{DeckError, Position};
+use fibration_deck::index::{ChunkRow, Index, RefRow};
+use fibration_deck::project::Project;
+use fibration_deck::refs::{self, Added};
+use fibration_deck_protocol::deck::{DeckMode, Slide};
 use std::path::Path;
 
 fn template(dir: &Path) -> std::path::PathBuf {

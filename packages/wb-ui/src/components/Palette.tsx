@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/ui/palette/Palette.tsx at commit f229e4d. The list
+// Ported from Fibration Lab apps/desktop/src/ui/palette/Palette.tsx at commit f229e4d. The list
 // machinery is unchanged; the item sources (commands, files, go to line) are supplied by the app.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listCommands, onCommandsChanged, runCommand } from "../commands";

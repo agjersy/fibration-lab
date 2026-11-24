@@ -20,10 +20,10 @@ use crate::kernel::{resolve_tooling_python_in, KernelClient, KernelTransport};
 use crate::session::Session;
 use crate::target::{self, Target};
 use crate::util::{normalize_rel_path, now_rfc3339, resolve_in_repo};
-use analyst_protocol::config::{GlobalConfig, PolicyConfig, ProjectConfig, TargetKind};
-use analyst_protocol::evals::Mode;
-use analyst_protocol::kernel::*;
-use analyst_protocol::ui::*;
+use fibration_protocol::config::{GlobalConfig, PolicyConfig, ProjectConfig, TargetKind};
+use fibration_protocol::evals::Mode;
+use fibration_protocol::kernel::*;
+use fibration_protocol::ui::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -38,7 +38,7 @@ pub const DEBOUNCE: Duration = Duration::from_millis(200);
 /// A failed background kernel start is not retried by passive requests for this long.
 const START_BACKOFF: Duration = Duration::from_secs(10);
 
-/// State of the local tooling environment (the interpreter that hosts `analyst_kernel`). A
+/// State of the local tooling environment (the interpreter that hosts `fibration_kernel`). A
 /// packaged app prepares it in the background on first start (B12); kernels wait for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolingState {
@@ -98,7 +98,7 @@ impl std::fmt::Debug for Tooling {
 /// Per-session options the workbench passes down.
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
-    /// Interpreter hosting `analyst_kernel` (local target). `None` resolves it when a kernel
+    /// Interpreter hosting `fibration_kernel` (local target). `None` resolves it when a kernel
     /// starts (`resolve_tooling_python_in`), so a tooling environment bootstrapped after the
     /// session was opened is picked up.
     pub tooling_python: Option<String>,
@@ -114,9 +114,9 @@ pub struct RuntimeOptions {
     pub session_python: Option<String>,
     /// Start the kernel in the background when the session opens.
     pub autostart_kernel: bool,
-    /// `$ANALYST_HOME/ssh` for multiplexed SSH connections.
+    /// `$FIBRATION_HOME/ssh` for multiplexed SSH connections.
     pub control_dir: Option<PathBuf>,
-    /// Directory containing `analyst_mpl` (terminal figure capture).
+    /// Directory containing `fibration_mpl` (terminal figure capture).
     pub mpl_dir: Option<PathBuf>,
     /// The kernel source bundled with a packaged app (used to build a wheel for remote
     /// targets when no development wheel exists).
@@ -570,7 +570,7 @@ impl SessionRuntime {
                     .map(|evs| {
                         evs.iter()
                             .filter(|e| {
-                                matches!(e, analyst_protocol::transcript::Event::User { .. })
+                                matches!(e, fibration_protocol::transcript::Event::User { .. })
                             })
                             .count() as u32
                     })
@@ -687,7 +687,7 @@ impl SessionRuntime {
 
     // ---- kernel ----
 
-    /// The interpreter hosting `analyst_kernel` for the local target, resolved now.
+    /// The interpreter hosting `fibration_kernel` for the local target, resolved now.
     pub fn tooling_python(&self) -> String {
         self.opts
             .tooling_python
@@ -1326,7 +1326,7 @@ impl SessionRuntime {
             )));
         }
         let policy = self.effective_policy();
-        if policy.packages == analyst_protocol::config::AskPolicy::Deny {
+        if policy.packages == fibration_protocol::config::AskPolicy::Deny {
             return Err(ServiceError::policy_denied(
                 "package changes are denied by policy",
             ));
@@ -1459,7 +1459,7 @@ impl SessionRuntime {
         let out_dir = self.out_dir();
         let session = self.session_snapshot();
         // Latest record per run id, and the order of first appearance for the pulled scan.
-        let mut stored: HashMap<String, analyst_protocol::session::SessionRun> = HashMap::new();
+        let mut stored: HashMap<String, fibration_protocol::session::SessionRun> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
         for r in session.read_runs().unwrap_or_default() {
             if !stored.contains_key(&r.meta.run_id) {
@@ -1656,9 +1656,9 @@ impl SessionRuntime {
             None => super::decks::slug_for(title),
         };
         let mode = if code_mode {
-            analyst_deck_protocol::deck::DeckMode::Code
+            fibration_deck_protocol::deck::DeckMode::Code
         } else {
-            analyst_deck_protocol::deck::DeckMode::Structured
+            fibration_deck_protocol::deck::DeckMode::Structured
         };
         let created = self
             .decks
@@ -1668,7 +1668,10 @@ impl SessionRuntime {
     }
 
     /// A deck's service, starting its kernel if it is not running.
-    pub async fn deck(&self, slug: &str) -> ServiceResult<Arc<analyst_deck::service::DeckService>> {
+    pub async fn deck(
+        &self,
+        slug: &str,
+    ) -> ServiceResult<Arc<fibration_deck::service::DeckService>> {
         self.decks.open(slug).await
     }
 
@@ -1683,7 +1686,7 @@ impl SessionRuntime {
         run_id: &str,
         artifact: &str,
         placeholder: Option<&str>,
-    ) -> ServiceResult<analyst_deck_protocol::ui::SlideView> {
+    ) -> ServiceResult<fibration_deck_protocol::ui::SlideView> {
         let svc = self.deck(deck).await?;
         let placed = super::artifacts::place_figure(
             &self.runs,
@@ -1697,7 +1700,7 @@ impl SessionRuntime {
             None,
         )
         .await?;
-        let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(placed.slide)
+        let slide: fibration_deck_protocol::deck::Slide = serde_json::from_value(placed.slide)
             .map_err(|e| ServiceError::internal(format!("the placed slide: {e}")))?;
         svc.slide_update(slide, Some(&placed.hash))
             .map_err(ServiceError::from)
@@ -1713,7 +1716,7 @@ impl SessionRuntime {
         path: &str,
         function: &str,
         placeholder: Option<&str>,
-    ) -> ServiceResult<analyst_deck_protocol::ui::SlideView> {
+    ) -> ServiceResult<fibration_deck_protocol::ui::SlideView> {
         let svc = self.deck(deck).await?;
         let k = self.kernel().await?;
         self.sync_debounced().await?;
@@ -1727,7 +1730,7 @@ impl SessionRuntime {
             placeholder,
         )
         .await?;
-        let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(placed.slide)
+        let slide: fibration_deck_protocol::deck::Slide = serde_json::from_value(placed.slide)
             .map_err(|e| ServiceError::internal(format!("the placed slide: {e}")))?;
         svc.slide_update(slide, Some(&placed.hash))
             .map_err(ServiceError::from)
@@ -1735,9 +1738,9 @@ impl SessionRuntime {
 
     // ---- verification ledger ----
 
-    /// The verification queue of the project (`.analyst/verification.jsonl` against the items'
+    /// The verification queue of the project (`.fibration/verification.jsonl` against the items'
     /// content now). Reads files only.
-    pub fn verification_list(&self) -> Vec<analyst_protocol::ui::VerificationView> {
+    pub fn verification_list(&self) -> Vec<fibration_protocol::ui::VerificationView> {
         let session = self.session_snapshot();
         super::verification::list(&super::verification::Scope {
             repo: &self.repo,
@@ -1749,10 +1752,10 @@ impl SessionRuntime {
     /// The user records a verification state for an item's current content.
     pub fn verification_set(
         &self,
-        item: &analyst_protocol::ui::VerifyItem,
-        state: analyst_protocol::ui::VerifyState,
+        item: &fibration_protocol::ui::VerifyItem,
+        state: fibration_protocol::ui::VerifyState,
         note: Option<&str>,
-    ) -> ServiceResult<analyst_protocol::ui::VerificationView> {
+    ) -> ServiceResult<fibration_protocol::ui::VerificationView> {
         let session = self.session_snapshot();
         let view = super::verification::set(
             &super::verification::Scope {
@@ -1762,7 +1765,7 @@ impl SessionRuntime {
             },
             item,
             state,
-            analyst_protocol::ui::Verifier::User,
+            fibration_protocol::ui::Verifier::User,
             note,
         )?;
         self.emit(SessionEvent::VerificationChanged {
@@ -1775,7 +1778,7 @@ impl SessionRuntime {
     pub fn deck_verification_gaps(
         &self,
         deck: &str,
-    ) -> ServiceResult<Vec<analyst_protocol::ui::VerificationView>> {
+    ) -> ServiceResult<Vec<fibration_protocol::ui::VerificationView>> {
         super::decks::valid_slug(deck).map_err(ServiceError::invalid)?;
         let session = self.session_snapshot();
         Ok(super::verification::deck_gaps(
@@ -1919,7 +1922,7 @@ impl SessionRuntime {
     pub fn conversation_transcript(
         &self,
         id: &str,
-    ) -> ServiceResult<Vec<analyst_protocol::transcript::Event>> {
+    ) -> ServiceResult<Vec<fibration_protocol::transcript::Event>> {
         self.conversation_meta(id)?;
         Ok(self.session_snapshot().read_transcript(id)?)
     }
@@ -2005,8 +2008,8 @@ impl SessionRuntime {
                 });
                 self.emit(SessionEvent::ProposalResolved {
                     proposal_id: id,
-                    decision: analyst_protocol::transcript::Decision::Reject,
-                    by: analyst_protocol::transcript::DecidedBy::User,
+                    decision: fibration_protocol::transcript::Decision::Reject,
+                    by: fibration_protocol::transcript::DecidedBy::User,
                 });
             }
         }
@@ -2439,7 +2442,7 @@ const WATCH_SKIP: &[&str] = &[
     ".mypy_cache",
 ];
 
-/// The tooling interpreter for a global config and analyst home (dev checkout aware).
+/// The tooling interpreter for a global config and fibration home (dev checkout aware).
 pub fn tooling_python(global: &GlobalConfig, home: &Path) -> String {
     resolve_tooling_python_in(global, home)
 }

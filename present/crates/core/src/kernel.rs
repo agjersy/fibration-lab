@@ -1,11 +1,11 @@
 //! `KernelClient`: the deck kernel over newline-delimited JSON-RPC on stdio (PROTOCOL 1.1).
 //!
-//! Adapted from Personal Analyst `crates/core/src/kernel/client.rs` and `transport.rs` at
+//! Adapted from Fibration Lab `crates/core/src/kernel/client.rs` and `transport.rs` at
 //! commit f229e4d, reduced to the local stdio transport decks need (decks are local-only).
 
-use analyst_deck_protocol::kernel::{HelloParams, KernelHello, Method};
-use analyst_deck_protocol::rpc::RpcError;
-use analyst_deck_protocol::PROTOCOL_VERSION;
+use fibration_deck_protocol::kernel::{HelloParams, KernelHello, Method};
+use fibration_deck_protocol::rpc::RpcError;
+use fibration_deck_protocol::PROTOCOL_VERSION;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};

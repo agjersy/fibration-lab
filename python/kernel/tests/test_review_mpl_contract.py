@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 from conftest import Notes
 
-from analyst_kernel.errors import PATH_OUTSIDE_ROOT, RpcError
-from analyst_kernel.kernel import Kernel
-from analyst_kernel.runs import _ArtifactScanner, valid_sidecar
+from fibration_kernel.errors import PATH_OUTSIDE_ROOT, RpcError
+from fibration_kernel.kernel import Kernel
+from fibration_kernel.runs import _ArtifactScanner, valid_sidecar
 
 KERNEL_DIR = Path(__file__).resolve().parent.parent
 
@@ -25,15 +25,15 @@ def run_mpl(
     out = tmp_path / "outdir"
     out.mkdir(exist_ok=True)
     env = dict(os.environ)
-    env.pop("ANALYST_FIGURE_FORMATS", None)
+    env.pop("FIBRATION_FIGURE_FORMATS", None)
     if formats is not None:
-        env["ANALYST_FIGURE_FORMATS"] = formats
+        env["FIBRATION_FIGURE_FORMATS"] = formats
     env.update(
-        MPLBACKEND="module://analyst_mpl", PYTHONPATH=str(KERNEL_DIR), MPLCONFIGDIR=str(tmp_path / "mplcfg"),
-        ANALYST_OUT_DIR=str(out), ANALYST_RUN_ID="20260101-000000-abcdef", ANALYST_ROOT=str(tmp_path),
+        MPLBACKEND="module://fibration_mpl", PYTHONPATH=str(KERNEL_DIR), MPLCONFIGDIR=str(tmp_path / "mplcfg"),
+        FIBRATION_OUT_DIR=str(out), FIBRATION_RUN_ID="20260101-000000-abcdef", FIBRATION_ROOT=str(tmp_path),
     )
     script = tmp_path / name
-    script.write_text("import os, json, sys\nimport matplotlib.pyplot as plt\nOUT = os.environ['ANALYST_OUT_DIR']\n" + body)
+    script.write_text("import os, json, sys\nimport matplotlib.pyplot as plt\nOUT = os.environ['FIBRATION_OUT_DIR']\n" + body)
     proc = subprocess.run([sys.executable, str(script)], env=env, cwd=str(tmp_path), capture_output=True, text=True)
     return proc, out
 
@@ -142,7 +142,7 @@ def test_hint_when_the_backend_is_switched_away(tmp_path: Path):
 
 
 def test_mpl_module_avoids_newer_python_only_names():
-    src = (KERNEL_DIR / "analyst_mpl" / "__init__.py").read_text()
+    src = (KERNEL_DIR / "fibration_mpl" / "__init__.py").read_text()
     assert "import UTC" not in src and "datetime.UTC" not in src and "match " not in src
     assert src.startswith('"""') and "from __future__ import annotations" in src
 
@@ -341,7 +341,7 @@ def test_globs_outside_root_are_rejected(kernel, repo: Path, glob: str):
 
 
 def test_contract_check_globs_from_config_outside_root(repo: Path, tmp_path: Path):
-    (repo / ".analyst" / "project.toml").write_text('[project]\nscripts = ["../*.py"]\n')
+    (repo / ".fibration" / "project.toml").write_text('[project]\nscripts = ["../*.py"]\n')
     k = Kernel(sys.executable, repo, tmp_path / "runs", sandbox="limits")
     try:
         for method in ("contract.check", "scripts.index", "contract.similar"):
@@ -362,7 +362,7 @@ def test_checks_never_descend_into_venv_out_or_git(repo: Path, tmp_path: Path):
         (repo / d / "leak.py").write_text(bad)
     (repo / "scripts" / "sub").mkdir()
     (repo / "scripts" / "sub" / "kept.py").write_text(bad)
-    (repo / ".analyst" / "project.toml").write_text('[project]\nscripts = ["**/*.py"]\nlibrary = "analysis"\n')
+    (repo / ".fibration" / "project.toml").write_text('[project]\nscripts = ["**/*.py"]\nlibrary = "analysis"\n')
     k = Kernel(sys.executable, repo, tmp_path / "runs", sandbox="limits")
     try:
         for params in ({}, {"paths": ["."]}, {"paths": ["scripts", "out", ".venv", ".git"]}):

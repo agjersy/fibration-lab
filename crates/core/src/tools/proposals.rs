@@ -6,8 +6,8 @@
 //! file are preserved.
 
 use crate::util::{is_reserved_path, is_symlink, normalize_rel_path, resolve_in_repo, sha256_hex};
-use analyst_protocol::transcript::ProposalKind;
 use anyhow::{anyhow, Result};
+use fibration_protocol::transcript::ProposalKind;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -28,7 +28,7 @@ pub struct Proposal {
 fn confine(repo: &Path, rel: &str) -> Result<PathBuf> {
     if is_reserved_path(rel) {
         return Err(anyhow!(
-            "`{rel}` is under .git/ or .analyst/, which are never editable"
+            "`{rel}` is under .git/ or .fibration/, which are never editable"
         ));
     }
     let lexical = repo.join(rel);
@@ -523,7 +523,7 @@ mod tests {
             ),
             (
                 "fs.propose_create",
-                json!({"path":".analyst/project.toml","content":"x"}),
+                json!({"path":".fibration/project.toml","content":"x"}),
             ),
             (
                 "fs.propose_create",

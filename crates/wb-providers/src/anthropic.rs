@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/providers/anthropic.rs`, including the
+// Ported from Fibration Lab `crates/core/src/providers/anthropic.rs`, including the
 // post-review fixes (REVIEW A1, A2, A4, B6).
 // Adapted (Present PROTOCOL 6.1): configurable auth and extra headers, document blocks with
 // citations, prompt-caching markers, the unknown-field downgrade, cache tokens in usage, and

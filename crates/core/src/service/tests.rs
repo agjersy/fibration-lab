@@ -2,7 +2,7 @@
 //! kernel use the stdlib-only fake in `tests/fake_kernel.py`).
 
 use super::*;
-use analyst_protocol::transcript::Decision;
+use fibration_protocol::transcript::Decision;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -90,14 +90,14 @@ async fn session_lifecycle_and_fs_ops() {
     assert!(info.summary.open);
     assert_eq!(
         info.target_kind,
-        analyst_protocol::config::TargetKind::Local
+        fibration_protocol::config::TargetKind::Local
     );
     assert_eq!(info.kernel, KernelState::Stopped);
     assert_eq!(info.conversations.len(), 1);
     assert_eq!(info.active_conversation, info.conversations[0].id);
     assert_eq!(
         info.policy.edits,
-        analyst_protocol::config::EditPolicy::Review
+        fibration_protocol::config::EditPolicy::Review
     );
 
     let list = fx.wb.sessions_list().unwrap();
@@ -114,7 +114,7 @@ async fn session_lifecycle_and_fs_ops() {
     let names: Vec<&str> = tree.iter().map(|e| e.path.as_str()).collect();
     assert!(names.contains(&"scripts"));
     assert!(names.contains(&"analysis"));
-    assert!(names.contains(&".analyst"));
+    assert!(names.contains(&".fibration"));
     assert!(!names.contains(&".venv"));
     assert!(!names.contains(&".git"));
     let out = tree.iter().find(|e| e.path == "out").unwrap();
@@ -152,12 +152,12 @@ async fn session_lifecycle_and_fs_ops() {
     let p = fx
         .rt
         .set_policy(&PolicyPatch {
-            edits: Some(analyst_protocol::config::EditPolicy::Auto),
+            edits: Some(fibration_protocol::config::EditPolicy::Auto),
             max_steps: Some(7),
             ..Default::default()
         })
         .unwrap();
-    assert_eq!(p.edits, analyst_protocol::config::EditPolicy::Auto);
+    assert_eq!(p.edits, fibration_protocol::config::EditPolicy::Auto);
     assert_eq!(p.max_steps, 7);
     assert_eq!(fx.rt.effective_policy().max_steps, 7);
     assert_eq!(
@@ -263,7 +263,7 @@ async fn ui_approver_round_trip_accepts_with_modified_content() {
     };
     assert_eq!(
         proposal.kind,
-        analyst_protocol::transcript::ProposalKind::Edit
+        fibration_protocol::transcript::ProposalKind::Edit
     );
     assert_eq!(proposal.path.as_deref(), Some("analysis/__init__.py"));
     assert_eq!(proposal.proposed.as_deref(), Some("PROPOSED = 1\n"));
@@ -300,7 +300,7 @@ async fn ui_approver_round_trip_accepts_with_modified_content() {
     .await;
     assert!(matches!(
         resolved,
-        SessionEvent::ProposalResolved { proposal_id, decision: Decision::Accept, by: analyst_protocol::transcript::DecidedBy::User }
+        SessionEvent::ProposalResolved { proposal_id, decision: Decision::Accept, by: fibration_protocol::transcript::DecidedBy::User }
         if proposal_id == proposal.id
     ));
     let result = next_matching(
@@ -374,7 +374,7 @@ async fn chat_cancel_rejects_pending_proposal() {
     };
     assert_eq!(
         proposal.kind,
-        analyst_protocol::transcript::ProposalKind::Create
+        fibration_protocol::transcript::ProposalKind::Create
     );
     assert!(proposal.original.is_none());
     agent_runner::cancel_turn(&fx.rt, &conv).await;
@@ -438,7 +438,7 @@ async fn package_proposal_and_terminal_through_workbench() {
     };
     assert_eq!(
         proposal.kind,
-        analyst_protocol::transcript::ProposalKind::Package
+        fibration_protocol::transcript::ProposalKind::Package
     );
     assert_eq!(
         proposal.packages.as_deref(),
@@ -602,7 +602,7 @@ data_dirs = ["/data"]
     assert_eq!(targets[0].name, "local");
     assert_eq!(targets[1].kind, TargetKind::Ssh);
     assert_eq!(targets[1].host.as_deref(), Some("lab-gpu"));
-    assert_eq!(targets[1].remote_root.as_deref(), Some("~/analyst"));
+    assert_eq!(targets[1].remote_root.as_deref(), Some("~/fibration"));
     assert_eq!(
         wb.target_bootstrap("local").unwrap_err().code,
         IpcErrorCode::Invalid
@@ -641,7 +641,7 @@ async fn parallel_opens_build_one_runtime() {
     );
 }
 
-/// G4 and G7 through the runtime: symlinks out of the repo, `.git`, and `.analyst` are refused
+/// G4 and G7 through the runtime: symlinks out of the repo, `.git`, and `.fibration` are refused
 /// by every file command, by `figure_data`, and by chat attachments.
 #[cfg(unix)]
 #[tokio::test]
@@ -690,7 +690,7 @@ async fn file_commands_and_attachments_stay_inside_the_repo() {
     assert_eq!(
         fx.rt
             .fs_write(
-                ".analyst/project.toml",
+                ".fibration/project.toml",
                 "[policy]\nedits = \"auto\"\n",
                 None
             )
@@ -706,7 +706,10 @@ async fn file_commands_and_attachments_stay_inside_the_repo() {
         fx.rt.fs_delete(".git").unwrap_err().code,
         IpcErrorCode::PolicyDenied
     );
-    assert!(fx.rt.fs_read(".analyst/project.toml").is_ok(), "reads work");
+    assert!(
+        fx.rt.fs_read(".fibration/project.toml").is_ok(),
+        "reads work"
+    );
     assert!(!fx.rt.repo.join(".git/hooks/pre-commit").exists());
     assert_eq!(
         fx.rt
@@ -816,11 +819,11 @@ async fn figures_list_is_bounded_for_a_long_history() {
                 .to_string(),
         )
         .unwrap();
-        let meta = analyst_protocol::kernel::RunMeta {
+        let meta = fibration_protocol::kernel::RunMeta {
             run_id: id.clone(),
             script: "scripts/fit.py".into(),
             args: vec![],
-            status: analyst_protocol::kernel::RunStatus::Done,
+            status: fibration_protocol::kernel::RunStatus::Done,
             exit_code: Some(0),
             started_at: started,
             finished_at: None,
@@ -1043,7 +1046,7 @@ async fn chat_cancel_cancels_the_run_the_turn_started() {
     };
     assert_eq!(
         proposal.kind,
-        analyst_protocol::transcript::ProposalKind::Shell
+        fibration_protocol::transcript::ProposalKind::Shell
     );
     assert!(
         proposal.summary.starts_with("Unsandboxed run:"),
@@ -1104,7 +1107,7 @@ async fn chat_cancel_cancels_the_run_the_turn_started() {
     };
     assert_eq!(
         run.meta.status,
-        analyst_protocol::kernel::RunStatus::Cancelled,
+        fibration_protocol::kernel::RunStatus::Cancelled,
         "{run:?}"
     );
     assert_eq!(run.conversation.as_deref(), Some(conv_id.as_str()));
@@ -1149,7 +1152,7 @@ async fn run_get_works_after_restart() {
     assert_eq!(listed[0].meta.run_id, run_id);
     assert_eq!(
         listed[0].meta.status,
-        analyst_protocol::kernel::RunStatus::Done
+        fibration_protocol::kernel::RunStatus::Done
     );
     let detail = rt.run_get(&run_id).unwrap();
     assert!(detail.stdout.contains("hello from the run"), "{detail:?}");
@@ -1303,7 +1306,7 @@ async fn scope_widening_is_a_proper_proposal() {
     assert_eq!(proposal.id, "s2");
     assert_eq!(
         proposal.kind,
-        analyst_protocol::transcript::ProposalKind::Edit
+        fibration_protocol::transcript::ProposalKind::Edit
     );
     assert_eq!(proposal.path, None);
     assert_eq!(
@@ -1345,15 +1348,15 @@ base_url = "http://localhost:11434/v1"
 name = "acme"
 kind = "openai-compatible"
 base_url = "https://api.acme.example/v1"
-api_key_env = "ANALYST_TEST_ACME_KEY_UNSET"
+api_key_env = "FIBRATION_TEST_ACME_KEY_UNSET"
 [[providers]]
 name = "envy"
 kind = "anthropic"
-api_key_env = "ANALYST_TEST_ENVY_KEY"
+api_key_env = "FIBRATION_TEST_ENVY_KEY"
 "#,
     )
     .unwrap();
-    std::env::set_var("ANALYST_TEST_ENVY_KEY", "sk-env");
+    std::env::set_var("FIBRATION_TEST_ENVY_KEY", "sk-env");
     let wb = Workbench::new(WorkbenchOptions::new(home.path().to_path_buf())).unwrap();
     let rows = wb.provider_keys_status();
     assert_eq!(rows.len(), 3, "one row per configured provider");
@@ -1363,7 +1366,7 @@ api_key_env = "ANALYST_TEST_ENVY_KEY"
     assert_eq!(acme.source, None);
     assert_eq!(
         acme.api_key_env.as_deref(),
-        Some("ANALYST_TEST_ACME_KEY_UNSET")
+        Some("FIBRATION_TEST_ACME_KEY_UNSET")
     );
     assert_eq!(row(&rows, "envy").unwrap().source.as_deref(), Some("env"));
     let ollama = row(&rows, "ollama").unwrap();
@@ -1379,7 +1382,7 @@ api_key_env = "ANALYST_TEST_ENVY_KEY"
     let creds = home.path().join(".env");
     assert!(std::fs::read_to_string(&creds)
         .unwrap()
-        .contains("ANALYST_TEST_ACME_KEY_UNSET=\"sk-stored\""));
+        .contains("FIBRATION_TEST_ACME_KEY_UNSET=\"sk-stored\""));
     assert!(!home.path().join("credentials.toml").exists());
     wb.provider_key_set("ollama", "sk-derived").unwrap();
     assert!(std::fs::read_to_string(&creds)
@@ -1428,16 +1431,16 @@ api_key_env = "ANALYST_TEST_ENVY_KEY"
 #[tokio::test]
 async fn kernel_processes_do_not_inherit_provider_keys() {
     use tokio::io::AsyncReadExt;
-    std::env::set_var("ANALYST_TEST_KERNEL_KEY", "sk-kernel-secret");
+    std::env::set_var("FIBRATION_TEST_KERNEL_KEY", "sk-kernel-secret");
     std::env::set_var("OPENROUTER_API_KEY", "sk-openrouter-secret");
     let line: Vec<String> = vec![
         "sh".into(),
         "-c".into(),
-        "printf '%s' \"custom=[$ANALYST_TEST_KERNEL_KEY] common=[$OPENROUTER_API_KEY] path=[$PATH]\"".into(),
+        "printf '%s' \"custom=[$FIBRATION_TEST_KERNEL_KEY] common=[$OPENROUTER_API_KEY] path=[$PATH]\"".into(),
     ];
     let mut k = crate::kernel::transport::spawn_line_without_env(
         &line,
-        &["ANALYST_TEST_KERNEL_KEY".to_string()],
+        &["FIBRATION_TEST_KERNEL_KEY".to_string()],
     )
     .unwrap();
     let mut out = String::new();
@@ -1450,7 +1453,7 @@ async fn kernel_processes_do_not_inherit_provider_keys() {
     let mut global = GlobalConfig::default();
     global
         .providers
-        .push(analyst_protocol::config::ProviderConfig {
+        .push(fibration_protocol::config::ProviderConfig {
             name: "x".into(),
             kind: ProviderKind::OpenAiCompatible,
             base_url: None,
@@ -1518,11 +1521,11 @@ async fn finished_runs_in_memory_are_bounded() {
     let session = fx.rt.session_snapshot();
     let total = runtime::MAX_FINISHED_RUNS + 60;
     for i in 0..total {
-        let meta = analyst_protocol::kernel::RunMeta {
+        let meta = fibration_protocol::kernel::RunMeta {
             run_id: format!("20260101-{i:06}-bbbbbb"),
             script: "scripts/x.py".into(),
             args: vec![],
-            status: analyst_protocol::kernel::RunStatus::Done,
+            status: fibration_protocol::kernel::RunStatus::Done,
             exit_code: Some(0),
             started_at: format!("2026-01-01T00:{:02}:{:02}Z", i / 60, i % 60),
             finished_at: None,
@@ -1712,7 +1715,7 @@ fn deck_template() -> std::path::PathBuf {
 /// The deck kernel needs its Python environment (`present/python/kernel/.venv`); a checkout
 /// without it skips the deck tests.
 fn deck_runtime_available(home: &std::path::Path) -> bool {
-    let ok = analyst_deck::kernel::resolve_runtime_python(home, None).is_some();
+    let ok = fibration_deck::kernel::resolve_runtime_python(home, None).is_some();
     if !ok {
         eprintln!("skipped: no deck kernel interpreter (run `uv sync` in present/python/kernel)");
     }
@@ -1788,7 +1791,7 @@ async fn one_turn_changes_code_runs_it_and_adds_a_slide_and_one_undo_reverts_all
     // Auto within the declared scope; the fake kernel has no sandbox, so the run asks.
     fx.rt
         .set_policy(&PolicyPatch {
-            preset: Some(analyst_protocol::config::PolicyPreset::Auto),
+            preset: Some(fibration_protocol::config::PolicyPreset::Auto),
             ..Default::default()
         })
         .unwrap();
@@ -1871,17 +1874,17 @@ async fn one_turn_changes_code_runs_it_and_adds_a_slide_and_one_undo_reverts_all
     let events = fx.rt.conversation_transcript(&conv_id).unwrap();
     let checkpoints = events
         .iter()
-        .filter(|e| matches!(e, analyst_protocol::transcript::Event::Checkpoint { .. }))
+        .filter(|e| matches!(e, fibration_protocol::transcript::Event::Checkpoint { .. }))
         .count();
     assert_eq!(checkpoints, 1, "one checkpoint covers the whole turn");
     assert!(events
         .iter()
-        .any(|e| matches!(e, analyst_protocol::transcript::Event::Run { .. })));
+        .any(|e| matches!(e, fibration_protocol::transcript::Event::Run { .. })));
     let slide_proposal = events
         .iter()
         .find_map(|e| match e {
-            analyst_protocol::transcript::Event::Proposal {
-                kind: analyst_protocol::transcript::ProposalKind::SlideCreate,
+            fibration_protocol::transcript::Event::Proposal {
+                kind: fibration_protocol::transcript::ProposalKind::SlideCreate,
                 deck,
                 targets,
                 before,
@@ -1901,7 +1904,7 @@ async fn one_turn_changes_code_runs_it_and_adds_a_slide_and_one_undo_reverts_all
     // The new slide was announced with `new_slides`, so the policy applied it on its own.
     assert!(events.iter().any(|e| matches!(
         e,
-        analyst_protocol::transcript::Event::Decision { proposal_id, decision: Decision::Auto, .. }
+        fibration_protocol::transcript::Event::Decision { proposal_id, decision: Decision::Auto, .. }
             if proposal_id == "d1"
     )));
 
@@ -1949,8 +1952,8 @@ async fn one_turn_changes_code_runs_it_and_adds_a_slide_and_one_undo_reverts_all
 async fn deck_modes_are_enforced_by_policy_and_slide_proposals_keep_their_shape() {
     use crate::agent::{Agent, AgentConfig, ApprovalDecision, ApprovalRequest, Approver};
     use crate::tools::gate::Policy;
-    use analyst_protocol::evals::Mode;
-    use analyst_protocol::transcript::{Event, ProposalKind};
+    use fibration_protocol::evals::Mode;
+    use fibration_protocol::transcript::{Event, ProposalKind};
 
     /// Accepts everything; edits the first slide proposal before accepting it.
     struct EditingApprover {
@@ -2205,7 +2208,7 @@ async fn a_slide_cites_an_analysis_run_and_goes_stale_when_the_code_changes() {
         .unwrap();
     // A script that writes a figure (a 1x1 PNG) and a data file into its output directory.
     let script = r#"import base64, os, sys
-out = os.environ["ANALYST_OUT_DIR"]
+out = os.environ["FIBRATION_OUT_DIR"]
 os.makedirs(out, exist_ok=True)
 png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
 open(os.path.join(out, "margin.png"), "wb").write(base64.b64decode(png))
@@ -2232,7 +2235,7 @@ print("wrote", *sys.argv[1:])
     assert_eq!(all.len(), 2, "{all:?}");
     let figures = fx.rt.artifacts_list(
         Some(&run_id),
-        Some(analyst_protocol::kernel::ArtifactKind::Figure),
+        Some(fibration_protocol::kernel::ArtifactKind::Figure),
         None,
     );
     assert_eq!(figures.len(), 1);
@@ -2533,9 +2536,9 @@ async fn an_equation_travels_to_a_slide_with_its_record_and_goes_stale() {
     let (mut slide, hash) = deck
         .ws
         .deck()
-        .read_slide(&analyst_deck_protocol::ids::SlideId::new(second_id.clone()).unwrap())
+        .read_slide(&fibration_deck_protocol::ids::SlideId::new(second_id.clone()).unwrap())
         .unwrap();
-    if let Some(analyst_deck_protocol::deck::PlaceholderContent::Equation {
+    if let Some(fibration_deck_protocol::deck::PlaceholderContent::Equation {
         acknowledged, ..
     }) = slide.placeholders.get_mut("body")
     {
@@ -2549,7 +2552,7 @@ async fn an_equation_travels_to_a_slide_with_its_record_and_goes_stale() {
     );
 
     // Before an export: the deck rests on three slide claims and the equations they cite.
-    use analyst_protocol::ui::{VerificationState, VerifyItem, VerifyState};
+    use fibration_protocol::ui::{VerificationState, VerifyItem, VerifyState};
     let gaps = fx.rt.deck_verification_gaps("q3").unwrap();
     let claims = gaps
         .iter()
@@ -2601,9 +2604,9 @@ async fn a_bound_number_is_checked_against_the_runs_named_result() {
     fx.rt
         .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
         .unwrap();
-    // What `analyst_results.record("margin", 0.18312)` writes.
+    // What `fibration_results.record("margin", 0.18312)` writes.
     let script = r#"import json, os
-out = os.environ["ANALYST_OUT_DIR"]
+out = os.environ["FIBRATION_OUT_DIR"]
 os.makedirs(out, exist_ok=True)
 json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name": "tau", "value": 1.8234, "unit": "s"}]}, open(os.path.join(out, "results.json"), "w"))
 "#;
@@ -2623,7 +2626,7 @@ json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name
     .await;
     let listed = fx.rt.artifacts_list(
         Some(&run_id),
-        Some(analyst_protocol::kernel::ArtifactKind::Results),
+        Some(fibration_protocol::kernel::ArtifactKind::Results),
         None,
     );
     assert_eq!(listed.len(), 1, "{listed:?}");
@@ -2690,7 +2693,7 @@ json.dump({"schema": 1, "results": [{"name": "margin", "value": 0.18312}, {"name
     let (_, hash) = deck
         .ws
         .deck()
-        .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+        .read_slide(&fibration_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
         .unwrap();
     deck.slide_update(serde_json::from_value(edited).unwrap(), Some(&hash))
         .unwrap();
@@ -2757,7 +2760,7 @@ async fn a_bound_number_in_a_table_cell_is_checked_and_refreshed_and_a_refresh_r
         .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
         .unwrap();
     let script = r#"import json, os
-out = os.environ["ANALYST_OUT_DIR"]
+out = os.environ["FIBRATION_OUT_DIR"]
 os.makedirs(out, exist_ok=True)
 json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"}]}, open(os.path.join(out, "results.json"), "w"))
 "#;
@@ -2791,7 +2794,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     let (_, hash) = deck
         .ws
         .deck()
-        .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+        .read_slide(&fibration_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
         .unwrap();
     deck.slide_update(serde_json::from_value(doc).unwrap(), Some(&hash))
         .unwrap();
@@ -2848,7 +2851,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     let (_, hash) = deck
         .ws
         .deck()
-        .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+        .read_slide(&fibration_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
         .unwrap();
     deck.slide_update(serde_json::from_value(edited).unwrap(), Some(&hash))
         .unwrap();
@@ -2863,7 +2866,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
             &deck
                 .ws
                 .deck()
-                .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+                .read_slide(&fibration_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
                 .unwrap()
                 .1,
         ),
@@ -2896,7 +2899,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
             &deck
                 .ws
                 .deck()
-                .read_slide(&analyst_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
+                .read_slide(&fibration_deck_protocol::ids::SlideId::new(slide_id.clone()).unwrap())
                 .unwrap()
                 .1,
         ),
@@ -2905,7 +2908,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     fx.rt
         .proposal_respond(
             &raced.id,
-            analyst_protocol::ui::ProposalDecision::Accept { content: None },
+            fibration_protocol::ui::ProposalDecision::Accept { content: None },
         )
         .unwrap();
     let failed = next_matching(&mut rx, |e| {
@@ -2929,7 +2932,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     );
     next_matching(&mut rx, |e| {
         matches!(e, SessionEvent::ProposalResolved { proposal_id, decision, .. }
-            if proposal_id == &raced.id && *decision == analyst_protocol::transcript::Decision::Reject)
+            if proposal_id == &raced.id && *decision == fibration_protocol::transcript::Decision::Reject)
     })
     .await;
     let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -2952,12 +2955,12 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     fx.rt
         .proposal_respond(
             &proposal.id,
-            analyst_protocol::ui::ProposalDecision::Accept { content: None },
+            fibration_protocol::ui::ProposalDecision::Accept { content: None },
         )
         .unwrap();
     next_matching(&mut rx, |e| {
         matches!(e, SessionEvent::ProposalResolved { proposal_id, decision, .. }
-            if proposal_id == &proposal.id && *decision == analyst_protocol::transcript::Decision::Accept)
+            if proposal_id == &proposal.id && *decision == fibration_protocol::transcript::Decision::Accept)
     })
     .await;
     let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -2973,10 +2976,10 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
 
 /// The verification ledger: the user verifies an item for its current content; a change to the
 /// content resets it to unverified (stale); the agent can record machine_checked but never
-/// human verification; every change is an event and a line in `.analyst/verification.jsonl`.
+/// human verification; every change is an event and a line in `.fibration/verification.jsonl`.
 #[tokio::test]
 async fn the_verification_ledger_resets_when_content_changes() {
-    use analyst_protocol::ui::{VerificationState, VerifyItem, VerifyState};
+    use fibration_protocol::ui::{VerificationState, VerifyItem, VerifyState};
     let fx = fixture().await;
     std::fs::create_dir_all(fx.rt.repo.join("lib")).unwrap();
     std::fs::write(fx.rt.repo.join("lib/model.py"), "def f(x):\n    return x\n").unwrap();
@@ -2999,7 +3002,7 @@ async fn the_verification_ledger_resets_when_content_changes() {
         matches!(e, SessionEvent::VerificationChanged { key } if key == "equation:lib/model.py#f")
     })
     .await;
-    let ledger = std::fs::read_to_string(fx.rt.repo.join(".analyst/verification.jsonl")).unwrap();
+    let ledger = std::fs::read_to_string(fx.rt.repo.join(".fibration/verification.jsonl")).unwrap();
     assert_eq!(ledger.lines().count(), 1);
     assert!(ledger.contains("\"human_verified\"") && ledger.contains("\"by\":\"user\""));
     let listed = fx.rt.verification_list();
@@ -3053,7 +3056,7 @@ async fn the_verification_ledger_resets_when_content_changes() {
         &scope,
         &item,
         VerifyState::HumanVerified,
-        analyst_protocol::ui::Verifier::Agent,
+        fibration_protocol::ui::Verifier::Agent,
         None,
     )
     .unwrap_err();
@@ -3092,7 +3095,7 @@ async fn the_verification_ledger_resets_when_content_changes() {
 /// after a checkpoint and the stale findings are gone.
 #[tokio::test]
 async fn refreshing_a_stale_slide_reruns_the_script_and_proposes_the_update() {
-    use analyst_protocol::ui::{VerifyItem, VerifyState};
+    use fibration_protocol::ui::{VerifyItem, VerifyState};
     let fx = fixture_with(deck_options).await;
     if !deck_runtime_available(&fx.rt.home) {
         return;
@@ -3101,7 +3104,7 @@ async fn refreshing_a_stale_slide_reruns_the_script_and_proposes_the_update() {
         .deck_create(Some("q3"), "Q3", &deck_template().to_string_lossy(), false)
         .unwrap();
     let script = r#"import base64, json, os
-out = os.environ["ANALYST_OUT_DIR"]
+out = os.environ["FIBRATION_OUT_DIR"]
 os.makedirs(out, exist_ok=True)
 png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
 open(os.path.join(out, "fit.png"), "wb").write(base64.b64decode(png))
@@ -3122,7 +3125,7 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
         .unwrap();
     let fig = fx.rt.artifacts_list(
         Some(&run_id),
-        Some(analyst_protocol::kernel::ArtifactKind::Figure),
+        Some(fibration_protocol::kernel::ArtifactKind::Figure),
         None,
     )[0]
     .clone();
@@ -3237,12 +3240,12 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
     fx.rt
         .proposal_respond(
             &proposal.id,
-            analyst_protocol::ui::ProposalDecision::Accept { content: None },
+            fibration_protocol::ui::ProposalDecision::Accept { content: None },
         )
         .unwrap();
     next_matching(&mut rx, |e| {
         matches!(e, SessionEvent::ProposalResolved { proposal_id, decision, .. }
-            if proposal_id == &proposal.id && *decision == analyst_protocol::transcript::Decision::Accept)
+            if proposal_id == &proposal.id && *decision == fibration_protocol::transcript::Decision::Accept)
     })
     .await;
     let doc: Value = serde_json::from_str(
@@ -3272,7 +3275,10 @@ json.dump({"schema": 1, "results": [{"name": "tau", "value": 1.8234, "unit": "s"
         .into_iter()
         .find(|v| v.item == claim)
         .unwrap();
-    assert_eq!(v.state, analyst_protocol::ui::VerificationState::Unverified);
+    assert_eq!(
+        v.state,
+        fibration_protocol::ui::VerificationState::Unverified
+    );
     let history = fx.rt.history_list(Some(5)).unwrap();
     assert!(history.iter().any(|c| c
         .label
@@ -3295,7 +3301,7 @@ impl crate::commands::Host for RecordingHost {
     async fn pick_directory(
         &self,
         _title: Option<String>,
-    ) -> Result<Option<String>, analyst_protocol::ui::IpcError> {
+    ) -> Result<Option<String>, fibration_protocol::ui::IpcError> {
         Ok(None)
     }
     async fn pick_files(
@@ -3303,13 +3309,13 @@ impl crate::commands::Host for RecordingHost {
         _title: Option<String>,
         _filters: Vec<crate::commands::DialogFilter>,
         _multiple: bool,
-    ) -> Result<Option<Vec<String>>, analyst_protocol::ui::IpcError> {
+    ) -> Result<Option<Vec<String>>, fibration_protocol::ui::IpcError> {
         Ok(None)
     }
-    fn reveal(&self, _path: &std::path::Path) -> Result<(), analyst_protocol::ui::IpcError> {
+    fn reveal(&self, _path: &std::path::Path) -> Result<(), fibration_protocol::ui::IpcError> {
         Ok(())
     }
-    fn open(&self, _path: &std::path::Path) -> Result<(), analyst_protocol::ui::IpcError> {
+    fn open(&self, _path: &std::path::Path) -> Result<(), fibration_protocol::ui::IpcError> {
         Ok(())
     }
 }

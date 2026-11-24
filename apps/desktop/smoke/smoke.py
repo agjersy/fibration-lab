@@ -6,7 +6,7 @@ Flow: launch -> new session on --repo -> kernel ready -> Scripts view -> run dec
 ready again, the earlier run is listed and its figure and caption are shown.
 Exits non-zero on any failure.
 
-Usage: smoke.py --app <analyst-desktop binary> --repo <absolute repo path> [--out dir]
+Usage: smoke.py --app <fibration-desktop binary> --repo <absolute repo path> [--out dir]
 Requires tauri-driver listening on --driver (default http://127.0.0.1:4444).
 """
 
@@ -59,8 +59,8 @@ def wait_caption(d: Driver, timeout: float = 60.0) -> str:
 def page_errors(d: Driver) -> list:
     # main.tsx installs the collector (uncaught errors and unhandled rejections). A missing
     # collector is a failure too: "no errors" must not be vacuous.
-    errors = d.execute("return Array.isArray(window.__analystErrors) ? window.__analystErrors : null")
-    assert errors is not None, "window.__analystErrors is not defined: the app's error collector did not load"
+    errors = d.execute("return Array.isArray(window.__fibrationErrors) ? window.__fibrationErrors : null")
+    assert errors is not None, "window.__fibrationErrors is not defined: the app's error collector did not load"
     return errors
 
 
@@ -78,7 +78,7 @@ def main() -> int:
         t0 = time.time()
         title = d.title()
         print(f"[{time.time()-t0:5.1f}s] title: {title!r}")
-        assert title == "Personal Analyst", title
+        assert title == "Fibration Lab", title
         d.find("[data-testid=topbar]")
         d.click("[data-testid=new-session]")
         d.type("#ns-repo", a.repo)

@@ -15,7 +15,7 @@ use super::error::{ServiceError, ServiceResult};
 use super::events::EventHub;
 use crate::target::Target;
 use crate::util::{sh_quote, sh_quote_path};
-use analyst_protocol::ui::TerminalId;
+use fibration_protocol::ui::TerminalId;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -26,12 +26,12 @@ use wb_sandbox::no_network::NetIsolation;
 /// The figure-capture environment exported into every terminal (PROTOCOL 1.4 and 1.6).
 #[derive(Debug, Clone)]
 pub struct CaptureEnv {
-    /// Directory containing the `analyst_mpl` package (prepended to `PYTHONPATH`); `None` when
+    /// Directory containing the `fibration_mpl` package (prepended to `PYTHONPATH`); `None` when
     /// it cannot be located locally.
     pub mpl_dir: Option<PathBuf>,
-    /// `ANALYST_OUT_DIR` for this terminal.
+    /// `FIBRATION_OUT_DIR` for this terminal.
     pub out_dir: PathBuf,
-    /// `ANALYST_RUN_ID` for this terminal (`terminal-<stamp>`).
+    /// `FIBRATION_RUN_ID` for this terminal (`terminal-<stamp>`).
     pub run_id: String,
     /// The configured output directory, repo-relative (`out` by default).
     pub out_rel: String,
@@ -54,7 +54,7 @@ pub const COMMON_KEY_VARS: &[&str] = &[
 /// Every variable to scrub for a global config: the common ones plus the variable that
 /// names each provider's key (its `api_key_env`, or the derived `<NAME>_API_KEY`). Keys in
 /// a `.env` file are read by the core and never placed in any process environment.
-pub fn key_env_names(global: &analyst_protocol::config::GlobalConfig) -> Vec<String> {
+pub fn key_env_names(global: &fibration_protocol::config::GlobalConfig) -> Vec<String> {
     let mut v: Vec<String> = COMMON_KEY_VARS.iter().map(|s| s.to_string()).collect();
     for p in &global.providers {
         for n in [
@@ -85,14 +85,17 @@ impl CaptureEnv {
     /// Environment variables for a local terminal.
     pub fn local_vars(&self, repo: &Path) -> Vec<(String, String)> {
         let mut vars = vec![
-            ("MPLBACKEND".to_string(), "module://analyst_mpl".to_string()),
             (
-                "ANALYST_OUT_DIR".to_string(),
+                "MPLBACKEND".to_string(),
+                "module://fibration_mpl".to_string(),
+            ),
+            (
+                "FIBRATION_OUT_DIR".to_string(),
                 self.out_dir.to_string_lossy().to_string(),
             ),
-            ("ANALYST_RUN_ID".to_string(), self.run_id.clone()),
+            ("FIBRATION_RUN_ID".to_string(), self.run_id.clone()),
             (
-                "ANALYST_ROOT".to_string(),
+                "FIBRATION_ROOT".to_string(),
                 repo.to_string_lossy().to_string(),
             ),
             ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
@@ -141,30 +144,30 @@ impl CaptureEnv {
         // The configured out_dir, quoted as one word; `$PWD` stays outside the quotes.
         let out_rel = sh_quote(&format!("{}/terminal/{stamp}", self.out_rel));
         format!(
-            "cd {m} && export VIRTUAL_ENV=\"$PWD/.venv\" PATH=\"$PWD/.venv/bin:$HOME/.analyst/bin:$PATH\" \
-MPLBACKEND=module://analyst_mpl ANALYST_ROOT=\"$PWD\" ANALYST_OUT_DIR=\"$PWD\"/{out_rel} \
-ANALYST_RUN_ID={run_id} PYTHONUNBUFFERED=1 \
-PYTHONPATH=\"$($HOME/.analyst/tooling/.venv/bin/python -c 'import analyst_mpl,os;print(os.path.dirname(os.path.dirname(analyst_mpl.__file__)))' 2>/dev/null):$PWD\"; \
+            "cd {m} && export VIRTUAL_ENV=\"$PWD/.venv\" PATH=\"$PWD/.venv/bin:$HOME/.fibration/bin:$PATH\" \
+MPLBACKEND=module://fibration_mpl FIBRATION_ROOT=\"$PWD\" FIBRATION_OUT_DIR=\"$PWD\"/{out_rel} \
+FIBRATION_RUN_ID={run_id} PYTHONUNBUFFERED=1 \
+PYTHONPATH=\"$($HOME/.fibration/tooling/.venv/bin/python -c 'import fibration_mpl,os;print(os.path.dirname(os.path.dirname(fibration_mpl.__file__)))' 2>/dev/null):$PWD\"; \
 exec {wrapper}\"${{SHELL:-/bin/sh}}\" -l",
             run_id = sh_quote(&self.run_id),
         )
     }
 }
 
-/// Locate the directory containing `analyst_mpl` for the local target: ask the tooling
-/// interpreter, else look for `python/kernel/analyst_mpl` in a development checkout.
+/// Locate the directory containing `fibration_mpl` for the local target: ask the tooling
+/// interpreter, else look for `python/kernel/fibration_mpl` in a development checkout.
 pub fn find_mpl_dir(tooling_python: &str) -> Option<PathBuf> {
     let out = std::process::Command::new(crate::util::resolve_tool(tooling_python))
         .args([
             "-c",
-            "import analyst_mpl, os; print(os.path.dirname(os.path.dirname(analyst_mpl.__file__)))",
+            "import fibration_mpl, os; print(os.path.dirname(os.path.dirname(fibration_mpl.__file__)))",
         ])
         .stdin(std::process::Stdio::null())
         .output()
         .ok()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !s.is_empty() && Path::new(&s).join("analyst_mpl").is_dir() {
+        if !s.is_empty() && Path::new(&s).join("fibration_mpl").is_dir() {
             return Some(PathBuf::from(s));
         }
     }
@@ -180,7 +183,7 @@ pub fn find_mpl_dir(tooling_python: &str) -> Option<PathBuf> {
     for s in starts {
         for dir in s.ancestors() {
             let c = dir.join("python/kernel");
-            if c.join("analyst_mpl/__init__.py").is_file() {
+            if c.join("fibration_mpl/__init__.py").is_file() {
                 return Some(c);
             }
         }
@@ -466,7 +469,7 @@ impl TerminalManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use analyst_protocol::ui::SessionEvent;
+    use fibration_protocol::ui::SessionEvent;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -487,7 +490,7 @@ mod tests {
         let hub = EventHub::new();
         let mut rx = hub.subscribe();
         // The app's own environment holds a provider key; the shell must not see it.
-        std::env::set_var("ANALYST_TEST_PROVIDER_KEY", "sk-secret");
+        std::env::set_var("FIBRATION_TEST_PROVIDER_KEY", "sk-secret");
         let spec = TerminalSpec {
             repo: repo.path().to_path_buf(),
             target: Target::Local,
@@ -495,17 +498,17 @@ mod tests {
             control_dir: None,
             capture: CaptureEnv::new(repo.path(), "out", None),
             shell: Some("/bin/sh".into()),
-            env_remove: vec!["ANALYST_TEST_PROVIDER_KEY".into()],
+            env_remove: vec!["FIBRATION_TEST_PROVIDER_KEY".into()],
             cols: 80,
             rows: 24,
         };
         let t = Terminal::open("t1".into(), "s1", &spec, hub.clone()).unwrap();
-        t.write("echo hello; echo key=[$ANALYST_TEST_PROVIDER_KEY]; echo $ANALYST_RUN_ID; echo $MPLBACKEND\n")
+        t.write("echo hello; echo key=[$FIBRATION_TEST_PROVIDER_KEY]; echo $FIBRATION_RUN_ID; echo $MPLBACKEND\n")
             .unwrap();
         t.resize(100, 30).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut seen = String::new();
-        while Instant::now() < deadline && !seen.contains("module://analyst_mpl") {
+        while Instant::now() < deadline && !seen.contains("module://fibration_mpl") {
             match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
                 Ok(Ok(SessionEvent::TerminalData { terminal_id, data })) => {
                     assert_eq!(terminal_id, "t1");
@@ -595,7 +598,7 @@ mod remote_tests {
             target: Target::Ssh {
                 name: "x".into(),
                 host: host.clone(),
-                remote_root: "~/analyst".into(),
+                remote_root: "~/fibration".into(),
                 python: "3.12".into(),
                 sandbox: "auto".into(),
                 data_dirs: vec![],
@@ -613,7 +616,7 @@ mod remote_tests {
             Ok(_) => panic!("an unconfigured host was contacted"),
             Err(e) => e,
         };
-        assert_eq!(err.code, analyst_protocol::ui::IpcErrorCode::PolicyDenied);
+        assert_eq!(err.code, fibration_protocol::ui::IpcErrorCode::PolicyDenied);
         assert!(err.message.contains(&host), "{}", err.message);
     }
 
@@ -621,16 +624,16 @@ mod remote_tests {
     fn remote_command_uses_the_configured_out_dir_and_quotes_paths() {
         let repo = std::path::Path::new("/r");
         let c = CaptureEnv::new(repo, "results dir", None);
-        let cmd = c.remote_command("~/analyst/my repo", false);
-        assert!(cmd.starts_with("cd ~/'analyst/my repo' && "), "{cmd}");
+        let cmd = c.remote_command("~/fibration/my repo", false);
+        assert!(cmd.starts_with("cd ~/'fibration/my repo' && "), "{cmd}");
         assert!(
-            cmd.contains("ANALYST_OUT_DIR=\"$PWD\"/'results dir/terminal/"),
+            cmd.contains("FIBRATION_OUT_DIR=\"$PWD\"/'results dir/terminal/"),
             "{cmd}"
         );
         assert!(!cmd.contains("$PWD/out/terminal"), "{cmd}");
         assert!(cmd.ends_with("exec \"${SHELL:-/bin/sh}\" -l"), "{cmd}");
         // With a working bwrap on the host, the login shell runs without network there.
-        let wrapped = c.remote_command("~/analyst/my repo", true);
+        let wrapped = c.remote_command("~/fibration/my repo", true);
         assert!(
             wrapped.ends_with(&format!(
                 "exec {}\"${{SHELL:-/bin/sh}}\" -l",

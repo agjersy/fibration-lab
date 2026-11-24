@@ -1,4 +1,4 @@
-"""RPC methods for references, embeddings, and Personal Analyst imports (PROTOCOL 1.3)."""
+"""RPC methods for references, embeddings, and Fibration Lab imports (PROTOCOL 1.3)."""
 
 from __future__ import annotations
 

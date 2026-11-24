@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from analyst_kernel.equations import EqWorker, compare, eq_extract
+from fibration_kernel.equations import EqWorker, compare, eq_extract
 
-KERNEL_PKG = Path(__file__).resolve().parent.parent / "analyst_kernel"
+KERNEL_PKG = Path(__file__).resolve().parent.parent / "fibration_kernel"
 
 
 def by_name(kernel, path):
@@ -72,7 +72,7 @@ def test_g1_kernel_process_never_imports_sympy(repo: Path, tmp_path: Path):
 
     code = (
         "import sys\n"
-        "from analyst_kernel.kernel import Kernel\n"
+        "from fibration_kernel.kernel import Kernel\n"
         "k = Kernel(sys.executable, sys.argv[1], sys.argv[2], sandbox='limits')\n"
         "eqs = k.call('eq.extract', {'path': 'analysis/models.py'})['equations']\n"
         "k.close()\n"
@@ -164,7 +164,7 @@ def test_k1_worker_is_killed_on_budget_and_leaves_nothing_behind(repo: Path):
 def test_k1_simplify_budget_interrupts_instead_of_abandoning_a_thread(monkeypatch):
     import sympy
 
-    from analyst_kernel.eqcore import simplify_with_budget
+    from fibration_kernel.eqcore import simplify_with_budget
 
     x = sympy.Symbol("x")
     expr = (x + 1) ** 2 - x**2 - 2 * x
@@ -252,7 +252,7 @@ def test_math_constants_and_power_syntax(kernel, repo: Path):
 
 @pytest.mark.parametrize("bad", ["../x.py", "/etc/passwd"])
 def test_eq_paths_stay_in_root(kernel, bad):
-    from analyst_kernel.errors import RpcError
+    from fibration_kernel.errors import RpcError
 
     with pytest.raises(RpcError) as exc:
         kernel.call("eq.extract", {"path": bad})

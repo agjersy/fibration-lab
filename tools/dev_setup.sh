@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare a checkout of Personal Analyst for development and hands-on testing on Linux
+# Prepare a checkout of Fibration Lab for development and hands-on testing on Linux
 # (Debian/Ubuntu or Fedora) or macOS: check the prerequisites, set up the Python environments
 # and the renderer, build the Rust binaries, and print how to start the app.
 # Safe to run again: every step is idempotent, and a second run only re-checks and rebuilds
@@ -14,12 +14,12 @@ Checks the prerequisites, then runs:
   uv sync          in python/kernel, present/python/kernel, present/python/sdk
   pnpm install     at the repository root
   pnpm build       in apps/desktop
-  cargo build      -p analyst-cli -p analyst-desktop -p wb-sandbox (+ analyst-serve)
+  cargo build      -p fibration-cli -p fibration-desktop -p wb-sandbox (+ fibration-serve)
 
 Options:
   --install-system  install missing system packages with apt-get, dnf or brew (uses sudo on
                     Linux). Without it the script only prints the command to run.
-  --with-serve      also build analyst-serve (the renderer-in-a-browser bridge)
+  --with-serve      also build fibration-serve (the renderer-in-a-browser bridge)
   -h, --help        show this help
 
 Rust (rustup), uv and Node 22 are never installed by this script; it prints the official
@@ -230,28 +230,28 @@ run "${PNPM[@]}" --dir apps/desktop build
 
 # ---- Rust binaries -----------------------------------------------------------------------
 
-CRATES=(-p analyst-cli -p analyst-desktop -p wb-sandbox)
-[ "$WITH_SERVE" = 1 ] && CRATES+=(-p analyst-serve)
+CRATES=(-p fibration-cli -p fibration-desktop -p wb-sandbox)
+[ "$WITH_SERVE" = 1 ] && CRATES+=(-p fibration-serve)
 step "cargo build ${CRATES[*]}"
 run cargo build "${CRATES[@]}"
 
 # ---- next steps --------------------------------------------------------------------------
 
-HOME_DIR="${ANALYST_HOME:-$HOME/.analyst}"
+HOME_DIR="${FIBRATION_HOME:-$HOME/.fibration}"
 cat <<EOF
 
 == Ready
 
-Binaries: $ROOT/target/debug/analyst, $ROOT/target/debug/analyst-desktop
+Binaries: $ROOT/target/debug/fibration, $ROOT/target/debug/fibration-desktop
 
 Run the desktop app in development (two terminals, from $ROOT):
   pnpm --dir apps/desktop dev            # Vite on http://localhost:5173
-  target/debug/analyst-desktop           # the window loads the renderer from Vite
+  target/debug/fibration-desktop           # the window loads the renderer from Vite
 or as one binary with the built renderer embedded:
-  cargo build -p analyst-desktop --features custom-protocol && target/debug/analyst-desktop
+  cargo build -p fibration-desktop --features custom-protocol && target/debug/fibration-desktop
 (\`cargo tauri dev\` in apps/desktop/src-tauri also works once \`cargo install tauri-cli --version '^2' --locked\`.)
 
-ANALYST_HOME is $HOME_DIR (override with ANALYST_HOME or --home).
+FIBRATION_HOME is $HOME_DIR (override with FIBRATION_HOME or --home).
 Add a model provider to $HOME_DIR/config.toml:
 
   [defaults]
@@ -263,7 +263,7 @@ Add a model provider to $HOME_DIR/config.toml:
   api_key_env = "ANTHROPIC_API_KEY"
 
 and its key to $HOME_DIR/.env with
-  target/debug/analyst key set anthropic          (reads the key from stdin; writes the file with mode 0600)
+  target/debug/fibration key set anthropic          (reads the key from stdin; writes the file with mode 0600)
 or by hand, one line (then chmod 600 the file):
   ANTHROPIC_API_KEY=sk-ant-...
 

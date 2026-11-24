@@ -7,7 +7,7 @@
 - The renderer calls **commands** (Tauri `invoke`) for request/response. Every command takes a JSON object of named arguments and returns a JSON value or a structured error `{ code: string, message: string, detail?: unknown }`. Error codes: `not_found`, `conflict`, `policy_denied`, `kernel_offline`, `target_offline`, `engine_unavailable`, `sandbox_unavailable` (deck commands, section 9), `invalid`, `io`, `internal`.
 - The backend pushes **events** on a per-session **channel** (`tauri::ipc::Channel<SessionEvent>`) that the renderer opens with `session_subscribe`. One channel per open session per window. Events are ordered per session.
 - Long operations (bootstrap, sync, package changes) return a `task_id` immediately and report through `task_log` and `task_done` events.
-- The renderer never touches the filesystem, processes, or network directly. In a plain browser (no Tauri) the renderer talks to the real core through the development bridge `analyst-serve` (section 11); this is how the frontend is developed and tested headlessly.
+- The renderer never touches the filesystem, processes, or network directly. In a plain browser (no Tauri) the renderer talks to the real core through the development bridge `fibration-serve` (section 11); this is how the frontend is developed and tested headlessly.
 - All paths crossing the boundary are repo-relative with forward slashes unless the field is named `*_abs`.
 
 The renderer-side interface (`src/ipc/backend.ts`):
@@ -139,7 +139,7 @@ Argument names are exact. `session` is always a `SessionId`.
 |---|---|---|---|
 | `app_info` | `{}` | `AppInfo` | |
 | `sessions_list` | `{}` | `SessionSummary[]` | newest first |
-| `session_create` | `{ repo_abs, target?, model?, init? }` | `SessionInfo` | `init: true` runs the `analyst init` template on an empty directory; opens the session |
+| `session_create` | `{ repo_abs, target?, model?, init? }` | `SessionInfo` | `init: true` runs the `fibration init` template on an empty directory; opens the session |
 | `session_open` | `{ session }` | `SessionInfo` | starts the kernel lazily; idempotent |
 | `session_close` | `{ session }` | `null` | suspends; kernel shut down; terminals closed |
 | `session_info` | `{ session }` | `SessionInfo` | |
@@ -205,7 +205,7 @@ Argument names are exact. `session` is always a `SessionId`.
 
 ## 6. Browser mode (formerly MockBackend)
 
-The in-memory `MockBackend` and the hand-written TypeScript mirror of these types were removed in the simplification round. A plain browser uses the real core through `analyst-serve` (section 11); the renderer's unit tests use a small fake of the `Backend` interface (`src/test/fake.ts`) that enforces the boundary rules and lets each test script its events.
+The in-memory `MockBackend` and the hand-written TypeScript mirror of these types were removed in the simplification round. A plain browser uses the real core through `fibration-serve` (section 11); the renderer's unit tests use a small fake of the `Backend` interface (`src/test/fake.ts`) that enforces the boundary rules and lets each test script its events.
 
 ## 7. Additions after the November 2026 review
 
@@ -216,7 +216,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 - `OptionInfo` gains `nargs: string | number | null`, `const: any`, and `positional: boolean`. The run form sends positionals as bare values in declaration order, splits list values for `nargs`, and handles `store_true`, `store_false`, `store_const`, `count`, and `BooleanOptionalAction`; anything else gets a raw "extra arguments" field.
 - `RunView` gains `conversation: ConversationId | null`: the conversation whose agent turn started the run, null for manual and terminal runs. Chat run cards attach by this field, not by "whichever conversation is busy".
 - `SessionInfo` gains `pending_proposals: ProposalView[]`, so a renderer that reloads mid-approval shows the cards again.
-- `ProviderKeyStatus { provider, has_key, source: "env" | "stored" | null, api_key_env: string | null }`. `"stored"` means `$ANALYST_HOME/.env`; `api_key_env` is the variable that names the key (configured, or the derived `<PROVIDER NAME>_API_KEY`).
+- `ProviderKeyStatus { provider, has_key, source: "env" | "stored" | null, api_key_env: string | null }`. `"stored"` means `$FIBRATION_HOME/.env`; `api_key_env` is the variable that names the key (configured, or the derived `<PROVIDER NAME>_API_KEY`).
 
 **Events**
 
@@ -228,7 +228,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 | command | args | result | notes |
 |---|---|---|---|
 | `provider_keys_status` | `{}` | `ProviderKeyStatus[]` | one row per configured provider |
-| `provider_key_set` | `{ provider, key }` | `null` | stores the key in `$ANALYST_HOME/.env` (mode 0600) under `api_key_env`, or the derived `<PROVIDER NAME>_API_KEY` when none is configured; an empty key removes it. The same variable in the process environment takes precedence when set |
+| `provider_key_set` | `{ provider, key }` | `null` | stores the key in `$FIBRATION_HOME/.env` (mode 0600) under `api_key_env`, or the derived `<PROVIDER NAME>_API_KEY` when none is configured; an empty key removes it. The same variable in the process environment takes precedence when set |
 
 **Ordering and lifecycle rules**
 
@@ -236,7 +236,7 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 - `session_open` and `session_create` never wait for the kernel. Data that needs no kernel (`fs_tree`, `runs_list`, `figures_list`, transcripts) loads independently of `index_get`.
 - `chat_cancel` also cancels any run the turn started.
 - When the active sandbox is `limits` or `none`, run-class tools (`run.script`, `exec.snippet`, `shell.run`) arrive as proposals with `reason: "ask"` and a summary that says the run is unsandboxed, unless the project sets `policy.unsandboxed_runs = "auto"`.
-- Edit proposals and renderer file commands refuse paths under `.git/` and `.analyst/`, and any path that resolves outside the repo through a symlink.
+- Edit proposals and renderer file commands refuse paths under `.git/` and `.fibration/`, and any path that resolves outside the repo through a symlink.
 
 ## 8. Simplification round (DESIGN-REVIEW.md)
 
@@ -245,12 +245,12 @@ These are additive and implemented together with the fixes in [REVIEW.md](REVIEW
 - Policy presets: `policy.preset = "review" | "auto" | "read-only"` in `project.toml` expands to the detailed keys (`review`: edits review, runs auto, packages/shell/git ask; `auto`: edits auto within declared scope, runs auto, packages/shell/git ask; `read-only`: edits, packages, shell, git denied, runs auto). Detailed keys still override. The settings dialog offers the three presets. Comment-marker locked regions are removed; protected globs remain. The expansion lives in `wb-policy`; `edits = "deny"` is the read-only edit gate; `PolicyView.preset` reports the preset the keys amount to and `session_set_policy` accepts `preset`.
 - Models must support native tool calling. The text-protocol tier is removed; a model that fails the tool-calling probe is rejected with a clear error.
 - Contract rules `cli.option-for-every-input` and `lib.near-duplicate` are advisory (`warn`) by default and are not fed back to the agent as must-fix diagnostics.
-- Development and tests in a browser use the real core through `analyst-serve` (a separate loopback WebSocket bridge speaking the same commands and events, section 11); `MockBackend` and the hand-written type mirror are removed.
-- Remote sync pushes the checkpoint tree with git: the host holds a bare repository at `<mirror>.git`; the core pushes a commit of the working tree (tracked plus untracked, not ignored) to `refs/analyst/sync`, and the mirror is a detached checkout of it with `out/`, `.venv/`, and `.analyst/` left untouched. The tree id is the sync identity. rsync, the tar fallback, the deletion manifest, and the tree-hash file are removed.
+- Development and tests in a browser use the real core through `fibration-serve` (a separate loopback WebSocket bridge speaking the same commands and events, section 11); `MockBackend` and the hand-written type mirror are removed.
+- Remote sync pushes the checkpoint tree with git: the host holds a bare repository at `<mirror>.git`; the core pushes a commit of the working tree (tracked plus untracked, not ignored) to `refs/fibration/sync`, and the mirror is a detached checkout of it with `out/`, `.venv/`, and `.fibration/` left untouched. The tree id is the sync identity. rsync, the tar fallback, the deletion manifest, and the tree-hash file are removed.
 
 ## 9. Decks, history, and the artifact index (one app)
 
-The deck workbench's shell is gone; its commands live in this shell as thin glue over the per-deck service of a session (`analyst_deck::service::DeckService`, owned by `SessionRuntime::decks`). A deck is `decks/<slug>/` in the session's repository; every deck command takes `session` and `deck` (the slug) where the deck workbench took a project id. A deck's kernel (no network) starts on the first command that needs it. Deck types are the ts-rs export of `analyst-deck-protocol` in `apps/desktop/src/ipc/generated/deck/`, re-exported to the renderer as the namespace `Deck` (`Deck.DeckView`, `Deck.SlideView`, `Deck.DeckEvent`, ...), because several names (`Diagnostic`, `SearchHit`, `FileContent`, `IpcError`) exist in both sets. `Mode` gains the deck modes: `"plan" | "build" | "run" | "outline" | "slides" | "polish"`.
+The deck workbench's shell is gone; its commands live in this shell as thin glue over the per-deck service of a session (`fibration_deck::service::DeckService`, owned by `SessionRuntime::decks`). A deck is `decks/<slug>/` in the session's repository; every deck command takes `session` and `deck` (the slug) where the deck workbench took a project id. A deck's kernel (no network) starts on the first command that needs it. Deck types are the ts-rs export of `fibration-deck-protocol` in `apps/desktop/src/ipc/generated/deck/`, re-exported to the renderer as the namespace `Deck` (`Deck.DeckView`, `Deck.SlideView`, `Deck.DeckEvent`, ...), because several names (`Diagnostic`, `SearchHit`, `FileContent`, `IpcError`) exist in both sets. `Mode` gains the deck modes: `"plan" | "build" | "run" | "outline" | "slides" | "polish"`.
 
 **Events** (on the session channel)
 
@@ -306,14 +306,14 @@ Dropped with the deck shell: `project_*` (a deck belongs to a session), `analyst
 
 ## 10. Verification, equations on slides, named results, refresh
 
-**Types** (ts-rs export of `analyst-protocol`): `VerifyItem` (`{kind: "equation", path, qualname}`, `{kind: "figure", run_id, artifact}`, `{kind: "result", run_id, name}`, `{kind: "slide_claim", deck, slide_id, element_id}`, `{kind: "code_hunk", proposal_id}`), `VerifyState` (`machine_checked | human_verified | flagged`), `VerificationState` (`unverified` or a `VerifyState`), `LedgerEntry { item, key, hash, state, by: "user" | "agent", at, note? }`, `VerificationView { key, item, label, state, stale, hash, entry, on_slides: SlideUse[] }`. `ArtifactKind` gains `results`; `ArtifactEntry` gains `results?: NamedResult[]` (`{name, value, unit?, uncertainty?}`). Deck types gain the `equation` element (`Deck.EqCite`) and `Run.run_cite` (`Deck.ResultCite`), PROTOCOL.md section 12.
+**Types** (ts-rs export of `fibration-protocol`): `VerifyItem` (`{kind: "equation", path, qualname}`, `{kind: "figure", run_id, artifact}`, `{kind: "result", run_id, name}`, `{kind: "slide_claim", deck, slide_id, element_id}`, `{kind: "code_hunk", proposal_id}`), `VerifyState` (`machine_checked | human_verified | flagged`), `VerificationState` (`unverified` or a `VerifyState`), `LedgerEntry { item, key, hash, state, by: "user" | "agent", at, note? }`, `VerificationView { key, item, label, state, stale, hash, entry, on_slides: SlideUse[] }`. `ArtifactKind` gains `results`; `ArtifactEntry` gains `results?: NamedResult[]` (`{name, value, unit?, uncertainty?}`). Deck types gain the `equation` element (`Deck.EqCite`) and `Run.run_cite` (`Deck.ResultCite`), PROTOCOL.md section 12.
 
 **Event**: `{ type: "verification_changed"; key: string }` after `verification_set` or the agent's `verify.record`. The renderer also rereads the queue on `files_changed`, `run_done` and a deck's `deck_changed`, since those change items' content.
 
 | command | args | result | notes |
 |---|---|---|---|
 | `verification_list` | `{ session }` | `VerificationView[]` | every item the project knows (slide claims and what they cite, figures and named results of the session's runs, accepted code changes, items in the ledger) with its state for its content now; used on slides first |
-| `verification_set` | `{ session, item, state, note? }` | `VerificationView` | the user records a state for the item's current content hash (appended to `.analyst/verification.jsonl`); `not_found` when the item cannot be read |
+| `verification_set` | `{ session, item, state, note? }` | `VerificationView` | the user records a state for the item's current content hash (appended to `.fibration/verification.jsonl`); `not_found` when the item cannot be read |
 | `deck_verification_gaps` | `{ session, deck }` | `VerificationView[]` | what the deck depends on (its slide claims and what they cite) that is not `human_verified`; the renderer asks it before a `pptx` or `pdf` export and shows a confirm dialog listing them |
 | `slide_place_equation` | `{ session, deck, slide_id, path, function, placeholder? }` | `Deck.SlideView` | the user places the equation of a function on a slide: the core function of the agent's `slide.place_equation` (`eq.extract`, `eq.check` for a declared equation, the file's content hash), written at once; the placeholder defaults to the first free non-title one that takes text or an image |
 | `slide_refresh` | `{ session, deck, slide_id, element_id? }` | `ProposalView \| null` | refresh from analysis: stale elements of the slide (or one) are brought up to date (the cited script re-run with the cited arguments when the run's tree differs; the equation extracted and checked again) and proposed as a normal `slide-update` proposal in the active conversation, its `message` listing the changed values and the verifications it invalidates; accepting takes a checkpoint first. Null when nothing is stale |
@@ -323,12 +323,12 @@ The renderer's Verify panel lists every item that is not `human_verified`, used 
 
 ## 11. One command table, two transports
 
-**One table.** Every command of this document is a row of `analyst_core::commands` (`crates/core/src/commands.rs`): the row names the command, deserializes its snake_case arguments, and calls the workbench. Both transports call its `dispatch(workbench, host, command, args)`: the desktop shell's invoke handler and the development bridge. What only a transport can do (native dialogs, the asset scope, the file manager) is its `Host`; `session_subscribe` and `session_unsubscribe` are listed in the table but carried by each transport, since their event stream is the transport's own. Each row also states its result type (`name(args) -> Result { body }`), and the renderer's `src/ipc/commands.ts` is generated from the rows (`analyst_core::commands::commands_ts`): command names, argument names and types (an `Option` argument is optional), and result types, with the types' TypeScript names taken from their ts-rs bindings (deck types as `Deck.X`). `cargo test -p analyst-core --lib commands` writes the file; the same test fails when the committed file was stale, so CI catches a table change without a regenerated `commands.ts`. Identifiers such as run, conversation, and task ids are plain `string` there, as they are in Rust. The types are the ts-rs export only.
+**One table.** Every command of this document is a row of `fibration_core::commands` (`crates/core/src/commands.rs`): the row names the command, deserializes its snake_case arguments, and calls the workbench. Both transports call its `dispatch(workbench, host, command, args)`: the desktop shell's invoke handler and the development bridge. What only a transport can do (native dialogs, the asset scope, the file manager) is its `Host`; `session_subscribe` and `session_unsubscribe` are listed in the table but carried by each transport, since their event stream is the transport's own. Each row also states its result type (`name(args) -> Result { body }`), and the renderer's `src/ipc/commands.ts` is generated from the rows (`fibration_core::commands::commands_ts`): command names, argument names and types (an `Option` argument is optional), and result types, with the types' TypeScript names taken from their ts-rs bindings (deck types as `Deck.X`). `cargo test -p fibration-core --lib commands` writes the file; the same test fails when the committed file was stale, so CI catches a table change without a regenerated `commands.ts`. Identifiers such as run, conversation, and task ids are plain `string` there, as they are in Rust. The types are the ts-rs export only.
 
-**The development bridge.** `analyst-serve` (`crates/serve`) is a separate binary that hosts the same `Workbench` as the shell and speaks the table and the session events over one WebSocket. It is never compiled into the shipped app: `tools/check_egress.py` fails if any crate but `crates/serve` depends on a WebSocket or HTTP server crate, or if the desktop app or the CLI links the bridge (through `Cargo.lock`).
+**The development bridge.** `fibration-serve` (`crates/serve`) is a separate binary that hosts the same `Workbench` as the shell and speaks the table and the session events over one WebSocket. It is never compiled into the shipped app: `tools/check_egress.py` fails if any crate but `crates/serve` depends on a WebSocket or HTTP server crate, or if the desktop app or the CLI links the bridge (through `Cargo.lock`).
 
 - It binds loopback addresses only (default `127.0.0.1:0`, a free port; `--bind` to choose) and refuses others.
-- Every connection presents the token printed at start (`--token` or `ANALYST_SERVE_TOKEN` to give one) as `?token=` on the WebSocket URL; a missing or wrong token is HTTP 401. A browser `Origin` must be a loopback origin (403 otherwise). It sends no CORS headers and serves no files; the renderer comes from its own dev or preview server.
+- Every connection presents the token printed at start (`--token` or `FIBRATION_SERVE_TOKEN` to give one) as `?token=` on the WebSocket URL; a missing or wrong token is HTTP 401. A browser `Origin` must be a loopback origin (403 otherwise). It sends no CORS headers and serves no files; the renderer comes from its own dev or preview server.
 - Messages are JSON text frames: request `{"id": n, "cmd": "<command>", "args": {...}}`; reply `{"id": n, "ok": <result>}` or `{"id": n, "error": IpcError}`; event `{"channel": c, "event": SessionEvent}`. `session_subscribe` takes `{ session, channel }`, where `channel` is a number the client picks (the stand-in for a Tauri `Channel`), and returns the subscription id.
 - Native dialogs answer from `--pick-dir` / `--pick-file` or as cancelled; `export_reveal` and `export_open` only log.
 - In browser mode figures load through `figure_data`, and deck images through `fs_read_binary` (repo-relative), as data URLs.

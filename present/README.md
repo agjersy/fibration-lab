@@ -1,10 +1,10 @@
 # Personal Present
 
-> **Folded into Personal Analyst.** This folder now holds the deck library of the one product (`analyst-deck`, `analyst-deck-protocol`), the deck kernel and SDK, and deck evaluations. The `present` CLI, desktop shell and renderer are gone (the deck panels are part of the one renderer in `apps/desktop`): use `analyst deck ...`, `analyst chat`, and `analyst eval run` (see the root [README](../README.md) and [docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md)). The description below is historical.
+> **Folded into Fibration Lab.** This folder now holds the deck library of the one product (`fibration-deck`, `fibration-deck-protocol`), the deck kernel and SDK, and deck evaluations. The `present` CLI, desktop shell and renderer are gone (the deck panels are part of the one renderer in `apps/desktop`): use `fibration deck ...`, `fibration chat`, and `fibration eval run` (see the root [README](../README.md) and [docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md)). The description below is historical.
 
 A desktop workbench in which an AI agent builds presentations from your brief and reference materials, on your organization's template, under your supervision, and exports native, fully editable PowerPoint files (plus PDF, images, and outlines) whose every claim traces back to a source.
 
-Model agnostic (Claude through the Anthropic API or an internal gateway; open-weight models on internal servers through OpenAI-compatible APIs), local first, enterprise deployable. Sister application to Personal Analyst, sharing its architecture and look.
+Model agnostic (Claude through the Anthropic API or an internal gateway; open-weight models on internal servers through OpenAI-compatible APIs), local first, enterprise deployable. Sister application to Fibration Lab, sharing its architecture and look.
 
 ## Status
 
@@ -12,7 +12,7 @@ Model agnostic (Claude through the Anthropic API or an internal gateway; open-we
 
 - `present` CLI: `init`, `template inspect`, `refs`, `render`, `check`, `build`, `eject`, `export`, `history`, `chat`, `models probe`, `eval run`
 - Rust core: projects, deck store with conflict detection, append-only snapshots, reference store, hybrid search index, audit log, kernel client, the agent loop (outline, build, polish) with proposals gated by policy, and the evaluation harness
-- Shared crates written for both this app and Personal Analyst: model providers with gateway support, policy, transcript, skills, and the Windows sandbox launcher
+- Shared crates written for both this app and Fibration Lab: model providers with gateway support, policy, transcript, skills, and the Windows sandbox launcher
 - Python deck SDK and kernel: template inspection, deterministic native `.pptx` rendering (text, images, charts, tables, four diagram families), the deck checker with source and number checks, PowerPoint and LibreOffice fidelity rendering, reference ingestion for eleven formats, declarative chart transforms, code generation mode with sandboxed builds and a verified eject
 - Evaluation suite: eight tasks with graders and a scripted model server that drives the whole stack in CI
 

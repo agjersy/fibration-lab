@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# Walk the deck commands of the `analyst` CLI through a whole project against the scripted
+# Walk the deck commands of the `fibration` CLI through a whole project against the scripted
 # model server (present/evals/fake_model_server.py): create a deck in a fresh project, add a
 # reference, let the one agent loop build five slides, check, export, undo the turn through the
 # git checkpoints, restore, switch to code mode, and build.
-# Usage: tools/deck_walkthrough.sh [path to the analyst binary]
+# Usage: tools/deck_walkthrough.sh [path to the fibration binary]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DECKS="$ROOT/present"
-BIN="${1:-$ROOT/target/debug/analyst}"
+BIN="${1:-$ROOT/target/debug/fibration}"
 WORK="$(mktemp -d)"
-PORT="${ANALYST_FAKE_PORT:-8766}"
-export ANALYST_HOME="$WORK/home"
+PORT="${FIBRATION_FAKE_PORT:-8766}"
+export FIBRATION_HOME="$WORK/home"
 export PRESENT_FONT_DIRS="$DECKS/vendor/fonts"
 PYTHON="${PYTHON:-python3}"
 command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=python
 
-mkdir -p "$ANALYST_HOME"
-cat > "$ANALYST_HOME/config.toml" <<CONF
+mkdir -p "$FIBRATION_HOME"
+cat > "$FIBRATION_HOME/config.toml" <<CONF
 [defaults]
 model = "fake/scripted"
 [[providers]]

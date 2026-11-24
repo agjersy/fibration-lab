@@ -1,8 +1,8 @@
-# Personal Analyst — Application Design and Architecture
+# Fibration Lab — Application Design and Architecture
 
 *Status: phases 0 and 1 built; revised after the November 2026 implementation review ([REVIEW.md](REVIEW.md)). Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).*
 
-**One product (November 2026).** Personal Present has been folded in. There is one core (`crates/core` with the deck library `analyst-deck` in `present/crates/core`), one desktop shell, one `analyst` CLI, one agent loop, one policy engine, one transcript, and one undo timeline; there is no bus, no MCP, and no bridge between workbenches. A project is one git repository; its decks live under `decks/<slug>/` (section 4) and are checkpointed by git with the code (5.9). Slides cite analysis runs through the artifact index (5.12). The old deck home `~/.present` is migrated into `~/.analyst` once (5.16).
+**One product (November 2026).** Personal Present has been folded in. There is one core (`crates/core` with the deck library `fibration-deck` in `present/crates/core`), one desktop shell, one `fibration` CLI, one agent loop, one policy engine, one transcript, and one undo timeline; there is no bus, no MCP, and no bridge between workbenches. A project is one git repository; its decks live under `decks/<slug>/` (section 4) and are checkpointed by git with the code (5.9). Slides cite analysis runs through the artifact index (5.12). The old deck home `~/.present` is migrated into `~/.fibration` once (5.16).
 
 This document specifies the architecture of the desktop application described in the vision. It is written to be built from. Decisions confirmed in review are marked as such; where a decision is still open, it states the recommendation and points to the open-questions document.
 
@@ -27,7 +27,7 @@ This document specifies the architecture of the desktop application described in
 | D15 | Evaluation | Model-agnostic task suite with automatic graders; produces a scorecard per configured model; no model is privileged | Decided |
 | D16 | Platforms | macOS and Linux first, for both the desktop app and remote targets. Windows deferred to phase 4 | Decided |
 | D17 | Run launcher | Runs start directly on the target (local process, remote Linux machine, or cluster login node) behind a launcher interface; a Slurm scheduler launcher is a planned later extension, not a first-version feature | Decided |
-| D18 | Name and license | "Personal Analyst": binary `analyst`, config `~/.analyst`, bundle id `dev.personal-analyst.app`. Private for now; permissively licensed dependencies only so the license choice stays open | Decided |
+| D18 | Name and license | "Fibration Lab": binary `fibration`, config `~/.fibration`, bundle id `dev.fibration-lab.app`. Private for now; permissively licensed dependencies only so the license choice stays open | Decided |
 
 ## 2. System overview
 
@@ -59,7 +59,7 @@ flowchart LR
   end
 
   subgraph Target["Execution target (local machine or SSH host)"]
-    K[analyst-kernel\n(tooling env)]
+    K[fibration-kernel\n(tooling env)]
     SB[Sandbox]
     V[(Session venv\nvia uv)]
     Script[User script\n+ figure capture backend]
@@ -95,12 +95,12 @@ Three tiers:
 
 **Decided: Tauri 2, built as a host-native desktop application for macOS and Linux.**
 
-What "native" means here: the app is a single native executable with native windows, menus, file dialogs, keyboard handling, multi-window support, and platform installers (`.app` and `.dmg`, `.deb` and `.rpm`). There is no browser process, no local HTTP server, and no dependency on a browser being installed. (Development and the browser tests use `analyst-serve`, a separate loopback WebSocket bridge to the same core that the shipped app never links; IPC.md section 11.) The interface itself is drawn by the operating system's embedded webview component (WKWebView on macOS, WebKitGTK on Linux), the same component system applications use to render rich content; all interface assets are bundled inside the executable and loaded from it. The Rust core owns every capability that touches the machine (files, processes, SSH, model calls); the interface layer only draws and forwards intent.
+What "native" means here: the app is a single native executable with native windows, menus, file dialogs, keyboard handling, multi-window support, and platform installers (`.app` and `.dmg`, `.deb` and `.rpm`). There is no browser process, no local HTTP server, and no dependency on a browser being installed. (Development and the browser tests use `fibration-serve`, a separate loopback WebSocket bridge to the same core that the shipped app never links; IPC.md section 11.) The interface itself is drawn by the operating system's embedded webview component (WKWebView on macOS, WebKitGTK on Linux), the same component system applications use to render rich content; all interface assets are bundled inside the executable and loaded from it. The Rust core owns every capability that touches the machine (files, processes, SSH, model calls); the interface layer only draws and forwards intent.
 
 | Layer | Choice | Notes |
 |---|---|---|
 | Shell | Tauri 2 | Native window, menus, dialogs, multi-window for undocked panels, sidecar binaries, platform installers (updates ship as new installers; there is no auto-updater). Interface drawn by the OS webview component: WKWebView on macOS, WebKitGTK on Linux. |
-| Core | Rust on `tokio` | All services in section 5. Compiled into the Tauri backend; also linked into the headless CLI and the development bridge. The evaluation harness is its own crate (`analyst-evals`), linked by the CLI only. |
+| Core | Rust on `tokio` | All services in section 5. Compiled into the Tauri backend; also linked into the headless CLI and the development bridge. The evaluation harness is its own crate (`fibration-evals`), linked by the CLI only. |
 | IPC | Tauri commands and per-session channels; types exported with `ts-rs` | Request/response as commands; streams (model tokens, run output, artifacts) as events on a per-session channel. The `protocol` crate's types produce the TypeScript bindings. The contract is [IPC.md](IPC.md). |
 | Model clients | SSE streaming over requests built by the network gate (`wb-net`), hand-written adapters | Two adapters are a few hundred lines each and keep full control over tool-call parsing. No provider SDKs. |
 | Storage | `toml`, JSONL | See section 7. |
@@ -120,23 +120,23 @@ Known cost: WebKitGTK on Linux is slower than Chromium for heavy canvases and la
 
 | Entity | Definition | Owned by |
 |---|---|---|
-| Workspace | The app-level state: provider config, targets, global skills, list of sessions. | `~/.analyst/` |
-| Target | Where runs execute: `local`, or an SSH host with a remote root directory. Holds its own tooling env, venvs, and run records. | `~/.analyst/config.toml` |
-| Session | Exactly one repo + one target + one environment + one or more conversations + layout + run history. One tab per session. A library shared across repos is a package dependency of each repo, not a second repo in the session. | `~/.analyst/sessions/<id>/` |
-| Repo | A git repository on the local disk containing analysis code and the committed project config in `.analyst/`. Canonical for code. | user's filesystem |
+| Workspace | The app-level state: provider config, targets, global skills, list of sessions. | `~/.fibration/` |
+| Target | Where runs execute: `local`, or an SSH host with a remote root directory. Holds its own tooling env, venvs, and run records. | `~/.fibration/config.toml` |
+| Session | Exactly one repo + one target + one environment + one or more conversations + layout + run history. One tab per session. A library shared across repos is a package dependency of each repo, not a second repo in the session. | `~/.fibration/sessions/<id>/` |
+| Repo | A git repository on the local disk containing analysis code and the committed project config in `.fibration/`. Canonical for code. | user's filesystem |
 | Mirror | The synced copy of the repo on a remote target. Never edited directly; rebuilt from the local repo before runs. | `<remote_root>/<repo>` on the target |
 | Environment | A Python virtual environment managed by `uv`, living on the target. | `<repo>/.venv` or `<mirror>/.venv` |
 | Conversation | An ordered list of turns with one model configuration. A session can have several. | session store (JSONL) |
 | Turn | One user message and everything the agent did in response: model calls, tool calls, proposals, runs. | transcript |
 | Proposal | A pending change set (file edits, package installs, commands) awaiting policy decision. | core, in memory + transcript |
-| Run | One execution of a script with arguments on a target, producing stdout, stderr, exit code, artifacts, and timing. Survives disconnects. | `runs.jsonl` in the session store; `~/.analyst/runs/<id>/` on the target |
+| Run | One execution of a script with arguments on a target, producing stdout, stderr, exit code, artifacts, and timing. Survives disconnects. | `runs.jsonl` in the session store; `~/.fibration/runs/<id>/` on the target |
 | Artifact | A file produced by a run, with a sidecar metadata record. Rendered artifacts (figures, logs, run metadata) are pulled back to the local `out/` from remote targets; data artifacts (tables, arrays, derived datasets) stay on the target and are read on demand. | `<repo>/out/` locally; `<mirror>/out/` on the target |
 | Equation | A rendered mathematical statement bound to a code location, with a provenance tier and verification status. | computed on demand |
-| Checkpoint | A snapshot of the local working tree taken before an agent turn that may change files. | git ref `refs/analyst/checkpoints/<id>` |
-| Skill | A markdown instruction set with trigger metadata, loaded into the agent's context on demand. | `.analyst/skills/`, `~/.analyst/skills/` |
-| Provider / Model | A configured endpoint plus a model identifier and its probed capability record. | `~/.analyst/config.toml`; keys from the environment or `.env` |
-| Policy | The per-session permission rules the agent operates under. | `.analyst/project.toml` with session overrides |
-| Deck | A presentation in the repo: `decks/<slug>/` with `deck/` (deck and slide documents, or a build script in code mode), `template/`, `references/`, `assets/`, `exports/` (ignored), and its own config `.present/project.toml` (`.present/cache/` ignored). A session lists and creates decks; a deck's kernel (no network) starts on first use; the reference index is per-user state under `~/.analyst/sessions/<id>/decks/<slug>/`. Decks are excluded from remote sync and never go to remote targets. | the repo; session store for the index |
+| Checkpoint | A snapshot of the local working tree taken before an agent turn that may change files. | git ref `refs/fibration/checkpoints/<id>` |
+| Skill | A markdown instruction set with trigger metadata, loaded into the agent's context on demand. | `.fibration/skills/`, `~/.fibration/skills/` |
+| Provider / Model | A configured endpoint plus a model identifier and its probed capability record. | `~/.fibration/config.toml`; keys from the environment or `.env` |
+| Policy | The per-session permission rules the agent operates under. | `.fibration/project.toml` with session overrides |
+| Deck | A presentation in the repo: `decks/<slug>/` with `deck/` (deck and slide documents, or a build script in code mode), `template/`, `references/`, `assets/`, `exports/` (ignored), and its own config `.present/project.toml` (`.present/cache/` ignored). A session lists and creates decks; a deck's kernel (no network) starts on first use; the reference index is per-user state under `~/.fibration/sessions/<id>/decks/<slug>/`. Decks are excluded from remote sync and never go to remote targets. | the repo; session store for the index |
 
 ## 5. Core services
 
@@ -146,7 +146,7 @@ Responsibilities: create, open, close, and switch sessions; restore layout; keep
 
 Creating a session:
 
-1. Choose a repo (existing directory, `git init` a new one, or clone). Optionally apply a template that creates `scripts/`, `analysis/`, `data/`, `out/`, `notes.md`, and `.analyst/project.toml`.
+1. Choose a repo (existing directory, `git init` a new one, or clone). Optionally apply a template that creates `scripts/`, `analysis/`, `data/`, `out/`, `notes.md`, and `.fibration/project.toml`.
 2. Choose a target: local or one of the configured SSH hosts. For a remote target the core bootstraps the host if needed (5.5) and performs the first sync.
 3. Bind an environment on the target: adopt an existing `.venv`, or run `uv venv` plus `uv sync` from the repo's `pyproject.toml` or `requirements.txt`.
 4. Start the kernel on the target, index scripts and the library, and compute the project map.
@@ -174,7 +174,7 @@ Every operation is logged to the session and is a visible card in the conversati
 
 ### 5.3 App tooling environment (D3)
 
-Each target carries an app-owned Python environment at `~/.analyst/tooling/` (created with `uv python install` at a pinned version) containing `analyst-kernel`, SymPy, Ruff, and the language server. The kernel wheel ships inside the app bundle and is copied to the target, so bootstrapping a remote host needs PyPI only for SymPy and friends. Session environments are never polluted with app dependencies. The only thing injected into a user script's process is a single stdlib-only module, `analyst_mpl`, placed on `PYTHONPATH` for figure capture.
+Each target carries an app-owned Python environment at `~/.fibration/tooling/` (created with `uv python install` at a pinned version) containing `fibration-kernel`, SymPy, Ruff, and the language server. The kernel wheel ships inside the app bundle and is copied to the target, so bootstrapping a remote host needs PyPI only for SymPy and friends. Session environments are never polluted with app dependencies. The only thing injected into a user script's process is a single stdlib-only module, `fibration_mpl`, placed on `PYTHONPATH` for figure capture.
 
 ### 5.4 Kernel protocol
 
@@ -186,7 +186,7 @@ The kernel is a long-lived process per session, launched from the tooling enviro
 | `env.packages` | Installed packages (delegates to `uv`). |
 | `scripts.index` | Walk `scripts/` (configurable globs) and parse each file's `argparse` definitions with the AST, without importing. Returns name, description, options, defaults, types. |
 | `lib.index` | Walk the library package (`analysis/` by default) and return every public function with signature, docstring summary, `Math:` presence, and the scripts that call it. Used by the agent before writing new functions and by the generalization checks. |
-| `run.start` | Execute a script with arguments inside the sandbox using the session interpreter. The run is detached (`setsid`) with output and status written to `~/.analyst/runs/<run-id>/` on the target. Returns a run id and streams `run.stdout`, `run.stderr`, `run.artifact`, and `run.done` notifications. |
+| `run.start` | Execute a script with arguments inside the sandbox using the session interpreter. The run is detached (`setsid`) with output and status written to `~/.fibration/runs/<run-id>/` on the target. Returns a run id and streams `run.stdout`, `run.stderr`, `run.artifact`, and `run.done` notifications. |
 | `run.attach` | Resume streaming a run from recorded offsets after a kernel restart or a dropped connection. |
 | `run.cancel` | Terminate a run (process group). |
 | `out.list` | List a run's output directory on the target with sizes and types, without transferring anything. |
@@ -198,7 +198,7 @@ The kernel is a long-lived process per session, launched from the tooling enviro
 | `contract.similar` | Near-duplicate function detection across scripts and the library (section 5.13). |
 | `lint.run` | Ruff diagnostics for a file. |
 
-**Process model.** Per session: the kernel (with a request thread pool), two long-lived child processes, and per run a supervisor, the sandbox wrapper, and the script. The **REPL** (`analyst_kernel/snippet.py`) serves `exec.snippet`: it runs agent and user code in one persistent namespace in the session interpreter under the run sandbox (`_tool_spec("repl")`), 30 s per snippet by default; a timeout kills it and the next snippet starts a fresh one. The **equation worker** (`_eqworker.py` running `eqcore`) does the SymPy work behind `eq.extract` and `eq.check`. It is a separate process in the tooling interpreter, under its own sandbox spec (`equations.worker_spec`: it reads only the tooling interpreter, `analyst_kernel`, SymPy and mpmath, writes only a scratch directory, has no network, and the repository is not mounted; repository text arrives over its pipe), with its own 4 GiB address-space cap and a 10 s budget per analyzed function, over which it is killed and restarted. The two are kept apart on purpose: code run in a snippet cannot reach the process that decides whether an equation agrees (for example by patching `sympy.simplify`), and a snippet's memory use does not count against the equation cap. `kernel.hello` starts the equation worker and its SymPy import in the background (the prewarm). Both children are forked on one long-lived spawner thread (`spawner.py`), because `bwrap --die-with-parent` kills a child when the *thread* that forked it exits, and the prewarm and request threads are short-lived. `eq.check` evaluates the real function in a separate sandboxed process per check.
+**Process model.** Per session: the kernel (with a request thread pool), two long-lived child processes, and per run a supervisor, the sandbox wrapper, and the script. The **REPL** (`fibration_kernel/snippet.py`) serves `exec.snippet`: it runs agent and user code in one persistent namespace in the session interpreter under the run sandbox (`_tool_spec("repl")`), 30 s per snippet by default; a timeout kills it and the next snippet starts a fresh one. The **equation worker** (`_eqworker.py` running `eqcore`) does the SymPy work behind `eq.extract` and `eq.check`. It is a separate process in the tooling interpreter, under its own sandbox spec (`equations.worker_spec`: it reads only the tooling interpreter, `fibration_kernel`, SymPy and mpmath, writes only a scratch directory, has no network, and the repository is not mounted; repository text arrives over its pipe), with its own 4 GiB address-space cap and a 10 s budget per analyzed function, over which it is killed and restarted. The two are kept apart on purpose: code run in a snippet cannot reach the process that decides whether an equation agrees (for example by patching `sympy.simplify`), and a snippet's memory use does not count against the equation cap. `kernel.hello` starts the equation worker and its SymPy import in the background (the prewarm). Both children are forked on one long-lived spawner thread (`spawner.py`), because `bwrap --die-with-parent` kills a child when the *thread* that forked it exits, and the prewarm and request threads are short-lived. `eq.check` evaluates the real function in a separate sandboxed process per check.
 
 The REPL is the only stateful execution surface; script runs are always fresh processes so results are reproducible from the terminal. The kernel holds no state that is not on disk in the run directory, so a kernel restart is always safe.
 
@@ -223,7 +223,7 @@ Target kinds, in order of default:
 name = "lab-gpu"
 kind = "ssh"
 host = "lab-gpu"                # an alias from ~/.ssh/config; keys, jump hosts, and agent forwarding come from there
-remote_root = "~/analyst"       # mirrors live at <remote_root>/<repo-name>
+remote_root = "~/fibration"       # mirrors live at <remote_root>/<repo-name>
 python = "3.12"                 # must be installed on the host; never downloaded
 sandbox = "auto"                # auto | bwrap | none
 data_dirs = ["/data/shared/run3"]   # read-only mounts for the sandbox, target-local paths
@@ -231,16 +231,16 @@ data_dirs = ["/data/shared/run3"]   # read-only mounts for the sandbox, target-l
 
 The local target needs no configuration.
 
-**Connection.** The core uses the system OpenSSH client with connection multiplexing (`ControlMaster=auto`, `ControlPersist`, a control socket under `~/.analyst/ssh/`). One master connection per target per session; the kernel's stdio, each terminal, and each sync are channels on it. This respects the user's existing SSH configuration, keys, agent, and bastions without the app reimplementing any of it. A Rust SSH implementation can replace this later behind the same `Transport` trait if the CLI dependency becomes a problem (Windows lacks `ControlMaster`; there the core opens separate connections).
+**Connection.** The core uses the system OpenSSH client with connection multiplexing (`ControlMaster=auto`, `ControlPersist`, a control socket under `~/.fibration/ssh/`). One master connection per target per session; the kernel's stdio, each terminal, and each sync are channels on it. This respects the user's existing SSH configuration, keys, agent, and bastions without the app reimplementing any of it. A Rust SSH implementation can replace this later behind the same `Transport` trait if the CLI dependency becomes a problem (Windows lacks `ControlMaster`; there the core opens separate connections).
 
-**Bootstrap.** On first use of a target the core checks for `~/.analyst/bin/uv` and `~/.analyst/tooling/` on the host and creates them if missing. `uv` is never downloaded: a `uv` already on the host is used; otherwise a binary is copied over SSH (`scp`) to `~/.analyst/bin/uv`, the local `uv` when the host reports the same OS and architecture (`uname -sm`), else the file named by the target's `uv_binary` setting; with neither, bootstrap stops and says to provide one. Python is not downloaded either: the host must have the target's `python` version installed (`uv python find <version>` decides), and when it does not, bootstrap stops with a message naming that version and the host. Then the tooling environment from the kernel wheel in the app bundle. Nothing is installed outside the user's home directory and nothing needs root. Ubuntu and Fedora are the tested distributions; any Linux with a working `ssh`, `git`, `tar`, an installed Python of the configured version, and a `glibc` recent enough for `uv` should work. Bootstrap is idempotent and version-checked, so an app upgrade refreshes the remote kernel on next connect.
+**Bootstrap.** On first use of a target the core checks for `~/.fibration/bin/uv` and `~/.fibration/tooling/` on the host and creates them if missing. `uv` is never downloaded: a `uv` already on the host is used; otherwise a binary is copied over SSH (`scp`) to `~/.fibration/bin/uv`, the local `uv` when the host reports the same OS and architecture (`uname -sm`), else the file named by the target's `uv_binary` setting; with neither, bootstrap stops and says to provide one. Python is not downloaded either: the host must have the target's `python` version installed (`uv python find <version>` decides), and when it does not, bootstrap stops with a message naming that version and the host. Then the tooling environment from the kernel wheel in the app bundle. Nothing is installed outside the user's home directory and nothing needs root. Ubuntu and Fedora are the tested distributions; any Linux with a working `ssh`, `git`, `tar`, an installed Python of the configured version, and a `glibc` recent enough for `uv` should work. Bootstrap is idempotent and version-checked, so an app upgrade refreshes the remote kernel on next connect.
 
 **Repo sync model: local canonical, remote mirror.** The local repo is the source of truth for code. Before each run, and on demand, the core syncs the mirror:
 
-1. Write the working tree to a git tree object with the checkpoint machinery (5.9): tracked and untracked-but-not-ignored files, without data directories and files over the checkpoint size limit, through a temporary index so the user's index, branches, and refs are untouched. The repo's `.env` and the directories the host owns (`out_dir`, `.venv/`, `.analyst/`) are removed from that tree even when they are tracked. The tree id is the sync identity.
+1. Write the working tree to a git tree object with the checkpoint machinery (5.9): tracked and untracked-but-not-ignored files, without data directories and files over the checkpoint size limit, through a temporary index so the user's index, branches, and refs are untouched. The repo's `.env` and the directories the host owns (`out_dir`, `.venv/`, `.fibration/`) are removed from that tree even when they are tracked. The tree id is the sync identity.
 2. Ask the host what its mirror holds. The host keeps a bare repository beside the mirror, at `<mirror>.git`, created without hooks. When the mirror is already a checkout of this tree, nothing is sent.
-3. Otherwise wrap the tree in a parentless commit (no history travels) and `git push` it over the multiplexed SSH connection to `refs/analyst/sync` in that repository. The push is authorized by the network gate like every SSH connection, and runs from a scratch repository that borrows the project's objects, with hooks off on both sides and without the user's, the system's, or the project's git configuration, so no hook, credential helper, or URL rewrite takes part.
-4. Make the mirror a detached checkout of that commit (`git checkout -f --detach` with the mirror as work tree). Files that left the tree are deleted and changed files rewritten; `out_dir`, `.venv/`, `.analyst/`, and anything else the tree never held are untouched.
+3. Otherwise wrap the tree in a parentless commit (no history travels) and `git push` it over the multiplexed SSH connection to `refs/fibration/sync` in that repository. The push is authorized by the network gate like every SSH connection, and runs from a scratch repository that borrows the project's objects, with hooks off on both sides and without the user's, the system's, or the project's git configuration, so no hook, credential helper, or URL rewrite takes part.
+4. Make the mirror a detached checkout of that commit (`git checkout -f --detach` with the mirror as work tree). Files that left the tree are deleted and changed files rewritten; `out_dir`, `.venv/`, `.fibration/`, and anything else the tree never held are untouched.
 
 The same tree id is recorded with each run, so a run is attributed to an exact code state. The host needs `git`; without it the sync fails and says so.
 
@@ -248,11 +248,11 @@ Syncs are typically well under a second on a warm connection. The mirror is neve
 
 **Only rendered products come back.** A run writes to `out/` on the target. `run.artifact` events carry the target path and metadata. The core pulls back only what the UI renders: figure rasters and vectors with their sidecar metadata, the run's stdout and stderr (bounded), the run metadata JSON, and equation extraction and check results (which are computed on the target and transmitted as LaTeX plus a status, never as code execution on the local side). Everything else a run produces, such as tables, arrays, pickles, and derived datasets, stays on the target. The agent and the user inspect those through `out.list` and `out.read`, which return bounded previews without transferring files. The figures panel therefore does not care where a figure was produced, and no dataset is ever copied to the local machine by the app.
 
-**Data stays where it is generated.** Input data directories are configured per target and are never synced in either direction. Scripts refer to data through CLI options whose defaults are repo-relative or come from `.analyst/project.toml` per-target overrides, so the same script runs locally against a sample and remotely against the full dataset without edits. A user who wants a data artifact locally fetches it explicitly from the Outputs view; the app records that it did so but never does it on its own.
+**Data stays where it is generated.** Input data directories are configured per target and are never synced in either direction. Scripts refer to data through CLI options whose defaults are repo-relative or come from `.fibration/project.toml` per-target overrides, so the same script runs locally against a sample and remotely against the full dataset without edits. A user who wants a data artifact locally fetches it explicitly from the Outputs view; the app records that it did so but never does it on its own.
 
 **Run launcher.** The kernel starts runs through a `Launcher` interface with one implementation in the first version, `DirectLauncher`, which runs the script as a detached process on the target: on a cluster this means the login node, which is the accepted mode for now. The interface (`submit`, `status`, `cancel`, `output_paths`) is shaped so that a `SchedulerLauncher` for Slurm or similar can be added later without changing the kernel protocol or the agent loop; the only visible differences would be queue time in the run card and a per-target launcher setting. In the code today the extension point is `Target::launcher()` in `crates/core/src/target.rs`, which always returns `Launcher::Direct`; `Launcher::Scheduler` is an unimplemented placeholder.
 
-**Runs survive disconnects.** The kernel detaches each run and records stdout, stderr, exit status, and artifact list under `~/.analyst/runs/<run-id>/` on the target. If the SSH connection drops, the run continues. On reconnect, the core restarts the kernel if needed and calls `run.attach` to resume streaming from the last offsets. The run card shows "running, disconnected" rather than failing.
+**Runs survive disconnects.** The kernel detaches each run and records stdout, stderr, exit status, and artifact list under `~/.fibration/runs/<run-id>/` on the target. If the SSH connection drops, the run continues. On reconnect, the core restarts the kernel if needed and calls `run.attach` to resume streaming from the last offsets. The run card shows "running, disconnected" rather than failing.
 
 **Terminal.** A remote terminal is a local pty running `ssh -t <host>` that changes to the mirror directory, activates the venv, and exports the figure-capture environment. Where `bubblewrap` works on the host the remote shell (and the remote kernel) run under `bwrap --unshare-net`; otherwise they run unwrapped and the UI says the network is not isolated. Figures produced from that terminal appear in the figures panel through the same `out/` watcher, running on the target through the kernel.
 
@@ -365,7 +365,7 @@ Pausing on "ask" is a real pause: the model's partial turn is held, the user act
 - After runs: non-zero exit codes and tracebacks go back to the model with the run's stderr. The user sees the run card either way.
 - On request or by policy: `eq.check` runs on functions with declared equations; mismatches are surfaced as a red badge in the Equations panel and as a tool result the model must address.
 
-**Scope declaration.** In Build mode the agent's first action on a new task is a short plan listing the files it intends to touch. Edits outside the declared set require approval even when the session is in auto-accept mode. The scope resets every turn, and widening it within a turn itself requires approval, so the agent cannot grant itself more. Paths under `.git/` and `.analyst/` are never editable by the agent. This directly addresses "the agent changed things I didn't ask for".
+**Scope declaration.** In Build mode the agent's first action on a new task is a short plan listing the files it intends to touch. Edits outside the declared set require approval even when the session is in auto-accept mode. The scope resets every turn, and widening it within a turn itself requires approval, so the agent cannot grant itself more. Paths under `.git/` and `.fibration/` are never editable by the agent. This directly addresses "the agent changed things I didn't ask for".
 
 **Reuse before writing.** The system prompt requires the agent to consult `lib.index` and `fs.search` before defining a new function, and to extend or call an existing library function when one covers the need. The checker enforces the result (5.13).
 
@@ -383,9 +383,9 @@ The engine is the shared crate `wb-policy`; `crates/core/src/tools/gate.rs` only
 | `auto` | applied inside the declared scope, asked outside it | auto | ask |
 | `read-only` | denied | auto (existing scripts) | denied |
 
-`preset` expands to the detailed keys below; a detailed key written in the same table overrides the preset's value. The settings dialog offers the three presets and keeps the detailed keys under Advanced. Whatever the preset: paths under `.git/` and `.analyst/` and protected globs are never editable (also through a symlink), runs never get network access, and when no OS sandbox confines runs every run, snippet and shell command asks first unless the project sets `unsandboxed_runs = "auto"`.
+`preset` expands to the detailed keys below; a detailed key written in the same table overrides the preset's value. The settings dialog offers the three presets and keeps the detailed keys under Advanced. Whatever the preset: paths under `.git/` and `.fibration/` and protected globs are never editable (also through a symlink), runs never get network access, and when no OS sandbox confines runs every run, snippet and shell command asks first unless the project sets `unsandboxed_runs = "auto"`.
 
-Policy is declarative, lives in `.analyst/project.toml`, and can be overridden per session from the UI without editing the file.
+Policy is declarative, lives in `.fibration/project.toml`, and can be overridden per session from the UI without editing the file.
 
 ```toml
 [policy]
@@ -412,9 +412,9 @@ Conflict detection: a proposal carries the content hash of the file it was based
 
 ### 5.9 Checkpoints
 
-Before every turn that could change files, the core writes the local working tree (including untracked, excluding ignored) to a tree object and stores it under `refs/analyst/checkpoints/<turn-id>` using git plumbing (`git add -A` into a temporary index, `git write-tree`, `git commit-tree`). This never touches the user's index, branches, or history, and these refs are never pushed. "Revert this turn" restores the tree and marks the remote mirror stale. Checkpoints are pruned by age and count.
+Before every turn that could change files, the core writes the local working tree (including untracked, excluding ignored) to a tree object and stores it under `refs/fibration/checkpoints/<turn-id>` using git plumbing (`git add -A` into a temporary index, `git write-tree`, `git commit-tree`). This never touches the user's index, branches, or history, and these refs are never pushed. "Revert this turn" restores the tree and marks the remote mirror stale. Checkpoints are pruned by age and count.
 
-The same timeline covers decks: slide documents are files in the tree, and the deck service also checkpoints before an export (the export records its checkpoint), before a template is replaced, and before a switch to code mode (switching back restores the deck's `deck/` from that checkpoint). A restore first checkpoints the state it replaces, so it can itself be undone. This replaces the deck workbench's snapshot store. `analyst deck history` and the `history_*` commands (IPC.md section 9) list and restore it.
+The same timeline covers decks: slide documents are files in the tree, and the deck service also checkpoints before an export (the export records its checkpoint), before a template is replaced, and before a switch to code mode (switching back restores the deck's `deck/` from that checkpoint). A restore first checkpoints the state it replaces, so it can itself be undone. This replaces the deck workbench's snapshot store. `fibration deck history` and the `history_*` commands (IPC.md section 9) list and restore it.
 
 ### 5.10 Model provider layer (D4)
 
@@ -446,7 +446,7 @@ An optional Ollama-native adapter adds model listing and pulling from the UI; it
 
 **Capability probing.** On first use of a model (and on demand) the core runs a short probe: one exchange requiring a tool call with a known argument, one with an image if the user allows it, and a query of the provider's model-info endpoint (`/v1/models`, Ollama `/api/show`) for the context window. Results are cached in the capability record with a timestamp. Manual overrides are allowed but not required. This replaces any hand-maintained per-model list.
 
-Provider configuration in `~/.analyst/config.toml`:
+Provider configuration in `~/.fibration/config.toml`:
 
 ```toml
 [[providers]]
@@ -465,7 +465,7 @@ id = "<any model served there>"
 # capabilities are probed; override only if the probe is wrong, e.g. context_window = 65536
 ```
 
-API keys are named by an environment variable: `api_key_env`, or the derived default `<PROVIDER NAME>_API_KEY` (uppercased, non-alphanumerics to `_`). The lookup order is the process environment, then `~/.analyst/.env` (mode 0600, written by the settings dialog and `analyst key set`), then the repo's own `.env` when it exists and git does not track it. There is no keychain and no `credentials.toml`. Every provider request is built by the network gate (5.6), which only allows the hosts of configured providers. The chat header always shows which provider is active and whether it is local or remote, so you know what leaves the machine.
+API keys are named by an environment variable: `api_key_env`, or the derived default `<PROVIDER NAME>_API_KEY` (uppercased, non-alphanumerics to `_`). The lookup order is the process environment, then `~/.fibration/.env` (mode 0600, written by the settings dialog and `fibration key set`), then the repo's own `.env` when it exists and git does not track it. There is no keychain and no `credentials.toml`. Every provider request is built by the network gate (5.6), which only allows the hosts of configured providers. The chat header always shows which provider is active and whether it is local or remote, so you know what leaves the machine.
 
 Model choice is per conversation. A later feature allows different models for roles (planner, coder, summarizer); the interface already supports it.
 
@@ -504,14 +504,14 @@ The `Math:` docstring convention is deliberately dependency-free: the user's rep
 
 ### 5.12 Figure pipeline
 
-Capture happens in the script's process through a Matplotlib backend injected by the kernel (`MPLBACKEND=module://analyst_mpl`, module on `PYTHONPATH`). It overrides `show()` and wraps `savefig()`:
+Capture happens in the script's process through a Matplotlib backend injected by the kernel (`MPLBACKEND=module://fibration_mpl`, module on `PYTHONPATH`). It overrides `show()` and wraps `savefig()`:
 
 - each figure is written to `out/figures/<script>/<run-id>/<name>.png` and `.svg` (optionally a pickle of the Figure for re-styling later; the pickle stays on the target)
 - a sidecar JSON records script, arguments, run id, target, figure title, axes labels, and timestamp
 - the kernel watches the run's figure directory and emits `run.artifact` events; on a remote target the core pulls the files into the local `out/`
 - figures on this machine reach the renderer through the asset protocol (`FigureView.file_abs`; the session's output directory and pulled-artifact folder are in the asset scope); `figure_data` (base64) remains for remote figures not yet pulled
 
-Terminal runs get the same treatment two ways: the app's own terminals export the capture environment automatically (`source .analyst/env.sh` does the same in any other shell), and the kernel's watcher on `out/figures/**` picks up anything else.
+Terminal runs get the same treatment two ways: the app's own terminals export the capture environment automatically (`source .fibration/env.sh` does the same in any other shell), and the kernel's watcher on `out/figures/**` picks up anything else.
 
 Figures panel:
 
@@ -523,9 +523,9 @@ Figures panel:
 
 Phase 1 captures static Matplotlib output only. Interactive figures (Plotly, Bokeh HTML) are a later phase.
 
-**Artifact index and run citations.** The core indexes what each run of the session produced from the run records and the artifact lists the kernel writes (no output folder is scanned): run id, path, kind, script, arguments, and the tree identity the run executed (`artifacts.list`, `artifacts_list`). `slide.place_figure` copies a figure into the deck's `assets/` by content hash (data files are refused) and the image element carries a `run_cite` (run id, artifact, script, arguments, tree identity). The deck checker reports an element whose run citation no longer matches the working tree's identity as `stale` (a warning). Decks are outside the tree identity, so editing slides does not make figures stale. This replaces the deck workbench's scan/import bridge. Scripts can also record named numeric results (`analyst_results.record(name, value, unit, uncertainty)` writes `<out>/results.json`, artifact kind `results`); slide text binds a number to one through a run citation on the text run, and the checker verifies the displayed number against the recorded value (`num.bound`) and reports a changed tree as `stale`. **Refresh from analysis** brings a stale figure, equation, or bound number up to date without the agent: the cited script is re-run with the cited arguments through the run service, and the updated slide is a normal proposal (before/after card listing the changed values and the verifications it invalidates).
+**Artifact index and run citations.** The core indexes what each run of the session produced from the run records and the artifact lists the kernel writes (no output folder is scanned): run id, path, kind, script, arguments, and the tree identity the run executed (`artifacts.list`, `artifacts_list`). `slide.place_figure` copies a figure into the deck's `assets/` by content hash (data files are refused) and the image element carries a `run_cite` (run id, artifact, script, arguments, tree identity). The deck checker reports an element whose run citation no longer matches the working tree's identity as `stale` (a warning). Decks are outside the tree identity, so editing slides does not make figures stale. This replaces the deck workbench's scan/import bridge. Scripts can also record named numeric results (`fibration_results.record(name, value, unit, uncertainty)` writes `<out>/results.json`, artifact kind `results`); slide text binds a number to one through a run citation on the text run, and the checker verifies the displayed number against the recorded value (`num.bound`) and reports a changed tree as `stale`. **Refresh from analysis** brings a stale figure, equation, or bound number up to date without the agent: the cited script is re-run with the cited arguments through the run service, and the updated slide is a normal proposal (before/after card listing the changed values and the verifications it invalidates).
 
-**Verification ledger.** `.analyst/verification.jsonl` (append-only, committed with the repository) records per item (equation, figure, named result, slide claim, accepted code change) the content hash a state applies to: `machine_checked`, `human_verified`, or `flagged`, with who, when, and a note. An item whose current content has no entry is `unverified`, so any change to the code, a run's output, or a slide resets what was verified. Only the user records `human_verified`; the agent's `verify.record` can record `machine_checked` and is allowed under every preset. Exporting a deck to pptx or pdf first lists, in a confirm dialog, what it depends on that is not human-verified (`deck_verification_gaps`).
+**Verification ledger.** `.fibration/verification.jsonl` (append-only, committed with the repository) records per item (equation, figure, named result, slide claim, accepted code change) the content hash a state applies to: `machine_checked`, `human_verified`, or `flagged`, with who, when, and a note. An item whose current content has no entry is `unverified`, so any change to the code, a run's output, or a slide resets what was verified. Only the user records `human_verified`; the agent's `verify.record` can record `machine_checked` and is allowed under every preset. Exporting a deck to pptx or pdf first lists, in a confirm dialog, what it depends on that is not human-verified (`deck_verification_gaps`).
 
 ### 5.13 Script contract and checker (D9)
 
@@ -563,7 +563,7 @@ Checker rules:
 5. Functions in modules listed under `contract.math_required` carry a `Math:` docstring section.
 6. Library functions have docstrings with parameter units where applicable.
 
-Each rule has a severity (`error` or `warn`) in `.analyst/project.toml`. Checker output is a list of diagnostics with file, line, rule id, and a fix hint, shown in the editor and fed back to the agent after each edit.
+Each rule has a severity (`error` or `warn`) in `.fibration/project.toml`. Checker output is a list of diagnostics with file, line, rule id, and a fix hint, shown in the editor and fed back to the agent after each edit.
 
 ### 5.14 Documents
 
@@ -589,15 +589,15 @@ description: How to fit models and report uncertainties.
 When fitting models: report parameter uncertainties from the covariance, plot residuals, ...
 ```
 
-Skills load from `~/.analyst/skills/` (user) and `<repo>/.analyst/skills/` (project; it wins on a name clash). The system prompt lists them by name and description; the agent loads one in full with the read-class tool `skill.load` before relying on it.
+Skills load from `~/.fibration/skills/` (user) and `<repo>/.fibration/skills/` (project; it wins on a name clash). The system prompt lists them by name and description; the agent loads one in full with the read-class tool `skill.load` before relying on it.
 
 The earlier front matter keys keep working inside `SKILL.md`: `triggers` (words in the user message), `paths` (globs of files in the declared scope or changed this turn) and `always: true`. A skill that carries them is put into the prompt in full when it matches the turn, without a tool call. Flat `<name>.md` files, which the earlier design described and no version loaded, are not read. A toggle in the UI for the skills of a turn is not built.
 
-Configuration layering, lowest to highest precedence: built-in defaults, `~/.analyst/config.toml`, `<repo>/.analyst/project.toml`, per-target overrides inside it, session overrides from the UI.
+Configuration layering, lowest to highest precedence: built-in defaults, `~/.fibration/config.toml`, `<repo>/.fibration/project.toml`, per-target overrides inside it, session overrides from the UI.
 
-**Start-up.** The desktop shell, the development bridge, and the CLI start through one function, `analyst_core::app::App::start(home, options)` (`crates/core/src/app.rs`): it creates the home, runs the migration below, points the network gate's ledger at `<home>/egress.jsonl`, and loads `config.toml`. The shell and the bridge then build the workbench from it (`App::workbench`); the CLI, which drives one kernel and one model without a workbench, takes its kernel (`App::kernel`, the same `kernel_transport` the session runtime uses), tooling bootstrap, and model client (`App::model`) from it.
+**Start-up.** The desktop shell, the development bridge, and the CLI start through one function, `fibration_core::app::App::start(home, options)` (`crates/core/src/app.rs`): it creates the home, runs the migration below, points the network gate's ledger at `<home>/egress.jsonl`, and loads `config.toml`. The shell and the bridge then build the workbench from it (`App::workbench`); the CLI, which drives one kernel and one model without a workbench, takes its kernel (`App::kernel`, the same `kernel_transport` the session runtime uses), tooling bootstrap, and model client (`App::model`) from it.
 
-**Migration from `~/.present`.** On first start the CLI, the desktop shell, and the development bridge merge an existing `~/.present` into the analyst home once: its `[[providers]]` join `config.toml` (names that already exist are skipped; `key = "env:VAR"` becomes `api_key_env = "VAR"`), `skills/` and `templates/` are copied without overwriting, keys from its `.env` that are not set in `~/.analyst/.env` are copied, and the marker `.present-migrated` makes it run once. `~/.present` is never changed or deleted. `PRESENT_HOME` is no longer read (`crates/core/src/migrate.rs`).
+**Migration from `~/.present`.** On first start the CLI, the desktop shell, and the development bridge merge an existing `~/.present` into the fibration home once: its `[[providers]]` join `config.toml` (names that already exist are skipped; `key = "env:VAR"` becomes `api_key_env = "VAR"`), `skills/` and `templates/` are copied without overwriting, keys from its `.env` that are not set in `~/.fibration/.env` are copied, and the marker `.present-migrated` makes it run once. `~/.present` is never changed or deleted. `PRESENT_HOME` is no longer read (`crates/core/src/migrate.rs`).
 
 ## 6. User interface
 
@@ -650,7 +650,7 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
 ## 7. Storage layout
 
 ```
-~/.analyst/                              (local machine)
+~/.fibration/                              (local machine)
   config.toml              providers, models, targets, global policy defaults, UI prefs
   skills/                  global skills
   .env                     API keys saved through the app (mode 0600)
@@ -666,13 +666,13 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
     runs.jsonl             run records
     meta.json, layout.json conversations, policy overrides, dock layout
 
-~/.analyst/                              (each remote target)
+~/.fibration/                              (each remote target)
   bin/uv
   tooling/                 kernel, SymPy, Ruff, language server
   runs/<run-id>/           stdout, stderr, status, artifact list (survive disconnects)
 
 <repo>/                                  (local; mirrored to <remote_root>/<repo> on remote targets)
-  .analyst/
+  .fibration/
     project.toml           contract, policy, data dirs, per-target overrides   (committed)
     skills/                project skills                                      (committed)
     .env                   optional API keys for this repo                      (ignored; never synced)
@@ -682,12 +682,12 @@ Command palette and keybindings follow Zed's defaults (decided). A Vim mode via 
                            exports/ .present/cache/                                     (ignored)
 ```
 
-`.analyst/project.toml`, `pyproject.toml`, and `uv.lock` are meant to be committed so a repo carries its own conventions and environment. Everything under `out/`, `.venv/`, and `.analyst/env.sh` is git-ignored by the template and excluded from sync.
+`.fibration/project.toml`, `pyproject.toml`, and `uv.lock` are meant to be committed so a repo carries its own conventions and environment. Everything under `out/`, `.venv/`, and `.fibration/env.sh` is git-ignored by the template and excluded from sync.
 
 ## 8. Security and privacy
 
 - No telemetry. No network calls except to configured model providers, the configured package index during installs, and configured SSH targets, all through the gate described in 5.6 and all recorded in `<home>/egress.jsonl`.
-- API keys in the environment or an untracked `.env` file (`~/.analyst/.env`, mode 0600, or the repo's). Never logged, removed from the environment of kernels and terminals, never passed into the sandbox, never sent to a remote target (a repo `.env` is excluded from the mirror), and not readable through the agent's file tools.
+- API keys in the environment or an untracked `.env` file (`~/.fibration/.env`, mode 0600, or the repo's). Never logged, removed from the environment of kernels and terminals, never passed into the sandbox, never sent to a remote target (a repo `.env` is excluded from the mirror), and not readable through the agent's file tools.
 - SSH credentials are never handled by the app; it relies on the user's OpenSSH configuration and agent.
 - The chat UI shows provider locality (local or remote) at all times. A per-target "data directories" list controls what the agent can read; nothing outside the repo and that list is readable by tools or by the sandbox.
 - Transcripts stay local. Export is explicit.
@@ -708,17 +708,17 @@ macOS and Linux are the supported platforms through phase 3, for both the deskto
 apps/desktop/
   src-tauri/           Tauri shell: invoke handler over the core's command table, events, window management
   src/                 React renderer (TauriBackend in the app, WsBackend on the dev bridge in a browser)
-  e2e/                 Playwright suite against the real core through analyst-serve
+  e2e/                 Playwright suite against the real core through fibration-serve
 crates/protocol/       IPC and kernel message types; TypeScript bindings generated with ts-rs
 crates/wb-*/           shared with the deck workbench: network gate, providers, policy, transcript, skills, sandbox
 crates/core/           sessions, agent loop, tools, targets, sync, storage, the IPC command table (providers, policy, transcript and skills come from crates/wb-*)
-crates/evals/          analyst-evals: the analysis and deck evaluation harnesses (CLI only)
-crates/serve/          analyst-serve: development bridge, the core over a loopback WebSocket (never shipped)
-crates/cli/            the `analyst` CLI: analysis commands, `deck ...`, `chat`, `eval` (analysis and deck tasks)
-present/crates/core/   analyst-deck: deck store, references, deck kernel client, deck tools, per-deck service
-present/crates/protocol/ analyst-deck-protocol: deck documents, deck kernel and UI types (ts-rs into apps/desktop/src/ipc/generated/deck)
+crates/evals/          fibration-evals: the analysis and deck evaluation harnesses (CLI only)
+crates/serve/          fibration-serve: development bridge, the core over a loopback WebSocket (never shipped)
+crates/cli/            the `fibration` CLI: analysis commands, `deck ...`, `chat`, `eval` (analysis and deck tasks)
+present/crates/core/   fibration-deck: deck store, references, deck kernel client, deck tools, per-deck service
+present/crates/protocol/ fibration-deck-protocol: deck documents, deck kernel and UI types (ts-rs into apps/desktop/src/ipc/generated/deck)
 present/python/        the deck kernel (present_kernel) and the deck build SDK (present_sdk)
-python/kernel/         analyst_kernel (runs, index, equations, contract, the REPL and equation worker) and analyst_mpl
+python/kernel/         fibration_kernel (runs, index, equations, contract, the REPL and equation worker) and fibration_mpl
 evals/                 task suite, graders, scorecard runner
 docs/
 ```

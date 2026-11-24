@@ -1,7 +1,7 @@
 //! One-time migration from the deck workbench's old home (`~/.present`) into the Personal
-//! Analyst home (`~/.analyst`, or `$ANALYST_HOME`).
+//! Analyst home (`~/.fibration`, or `$FIBRATION_HOME`).
 //!
-//! On first start the entry points (the `analyst` CLI and the desktop shell) call
+//! On first start the entry points (the `fibration` CLI and the desktop shell) call
 //! [`migrate_legacy_home`]. When `~/.present` exists and the home has no marker yet, it:
 //!
 //! - merges the old `[[providers]]` into `config.toml`, skipping names that already exist
@@ -16,7 +16,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// The marker file under the analyst home.
+/// The marker file under the fibration home.
 pub const MARKER: &str = ".present-migrated";
 
 /// What a migration did.
@@ -25,11 +25,11 @@ pub struct MigrationReport {
     pub from: PathBuf,
     /// Providers added to `config.toml`.
     pub providers: Vec<String>,
-    /// Providers left out because the analyst config already has one of that name.
+    /// Providers left out because the fibration config already has one of that name.
     pub skipped_providers: Vec<String>,
     /// Files copied, relative to the old home (`skills/...`, `templates/...`).
     pub files: Vec<String>,
-    /// Key names copied into the analyst `.env`.
+    /// Key names copied into the fibration `.env`.
     pub keys: Vec<String>,
 }
 
@@ -91,8 +91,8 @@ fn read_toml(path: &Path) -> Result<toml::Table> {
     }
 }
 
-/// One old provider table as an analyst provider table, or `None` when it lacks a name or a
-/// kind the analyst knows.
+/// One old provider table as a fibration provider table, or `None` when it lacks a name or a
+/// kind the fibration config knows.
 fn convert_provider(old: &toml::Table) -> Option<toml::Table> {
     let name = old.get("name")?.as_str()?.to_string();
     let kind = old.get("kind")?.as_str()?;
@@ -155,8 +155,8 @@ fn merge_providers(home: &Path, legacy: &Path, report: &mut MigrationReport) -> 
     if added {
         config.insert("providers".into(), toml::Value::Array(providers));
         let text = toml::to_string_pretty(&config).context("serializing config.toml")?;
-        // The merged file must still load as an analyst config.
-        toml::from_str::<analyst_protocol::config::GlobalConfig>(&text)
+        // The merged file must still load as a fibration config.
+        toml::from_str::<fibration_protocol::config::GlobalConfig>(&text)
             .context("the merged config.toml does not load")?;
         std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     }
@@ -258,7 +258,7 @@ kind = "something-else"
     fn merges_providers_files_and_keys_once() {
         let tmp = tempfile::tempdir().unwrap();
         let legacy = tmp.path().join("present-home");
-        let home = tmp.path().join("analyst-home");
+        let home = tmp.path().join("fibration-home");
         legacy_home_fixture(&legacy);
         std::fs::create_dir_all(home.join("skills/charts")).unwrap();
         std::fs::write(home.join("skills/charts/SKILL.md"), "new charts skill").unwrap();
@@ -305,7 +305,7 @@ kind = "something-else"
     fn fresh_home_gets_the_old_providers() {
         let tmp = tempfile::tempdir().unwrap();
         let legacy = tmp.path().join("present-home");
-        let home = tmp.path().join("analyst-home");
+        let home = tmp.path().join("fibration-home");
         legacy_home_fixture(&legacy);
         let report = migrate_from(&home, &legacy).unwrap().expect("migrated");
         assert_eq!(
@@ -321,7 +321,7 @@ kind = "something-else"
     #[test]
     fn nothing_to_do_without_an_old_home() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("analyst-home");
+        let home = tmp.path().join("fibration-home");
         assert_eq!(
             migrate_from(&home, &tmp.path().join("missing")).unwrap(),
             None

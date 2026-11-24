@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/agent/mod.rs` at commit f229e4d: the way
+// Ported from Fibration Lab `crates/core/src/agent/mod.rs` at commit f229e4d: the way
 // `run_turn` builds `history` (one assistant message per model call holding its text and tool
 // calls, one user message holding the results) and `recover_after_cancel`.
 // Adapted: Analyst keeps the history in memory only; here the same history is rebuilt from

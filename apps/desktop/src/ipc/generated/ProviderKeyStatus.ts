@@ -6,7 +6,7 @@
 export type ProviderKeyStatus = { provider: string, has_key: boolean, 
 /**
  * `"env"` (the variable is set in the app's environment), `"stored"` (found in
- * `$ANALYST_HOME/.env`, where keys saved through the app go), or null.
+ * `$FIBRATION_HOME/.env`, where keys saved through the app go), or null.
  */
 source: string | null, 
 /**

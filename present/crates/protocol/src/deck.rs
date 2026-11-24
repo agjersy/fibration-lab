@@ -643,7 +643,7 @@ pub struct Run {
     pub run_cite: Option<ResultCite>,
 }
 
-/// A citation of a named result of an analysis run (`analyst_results.record`): the run, the
+/// A citation of a named result of an analysis run (`fibration_results.record`): the run, the
 /// result's name, and what produced it. When `tree_hash` no longer matches the project's
 /// working tree, the checker reports the text as stale.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, TS)]

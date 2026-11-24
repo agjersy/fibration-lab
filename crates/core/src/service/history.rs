@@ -1,5 +1,5 @@
 //! The undo timeline of a session: the git checkpoints of its repository
-//! (`refs/analyst/checkpoints/*`), which cover code and decks together. A checkpoint is taken
+//! (`refs/fibration/checkpoints/*`), which cover code and decks together. A checkpoint is taken
 //! before every agent turn that can change files, before a deck is switched to code mode,
 //! before a template is replaced, and before an export; restoring one puts the working tree
 //! (scripts and slide documents alike) back, after taking a checkpoint of the state it
@@ -9,12 +9,12 @@
 use super::error::{ServiceError, ServiceResult};
 use crate::checkpoint;
 use crate::session::Session;
-use analyst_protocol::transcript::Event;
-use analyst_protocol::ui::CheckpointView;
+use fibration_protocol::transcript::Event;
+use fibration_protocol::ui::CheckpointView;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// The id of a checkpoint ref (`refs/analyst/checkpoints/<id>` -> `<id>`).
+/// The id of a checkpoint ref (`refs/fibration/checkpoints/<id>` -> `<id>`).
 fn id_of(reference: &str) -> &str {
     reference
         .strip_prefix(checkpoint::REF_PREFIX)

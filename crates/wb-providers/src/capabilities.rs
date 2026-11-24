@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/providers/capabilities.rs` at commit f229e4d.
+// Ported from Fibration Lab `crates/core/src/providers/capabilities.rs` at commit f229e4d.
 // Adapted (Present PROTOCOL 6.1): adds the vision probe, the documents and caching probes,
 // the `degraded` computation, and persistence of unknown-field downgrades.
 //! Capability probe and the `<home>/capabilities.json` cache.

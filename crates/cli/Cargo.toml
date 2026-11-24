@@ -1,18 +1,18 @@
 [package]
-name = "analyst-cli"
+name = "fibration-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "analyst"
+name = "fibration"
 path = "src/main.rs"
 
 [dependencies]
-analyst-core = { path = "../core" }
-analyst-evals = { path = "../evals" }
-analyst-protocol = { path = "../protocol" }
+fibration-core = { path = "../core" }
+fibration-evals = { path = "../evals" }
+fibration-protocol = { path = "../protocol" }
 wb-net = { path = "../wb-net" }
 wb-providers = { path = "../wb-providers" }
 clap.workspace = true
@@ -26,6 +26,6 @@ tracing-subscriber.workspace = true
 futures.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
-analyst-deck = { path = "../../present/crates/core" }
-analyst-deck-protocol = { path = "../../present/crates/protocol" }
+fibration-deck = { path = "../../present/crates/core" }
+fibration-deck-protocol = { path = "../../present/crates/protocol" }
 tempfile.workspace = true

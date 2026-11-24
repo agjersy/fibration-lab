@@ -1,4 +1,4 @@
-// Moved from Personal Analyst `crates/core/src/agent/mod.rs` as it stood after the security
+// Moved from Fibration Lab `crates/core/src/agent/mod.rs` as it stood after the security
 // review (REVIEW A1, B3, B4), so that both workbenches share the reviewed behaviour.
 //! Staged compaction and history repair.
 //!

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from analyst_kernel.errors import (
+from fibration_kernel.errors import (
     INVALID_PARAMS,
     INVALID_REQUEST,
     METHOD_NOT_FOUND,
@@ -20,7 +20,7 @@ from analyst_kernel.errors import (
     SCRIPT_NOT_FOUND,
     RpcError,
 )
-from analyst_kernel.rpc import Deferred, Dispatcher, Server
+from fibration_kernel.rpc import Deferred, Dispatcher, Server
 
 
 def run_server(dispatcher: Dispatcher, lines: list[str]) -> list[dict]:

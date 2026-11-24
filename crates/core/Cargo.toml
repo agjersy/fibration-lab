@@ -1,5 +1,5 @@
 [package]
-name = "analyst-core"
+name = "fibration-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,9 @@ publish.workspace = true
 [dependencies]
 libc = "0.2.170"
 ts-rs.workspace = true
-analyst-protocol = { path = "../protocol" }
-analyst-deck = { path = "../../present/crates/core" }
-analyst-deck-protocol = { path = "../../present/crates/protocol" }
+fibration-protocol = { path = "../protocol" }
+fibration-deck = { path = "../../present/crates/core" }
+fibration-deck-protocol = { path = "../../present/crates/protocol" }
 wb-net = { path = "../wb-net" }
 wb-providers = { path = "../wb-providers" }
 wb-transcript = { path = "../wb-transcript" }

@@ -1,4 +1,4 @@
-# Ported from Personal Analyst python/kernel/analyst_kernel/paths.py at commit f229e4d.
+# Ported from Fibration Lab python/kernel/fibration_kernel/paths.py at commit f229e4d.
 """Path helpers: every path parameter is relative to the project root and must not escape it."""
 
 from __future__ import annotations

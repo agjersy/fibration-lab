@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/ui/common/format.ts at commit f229e4d.
+// Ported from Fibration Lab apps/desktop/src/ui/common/format.ts at commit f229e4d.
 export function formatDuration(start: string, end: string | null): string {
   const ms = (end ? Date.parse(end) : Date.now()) - Date.parse(start);
   if (!Number.isFinite(ms) || ms < 0) return "";

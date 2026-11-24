@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/policy.rs` at commit f229e4d.
+// Ported from Fibration Lab `crates/core/src/policy.rs` at commit f229e4d.
 // Adapted: the vocabulary is generic (string policy classes, an `Action` built by the app
 // instead of `(tool, args)`, mode rules as data, locked ids or globs instead of protected
 // path globs only) so that the deck and analysis workbenches can both map their tools onto

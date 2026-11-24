@@ -1,12 +1,12 @@
-//! Session store under `$ANALYST_HOME/sessions/<id>/` (PROTOCOL 2.3): `session.toml`,
+//! Session store under `$FIBRATION_HOME/sessions/<id>/` (PROTOCOL 2.3): `session.toml`,
 //! transcript JSONL per conversation, `runs.jsonl`, `artifacts/`, and the "files changed
 //! since last turn" tree diff.
 
 use crate::checkpoint;
-use analyst_protocol::kernel::RunMeta;
-use analyst_protocol::session::{SessionRecord, SessionRun};
-use analyst_protocol::transcript::Event;
 use anyhow::{Context, Result};
+use fibration_protocol::kernel::RunMeta;
+use fibration_protocol::session::{SessionRecord, SessionRun};
+use fibration_protocol::transcript::Event;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -250,7 +250,7 @@ pub fn from_shared(event: &wb_transcript::Event) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use analyst_protocol::kernel::RunStatus;
+    use fibration_protocol::kernel::RunStatus;
 
     fn temp_repo() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

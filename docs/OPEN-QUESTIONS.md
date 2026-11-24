@@ -23,7 +23,7 @@ Every question that blocked phase 0 has been answered. Numbering is preserved fr
 | OQ-9 Notebooks | Excluded entirely from the first desktop version. | VISION.md section 9 |
 | OQ-11 Figures | Static Matplotlib capture (PNG and SVG) in phase 1. Interactive Plotly or Bokeh output is a later phase. | ARCHITECTURE.md section 5.12 |
 | OQ-15 Editor feel | Zed's keymap and command palette conventions. Vim mode deferred to phase 4. | ARCHITECTURE.md section 6 |
-| OQ-16 Name and licensing | The product keeps the name "Personal Analyst": binary `analyst`, config in `~/.analyst`, bundle identifier derived from it. The repository stays private for now with the license decided later; only permissively licensed dependencies (no GPL or AGPL) so both options stay open. | this record |
+| OQ-16 Name and licensing | The product keeps the name "Fibration Lab": binary `fibration`, config in `~/.fibration`, bundle identifier derived from it. The repository stays private for now with the license decided later; only permissively licensed dependencies (no GPL or AGPL) so both options stay open. | this record |
 
 ## 2. Open for phase 2 and later
 

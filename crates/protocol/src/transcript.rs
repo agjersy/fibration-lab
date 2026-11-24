@@ -239,7 +239,7 @@ mod tests {
             },
             Event::Checkpoint {
                 ts: "t".into(),
-                r#ref: "refs/analyst/checkpoints/x".into(),
+                r#ref: "refs/fibration/checkpoints/x".into(),
             },
             Event::Summary {
                 ts: "t".into(),
@@ -274,6 +274,6 @@ mod tests {
             assert_eq!(&back, e);
         }
         let v = serde_json::to_value(&events[7]).unwrap();
-        assert_eq!(v["ref"], "refs/analyst/checkpoints/x");
+        assert_eq!(v["ref"], "refs/fibration/checkpoints/x");
     }
 }

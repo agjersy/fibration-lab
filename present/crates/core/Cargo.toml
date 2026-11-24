@@ -1,12 +1,12 @@
 [package]
-name = "analyst-deck"
+name = "fibration-deck"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
-analyst-deck-protocol = { path = "../protocol" }
+fibration-deck-protocol = { path = "../protocol" }
 wb-net = { path = "../../../crates/wb-net" }
 wb-sandbox = { path = "../../../crates/wb-sandbox" }
 wb-providers = { path = "../../../crates/wb-providers" }

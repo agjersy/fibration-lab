@@ -1,4 +1,4 @@
-// Moved from Personal Analyst `crates/core/src/util.rs` (the fixes for REVIEW G4 and G7).
+// Moved from Fibration Lab `crates/core/src/util.rs` (the fixes for REVIEW G4 and G7).
 //! Path confinement for policies whose targets are files under a root directory: reserved
 //! directories, symlink-aware resolution, and the case-sensitivity probe.
 //!
@@ -8,7 +8,7 @@ use crate::normalize_rel_path;
 use std::path::{Path, PathBuf};
 
 /// Whether a root-relative path is reserved: anything under `.git/` (at any depth) or under
-/// one of `reserved_top` (top-level directory names such as `.analyst`), in any letter case.
+/// one of `reserved_top` (top-level directory names such as `.fibration`), in any letter case.
 /// Paths that do not normalise are reported as reserved.
 pub fn is_reserved_path(rel: &str, reserved_top: &[&str]) -> bool {
     let Ok(norm) = normalize_rel_path(rel) else {
@@ -167,7 +167,7 @@ pub enum PathDenied {
 
 impl PathRules {
     /// `reserved_top`: top-level directory names that are never editable, lower case
-    /// (`.analyst`). `.git` at any depth is always reserved.
+    /// (`.fibration`). `.git` at any depth is always reserved.
     pub fn new<I, S>(root: &Path, reserved_top: I) -> Self
     where
         I: IntoIterator<Item = S>,

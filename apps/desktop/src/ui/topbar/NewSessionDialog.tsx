@@ -96,7 +96,7 @@ export function NewSessionDialog({ onClose }: { onClose: () => void }) {
         <span />
         <label className="row">
           <input type="checkbox" checked={init} onChange={(e) => setInit(e.target.checked)} />
-          Initialize as an analysis repo (runs the <code>analyst init</code> template on an empty directory)
+          Initialize as an analysis repo (runs the <code>fibration init</code> template on an empty directory)
         </label>
       </div>
       {error ? (

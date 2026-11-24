@@ -1,4 +1,4 @@
-// Moved from Personal Analyst `crates/core/src/policy.rs` (its test module as it stood after
+// Moved from Fibration Lab `crates/core/src/policy.rs` (its test module as it stood after
 // the security review): the regression tests for REVIEW G2, G4, G5, G6 and G7 and the
 // "runs never get network" test, now run against the shared engine.
 
@@ -40,7 +40,7 @@ fn action(tool: &str, path: Option<&str>) -> Action {
 
 fn session_with(cfg: AnalystPolicyConfig, mode_name: &str, repo: &Path) -> Session {
     Session::new(cfg.to_policy().unwrap(), mode(mode_name))
-        .with_paths(PathRules::new(repo, [".analyst"]))
+        .with_paths(PathRules::new(repo, [".fibration"]))
         .with_unsandboxed(cfg.unsandboxed_runs)
 }
 
@@ -189,7 +189,7 @@ fn no_edit_shape_gets_past_a_protected_path() {
     // A file that merely contains the old marker comments is an ordinary file now.
     std::fs::write(
         dir.path().join("plain.py"),
-        "# analyst: lock\nX = 1\n# analyst: unlock\n",
+        "# fibration: lock\nX = 1\n# fibration: unlock\n",
     )
     .unwrap();
     s.declare_scope(vec!["plain.py".into()]);
@@ -262,15 +262,15 @@ fn reserved_paths_are_never_editable() {
         let mut s = session(edits, "build", dir.path());
         s.declare_scope(vec![
             ".git/config".into(),
-            ".analyst/project.toml".into(),
+            ".fibration/project.toml".into(),
             ".GIT/hooks/pre-commit".into(),
         ]);
         for (tool, path) in [
             ("fs.propose_edit", ".git/config"),
             ("fs.propose_create", ".GIT/hooks/pre-commit"),
             ("fs.propose_create", ".git/hooks/post-checkout"),
-            ("fs.propose_edit", ".analyst/project.toml"),
-            ("fs.propose_delete", ".Analyst/project.toml"),
+            ("fs.propose_edit", ".fibration/project.toml"),
+            ("fs.propose_delete", ".Fibration/project.toml"),
             ("fs.propose_create", "sub/.git/config"),
             ("fs.propose_create", ".git./config"),
             ("fs.propose_create", "GIT~1/config"),
@@ -295,7 +295,7 @@ fn reserved_paths_are_never_editable() {
     }
     assert!(session(AnalystEdits::Review, "build", dir.path())
         .summary()
-        .contains(".git/ and .analyst/ are never editable"));
+        .contains(".git/ and .fibration/ are never editable"));
 }
 
 /// G5: scope bookkeeping.

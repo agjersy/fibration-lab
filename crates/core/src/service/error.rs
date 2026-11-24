@@ -1,8 +1,8 @@
 //! `ServiceError`: the service-level error, mapped one-to-one onto IPC.md error codes.
 
 use crate::kernel::KernelError;
-use analyst_protocol::rpc::codes;
-use analyst_protocol::ui::{IpcError, IpcErrorCode};
+use fibration_protocol::rpc::codes;
+use fibration_protocol::ui::{IpcError, IpcErrorCode};
 use serde_json::Value;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -116,11 +116,11 @@ impl From<KernelError> for ServiceError {
     }
 }
 
-/// A deck service error keeps its code (the deck codes are a subset of the analyst ones) and
+/// A deck service error keeps its code (the deck codes are a subset of the fibration ones) and
 /// its detail.
-impl From<analyst_deck_protocol::ui::IpcError> for ServiceError {
-    fn from(e: analyst_deck_protocol::ui::IpcError) -> Self {
-        use analyst_deck_protocol::ui::IpcErrorCode as D;
+impl From<fibration_deck_protocol::ui::IpcError> for ServiceError {
+    fn from(e: fibration_deck_protocol::ui::IpcError) -> Self {
+        use fibration_deck_protocol::ui::IpcErrorCode as D;
         let code = match e.code {
             D::NotFound => IpcErrorCode::NotFound,
             D::Conflict => IpcErrorCode::Conflict,

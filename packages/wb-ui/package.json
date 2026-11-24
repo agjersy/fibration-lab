@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Workbench UI shared by Personal Present and Personal Analyst: theme tokens, Backend interface, dialogs, toasts, palette, keymap.",
+  "description": "Workbench UI shared by Personal Present and Fibration Lab: theme tokens, Backend interface, dialogs, toasts, palette, keymap.",
   "license": "UNLICENSED",
   "sideEffects": ["**/*.css"],
   "exports": {

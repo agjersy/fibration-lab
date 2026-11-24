@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from analyst_kernel.errors import RpcError
+from fibration_kernel.errors import RpcError
 
 
 def make_outputs(repo: Path) -> Path:

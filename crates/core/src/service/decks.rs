@@ -5,18 +5,18 @@
 //! loop, which shares it). It lists and creates decks without starting anything, and opens a
 //! deck's service on first use: that starts the deck kernel (no network) and opens the
 //! reference index, which is per-user state under the session store
-//! (`~/.analyst/sessions/<id>/decks/<slug>/`). Undo for decks is the session's git
+//! (`~/.fibration/sessions/<id>/decks/<slug>/`). Undo for decks is the session's git
 //! checkpoints: deck documents are files in the repository.
 
 use super::error::{ServiceError, ServiceResult};
 use super::events::EventHub;
 use crate::checkpoint;
-use analyst_deck::project::Project;
-use analyst_deck::service::DeckHost;
-pub use analyst_deck::service::DeckService;
-use analyst_deck::workspace::{OpenOptions, Provenance, Workspace};
-use analyst_deck_protocol::deck::DeckMode;
-use analyst_protocol::ui::{DeckSummary, SessionEvent};
+use fibration_deck::project::Project;
+use fibration_deck::service::DeckHost;
+pub use fibration_deck::service::DeckService;
+use fibration_deck::workspace::{OpenOptions, Provenance, Workspace};
+use fibration_deck_protocol::deck::DeckMode;
+use fibration_protocol::ui::{DeckSummary, SessionEvent};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -44,7 +44,7 @@ pub fn valid_slug(slug: &str) -> Result<(), String> {
 
 /// A slug from a title (`Q3 review` -> `q3-review`).
 pub fn slug_for(title: &str) -> String {
-    analyst_deck::workspace::slug(title)
+    fibration_deck::workspace::slug(title)
 }
 
 /// `decks/<slug>`, repo-relative.
@@ -65,7 +65,7 @@ pub fn slide_rel(slug: &str, slide_id: &str) -> String {
 
 fn summary(repo: &Path, slug: &str, open: bool) -> Option<DeckSummary> {
     let root = deck_root(repo, slug);
-    let deck = analyst_deck::deck_store::DeckStore::new(&root)
+    let deck = fibration_deck::deck_store::DeckStore::new(&root)
         .read_deck()
         .ok()?;
     Some(DeckSummary {
@@ -353,7 +353,7 @@ impl DeckServices {
                 match decks.as_slice() {
                     [one] => self.open(&one.slug).await,
                     [] => Err(ServiceError::not_found(
-                        "this project has no deck; the user creates one from a template (`analyst deck init`)",
+                        "this project has no deck; the user creates one from a template (`fibration deck init`)",
                     )),
                     many => Err(ServiceError::invalid(format!(
                         "this project has several decks; pass `deck` (one of: {})",

@@ -110,7 +110,7 @@ pub fn sh_quote_path(p: &str) -> String {
 }
 
 /// Whether a repo-relative path is reserved and never editable by the agent or the renderer:
-/// anything under `.git/` (at any depth) or the top-level `.analyst/`, in any letter case.
+/// anything under `.git/` (at any depth) or the top-level `.fibration/`, in any letter case.
 /// Paths that do not normalise are reported as reserved. (The rule lives in `wb-policy`.)
 pub fn is_reserved_path(rel: &str) -> bool {
     wb_policy::paths::is_reserved_path(rel, crate::tools::gate::RESERVED_DIRS)
@@ -276,8 +276,11 @@ mod tests {
 
     #[test]
     fn remote_path_quoting_keeps_tilde_expansion() {
-        assert_eq!(sh_quote_path("~/analyst/repo"), "~/analyst/repo");
-        assert_eq!(sh_quote_path("~/analyst/my repo"), "~/'analyst/my repo'");
+        assert_eq!(sh_quote_path("~/fibration/repo"), "~/fibration/repo");
+        assert_eq!(
+            sh_quote_path("~/fibration/my repo"),
+            "~/'fibration/my repo'"
+        );
         assert_eq!(sh_quote_path("/data/my repo"), "'/data/my repo'");
         assert_eq!(sh_quote_path("~"), "~");
         assert_eq!(sh_quote_path("~root/x"), "'~root/x'");
@@ -290,8 +293,8 @@ mod tests {
             ".GIT/hooks/pre-commit",
             ".git",
             "./.git/x",
-            ".analyst/project.toml",
-            ".Analyst/project.toml",
+            ".fibration/project.toml",
+            ".Fibration/project.toml",
             "sub/.git/config",
             ".git./config",
             "../x",
@@ -302,7 +305,7 @@ mod tests {
         for p in [
             "scripts/a.py",
             ".gitignore",
-            "analysis/.analyst/x",
+            "analysis/.fibration/x",
             "git/config",
             ".github/x",
         ] {

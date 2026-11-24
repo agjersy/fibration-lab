@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/ipc/backend.ts at commit f229e4d. Made generic over the
+// Ported from Fibration Lab apps/desktop/src/ipc/backend.ts at commit f229e4d. Made generic over the
 // command map, the event type and the subscription scope so both workbench apps share the shape.
 
 /** One entry of a command map: `{ args, result }`. */

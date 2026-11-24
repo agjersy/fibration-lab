@@ -1,5 +1,5 @@
-//! Start-up wiring shared by the three front ends: the desktop shell, `analyst-serve`, and the
-//! `analyst` CLI. [`App::start`] creates the home, migrates an old `~/.present` once, sets up the
+//! Start-up wiring shared by the three front ends: the desktop shell, `fibration-serve`, and the
+//! `fibration` CLI. [`App::start`] creates the home, migrates an old `~/.present` once, sets up the
 //! network gate's ledger, and loads `config.toml`; from there the shell and the bridge build the
 //! [`Workbench`] with [`App::workbench`], and the CLI, which talks to one kernel and one model
 //! without a workbench, uses [`App::kernel`], [`App::ensure_local_tooling`] and [`App::model`].
@@ -10,8 +10,8 @@ use crate::kernel::{KernelArgs, KernelClient, KernelTransport, LocalStdio, SshSt
 use crate::migrate::MigrationReport;
 use crate::service::{Workbench, WorkbenchOptions};
 use crate::target::{self, Target};
-use analyst_protocol::config::{GlobalConfig, ProjectConfig};
 use anyhow::{anyhow, Context, Result};
+use fibration_protocol::config::{GlobalConfig, ProjectConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use wb_providers::model::ModelCapabilities;
@@ -26,10 +26,10 @@ pub struct StartOptions {
 }
 
 impl StartOptions {
-    /// From the environment: `ANALYST_SANDBOX` overrides the kernel sandbox kind.
+    /// From the environment: `FIBRATION_SANDBOX` overrides the kernel sandbox kind.
     pub fn from_env() -> StartOptions {
         StartOptions {
-            sandbox: std::env::var("ANALYST_SANDBOX")
+            sandbox: std::env::var("FIBRATION_SANDBOX")
                 .ok()
                 .filter(|s| !s.is_empty()),
         }
@@ -82,9 +82,9 @@ impl App {
         })
     }
 
-    /// [`App::start`] with `$ANALYST_HOME` (default `~/.analyst`) and [`StartOptions::from_env`].
+    /// [`App::start`] with `$FIBRATION_HOME` (default `~/.fibration`) and [`StartOptions::from_env`].
     pub fn start_from_env() -> Result<App> {
-        App::start(config::analyst_home(), StartOptions::from_env())
+        App::start(config::fibration_home(), StartOptions::from_env())
     }
 
     /// The workbench of the desktop shell and the development bridge.
@@ -167,14 +167,14 @@ impl App {
         tracing::info!("kernel: {}", t.describe());
         KernelClient::connect(t, crate::CORE_VERSION)
             .await
-            .map_err(|e| anyhow!("starting the kernel on target `{}`: {e}\n  (set ANALYST_TOOLING_PYTHON or `tooling_python` in config.toml to the interpreter that has analyst_kernel installed)", target.name()))
+            .map_err(|e| anyhow!("starting the kernel on target `{}`: {e}\n  (set FIBRATION_TOOLING_PYTHON or `tooling_python` in config.toml to the interpreter that has fibration_kernel installed)", target.name()))
     }
 
     /// Make sure a local tooling environment exists when nothing else provides one: the first
-    /// start on a machine creates `$ANALYST_HOME/tooling/.venv` from the kernel source of a
+    /// start on a machine creates `$FIBRATION_HOME/tooling/.venv` from the kernel source of a
     /// development checkout. `say` receives the progress lines.
     pub async fn ensure_local_tooling(&self, say: impl Fn(&str)) {
-        if std::env::var_os("ANALYST_TOOLING_PYTHON").is_some_and(|v| !v.is_empty())
+        if std::env::var_os("FIBRATION_TOOLING_PYTHON").is_some_and(|v| !v.is_empty())
             || self
                 .global
                 .tooling_python
@@ -251,7 +251,7 @@ pub fn session_python(repo: &Path, override_: Option<&str>) -> String {
 
 /// How the local kernel is started.
 pub enum LocalKernel {
-    /// `<tooling python> -m analyst_kernel`.
+    /// `<tooling python> -m fibration_kernel`.
     Tooling(String),
     /// A launcher command line (tests: the fake kernel).
     Launcher(Vec<String>),
@@ -304,14 +304,14 @@ pub fn kernel_transport(k: KernelSpec<'_>) -> Box<dyn KernelTransport> {
                 host: host.clone(),
                 control_dir: k.control_dir,
                 remote_launcher: vec![
-                    "~/.analyst/tooling/.venv/bin/python".into(),
+                    "~/.fibration/tooling/.venv/bin/python".into(),
                     "-m".into(),
-                    "analyst_kernel".into(),
+                    "fibration_kernel".into(),
                 ],
                 args: KernelArgs {
                     python: format!("{mirror}/.venv/bin/python"),
                     root: mirror,
-                    runs_dir: "~/.analyst/runs".into(),
+                    runs_dir: "~/.fibration/runs".into(),
                     out_dir: Some(eff.out_dir),
                     sandbox: Some(
                         k.sandbox
@@ -363,7 +363,7 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         let t = app.transport(&repo, &ProjectConfig::default(), &Target::Local, false);
         let line = t.describe();
-        assert!(line.contains("analyst_kernel"), "{line}");
+        assert!(line.contains("fibration_kernel"), "{line}");
         assert!(line.contains("limits"), "{line}");
         assert!(dir.path().join("home/runs").is_dir());
     }

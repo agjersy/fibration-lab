@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/session.rs` (transcript part: `append_jsonl`,
+// Ported from Fibration Lab `crates/core/src/session.rs` (transcript part: `append_jsonl`,
 // `read_jsonl`, `append_event`, `read_transcript`, `conversations`) at commit f229e4d.
 // Adapted: a store of its own (no session record), optional fsync, a read that tolerates a
 // truncated last line, conversation summaries, and pinned facts next to each transcript.

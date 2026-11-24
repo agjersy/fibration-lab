@@ -8,9 +8,9 @@
 
 use super::error::{ServiceError, ServiceResult};
 use super::runtime::SessionRuntime;
-use analyst_protocol::kernel::{ArtifactKind, RunStatus};
-use analyst_protocol::transcript::{DecidedBy, Decision, ProposalKind};
-use analyst_protocol::ui::{
+use fibration_protocol::kernel::{ArtifactKind, RunStatus};
+use fibration_protocol::transcript::{DecidedBy, Decision, ProposalKind};
+use fibration_protocol::ui::{
     ProposalDecision, ProposalReason, ProposalView, SessionEvent, VerificationState, VerifyItem,
 };
 use serde_json::{json, Value};
@@ -75,7 +75,7 @@ fn shown_decimals(text: &str) -> Option<usize> {
     Some(num.split_once('.').map(|(_, d)| d.len()).unwrap_or(0))
 }
 
-fn format_result(r: &analyst_protocol::kernel::NamedResult, decimals: Option<usize>) -> String {
+fn format_result(r: &fibration_protocol::kernel::NamedResult, decimals: Option<usize>) -> String {
     let n = super::provenance::format_value(r.value, decimals);
     match r.unit.as_deref().filter(|u| !u.is_empty()) {
         Some("%") => format!("{n}%"),
@@ -88,7 +88,7 @@ fn format_result(r: &analyst_protocol::kernel::NamedResult, decimals: Option<usi
 /// Bring one element up to date in `el` (a placeholder content or a free element's content).
 async fn refresh_element(
     rt: &SessionRuntime,
-    svc: &analyst_deck::service::DeckService,
+    svc: &fibration_deck::service::DeckService,
     reruns: &mut Reruns,
     tree: Option<&str>,
     deck: &str,
@@ -200,7 +200,7 @@ async fn refresh_element(
     }
 
     // Numbers bound to named results, in text and in table cells.
-    let bound: Vec<(String, Value, String)> = analyst_deck::workspace::text_runs(el)
+    let bound: Vec<(String, Value, String)> = fibration_deck::workspace::text_runs(el)
         .into_iter()
         .filter(|(_, r)| r["run_cite"].is_object() && changed_tree(&r["run_cite"]))
         .map(|(ptr, r)| {
@@ -265,7 +265,7 @@ pub async fn refresh_slide(
     element_id: Option<&str>,
 ) -> ServiceResult<Option<ProposalView>> {
     let svc = rt.deck(deck).await?;
-    let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
+    let id = fibration_deck_protocol::ids::SlideId::new(slide_id.to_string())
         .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
     let (slide, hash) = svc
         .ws
@@ -409,7 +409,7 @@ pub async fn refresh_slide(
                         // invalid): the proposal resolves as rejected, the slide is untouched,
                         // and the user is told so, with the offer to refresh again.
                         tracing::warn!("refreshing {deck}/{slide_id}: {e}");
-                        let message = if e.code == analyst_protocol::ui::IpcErrorCode::Conflict {
+                        let message = if e.code == fibration_protocol::ui::IpcErrorCode::Conflict {
                             format!(
                                 "Slide {slide_id} of {deck} changed after the refresh was proposed, so the refresh was not applied. Refresh again to propose it against the current slide."
                             )
@@ -452,7 +452,7 @@ async fn apply(
     doc: Value,
     hash: &str,
 ) -> ServiceResult<()> {
-    let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(doc)
+    let slide: fibration_deck_protocol::deck::Slide = serde_json::from_value(doc)
         .map_err(|e| ServiceError::invalid(format!("the refreshed slide: {e}")))?;
     // Undo is the checkpoint timeline, as for any accepted change.
     let id = crate::checkpoint::new_id(&format!("deck-{deck}"));
@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(shown_decimals("1.823 s"), Some(3));
         assert_eq!(shown_decimals("about 18%"), Some(0));
         assert_eq!(shown_decimals("none"), None);
-        let r = analyst_protocol::kernel::NamedResult {
+        let r = fibration_protocol::kernel::NamedResult {
             name: "tau".into(),
             value: 1.9,
             unit: Some("s".into()),

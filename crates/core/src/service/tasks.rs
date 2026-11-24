@@ -1,8 +1,8 @@
 //! Long operations (bootstrap, target switch, package changes) return a `TaskId` immediately
 //! and report through `task_log` / `task_done` events on the session channel.
 
-use analyst_protocol::ui::{SessionEvent, TaskId};
 use anyhow::{anyhow, Context, Result};
+use fibration_protocol::ui::{SessionEvent, TaskId};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};

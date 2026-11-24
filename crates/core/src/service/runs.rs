@@ -17,9 +17,9 @@ use crate::kernel::KernelClient;
 use crate::session::Session;
 use crate::target::{self, Target};
 use crate::util::{normalize_rel_path, now_rfc3339, resolve_in_repo};
-use analyst_protocol::config::ProjectConfig;
-use analyst_protocol::kernel::*;
-use analyst_protocol::ui::*;
+use fibration_protocol::config::ProjectConfig;
+use fibration_protocol::kernel::*;
+use fibration_protocol::ui::*;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -168,7 +168,7 @@ impl RunShared {
 pub struct RunService {
     repo: PathBuf,
     home: PathBuf,
-    /// The session directory (`~/.analyst/sessions/<id>`).
+    /// The session directory (`~/.fibration/sessions/<id>`).
     dir: PathBuf,
     control_dir: RwLock<Option<PathBuf>>,
     shared: RunShared,
@@ -399,7 +399,7 @@ impl RunService {
         for c in session.conversations().unwrap_or_default() {
             if let Ok(events) = session.read_transcript(&c) {
                 for e in events {
-                    if let analyst_protocol::transcript::Event::Run { run_id, .. } = e {
+                    if let fibration_protocol::transcript::Event::Run { run_id, .. } = e {
                         found.push((run_id, c.clone()));
                     }
                 }
@@ -440,7 +440,7 @@ impl RunService {
     }
 
     /// A `RunView` for a run known only from the session store.
-    pub fn stored_view(&self, r: analyst_protocol::session::SessionRun) -> RunView {
+    pub fn stored_view(&self, r: fibration_protocol::session::SessionRun) -> RunView {
         RunView {
             conversation: self.run_conversation(&r.meta.run_id),
             meta: r.meta,

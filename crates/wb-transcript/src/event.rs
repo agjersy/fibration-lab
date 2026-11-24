@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/protocol/src/transcript.rs` at commit f229e4d.
+// Ported from Fibration Lab `crates/protocol/src/transcript.rs` at commit f229e4d.
 // Adapted: the union of Analyst PROTOCOL 5 and Present PROTOCOL 6.2. `proposal.kind` is a
 // string each app defines, `summary` carries free-form details, `snapshot` and `compaction`
 // are added, and event types this crate does not know pass through as raw JSON.
@@ -390,7 +390,7 @@ mod tests {
             },
             Event::Checkpoint {
                 ts: "t".into(),
-                r#ref: "refs/analyst/checkpoints/x".into(),
+                r#ref: "refs/fibration/checkpoints/x".into(),
             },
             Event::Snapshot {
                 ts: "t".into(),
@@ -438,7 +438,7 @@ mod tests {
             assert_eq!(&back, e);
         }
         let v = serde_json::to_value(&events[7]).unwrap();
-        assert_eq!(v["ref"], "refs/analyst/checkpoints/x");
+        assert_eq!(v["ref"], "refs/fibration/checkpoints/x");
     }
 
     #[test]

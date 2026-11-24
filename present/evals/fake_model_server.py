@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """A scripted OpenAI-compatible chat-completions server for exercising the agent loop without a model.
 
-Adapted from Personal Analyst evals/fake_model_server.py at commit f229e4d. It speaks the wire
+Adapted from Fibration Lab evals/fake_model_server.py at commit f229e4d. It speaks the wire
 format of PROTOCOL.md section 6.1 and nothing else. Responses are chosen from the conversation
 so far (which tools were already called and what they returned), so each scripted evaluation
 task plays out deterministically: `spreadsheet-to-charts` and `fix-checker-failures`, through
-the one agent loop of `analyst` (its `declare_scope` tool covers slides).
+the one agent loop of `fibration` (its `declare_scope` tool covers slides).
 
 Usage:  python3 evals/fake_model_server.py [--port 8765]
 Config: [[providers]] name="fake" kind="openai-compatible" base_url="http://127.0.0.1:8765/v1"

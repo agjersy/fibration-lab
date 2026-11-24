@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A stdlib-only fake of `analyst_kernel` for Rust integration tests.
+"""A stdlib-only fake of `fibration_kernel` for Rust integration tests.
 
 Speaks the JSON-RPC framing of docs/PROTOCOL.md section 1 over stdio and implements:
 kernel.hello, kernel.shutdown, env.info, env.packages, scripts.index (static), lib.index
@@ -177,7 +177,7 @@ class Kernel:
         for name in ("stdout.log", "stderr.log", "artifacts.jsonl"):
             open(os.path.join(rd, name), "a").close()
         env = {
-            "ANALYST_RUN_ID": run_id, "ANALYST_OUT_DIR": out_abs, "ANALYST_ROOT": self.root,
+            "FIBRATION_RUN_ID": run_id, "FIBRATION_OUT_DIR": out_abs, "FIBRATION_ROOT": self.root,
             "PYTHONUNBUFFERED": "1", "PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/"),
         }
         wrapper = (

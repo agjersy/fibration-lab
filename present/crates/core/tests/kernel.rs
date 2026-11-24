@@ -1,8 +1,8 @@
 //! The Rust core talking to the real Python kernel over stdio.
 
-use analyst_deck::kernel::{resolve_runtime_python, KernelClient, KernelLaunch};
-use analyst_deck::project::Project;
-use analyst_deck_protocol::deck::DeckMode;
+use fibration_deck::kernel::{resolve_runtime_python, KernelClient, KernelLaunch};
+use fibration_deck::project::Project;
+use fibration_deck_protocol::deck::DeckMode;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -54,7 +54,7 @@ async fn hello_inspect_render_check_and_errors() {
         .unwrap();
     assert_eq!(desc["theme"]["fonts"]["minor"], "Carlito");
     // The typed description parses the kernel's output.
-    let typed: analyst_deck_protocol::template::TemplateDescription =
+    let typed: fibration_deck_protocol::template::TemplateDescription =
         serde_json::from_value(desc).unwrap();
     assert!(typed.masters[0]
         .layouts
@@ -62,7 +62,7 @@ async fn hello_inspect_render_check_and_errors() {
         .any(|l| l.name == "Layout 7"));
 
     let store = project.deck();
-    let slide: analyst_deck_protocol::deck::Slide = serde_json::from_value(json!({
+    let slide: fibration_deck_protocol::deck::Slide = serde_json::from_value(json!({
         "id": "s-k001", "kind": "layout", "layout": "Title and Content", "elements": [],
         "placeholders": {
             "title": {"type": "text", "id": "e-title", "text": {"paragraphs": [{"runs": [{"t": "From Rust"}]}]}},

@@ -1,4 +1,4 @@
-// @wb/ui: the workbench UI pieces shared by Personal Present and Personal Analyst. Nothing here may
+// @wb/ui: the workbench UI pieces shared by Personal Present and Fibration Lab. Nothing here may
 // import app-specific code. Styles: `@wb/ui/styles/theme.css` (tokens) and `@wb/ui/styles/base.css`.
 export type { Backend, BackendHolder, CommandMap, CommandSpec, IpcError } from "./backend";
 export { createBackendHolder, errorMessage, hasTauri, ipcError, isIpcError } from "./backend";

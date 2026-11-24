@@ -1,6 +1,6 @@
 //! The deck service: what the UI's deck commands do to one deck of a session (IPC.md): the
 //! slide editor's writes, checks, thumbnails, references, exports, code mode. One
-//! [`DeckService`] per deck slug, owned by the session runtime in `analyst-core`, which also
+//! [`DeckService`] per deck slug, owned by the session runtime in `fibration-core`, which also
 //! supplies the checkpoints that make changes undoable. Shaped after the analysis service.
 
 mod extras;
@@ -11,9 +11,9 @@ use crate::kernel::KernelError;
 use crate::tools::dispatch::{self, Change, ToolState};
 use crate::util::{now_iso, sha256_hex, write_atomic};
 use crate::workspace::Workspace;
-use analyst_deck_protocol::deck::{DeckMode, Slide};
-use analyst_deck_protocol::ids::SlideId;
-use analyst_deck_protocol::ui::*;
+use fibration_deck_protocol::deck::{DeckMode, Slide};
+use fibration_deck_protocol::ids::SlideId;
+use fibration_deck_protocol::ui::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -194,7 +194,7 @@ impl DeckService {
         self.deck_changed(changed, removed, by);
     }
 
-    async fn template(&self) -> R<analyst_deck_protocol::template::TemplateDescription> {
+    async fn template(&self) -> R<fibration_deck_protocol::template::TemplateDescription> {
         let cached = self.lock().tool_state_template.clone();
         let value = match cached {
             Some(v) => v,
@@ -538,7 +538,7 @@ impl DeckService {
             }
             st.diagnostics.extend(diags.iter().cloned());
         }
-        let typed: Vec<analyst_deck_protocol::kernel::Diagnostic> = diags
+        let typed: Vec<fibration_deck_protocol::kernel::Diagnostic> = diags
             .iter()
             .filter_map(|d| serde_json::from_value(d.clone()).ok())
             .collect();
@@ -809,7 +809,7 @@ impl DeckService {
                 .kernel
                 .call_value("refs.table", json!({"cite": cite}))
                 .await?;
-            let parsed: analyst_deck_protocol::deck::Table =
+            let parsed: fibration_deck_protocol::deck::Table =
                 serde_json::from_value(table).map_err(|e| IpcError::internal(e.to_string()))?;
             passage.highlight_cells =
                 Some((0, 0, parsed.rows.len() as u32, parsed.columns.len() as u32));
@@ -1044,9 +1044,9 @@ impl DeckService {
     }
 }
 
-fn empty_deck() -> analyst_deck_protocol::deck::Deck {
-    analyst_deck_protocol::deck::Deck {
-        schema_version: analyst_deck_protocol::SCHEMA_VERSION,
+fn empty_deck() -> fibration_deck_protocol::deck::Deck {
+    fibration_deck_protocol::deck::Deck {
+        schema_version: fibration_deck_protocol::SCHEMA_VERSION,
         mode: DeckMode::Structured,
         title: String::new(),
         author: None,
@@ -1060,7 +1060,7 @@ fn empty_deck() -> analyst_deck_protocol::deck::Deck {
     }
 }
 
-fn locate(deck: &analyst_deck_protocol::deck::Deck, id: &SlideId) -> (u32, String) {
+fn locate(deck: &fibration_deck_protocol::deck::Deck, id: &SlideId) -> (u32, String) {
     let mut index = 0;
     for section in &deck.sections {
         for s in &section.slides {

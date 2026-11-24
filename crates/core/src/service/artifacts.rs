@@ -10,8 +10,8 @@
 
 use super::runs::RunService;
 use crate::session::Session;
-use analyst_protocol::kernel::{Artifact, ArtifactKind};
-use analyst_protocol::ui::ArtifactEntry;
+use fibration_protocol::kernel::{Artifact, ArtifactKind};
+use fibration_protocol::ui::ArtifactEntry;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -22,7 +22,7 @@ pub fn current_tree(repo: &Path) -> Option<String> {
 }
 
 fn entry(
-    run: &analyst_protocol::session::SessionRun,
+    run: &fibration_protocol::session::SessionRun,
     a: &Artifact,
     current: Option<&str>,
 ) -> ArtifactEntry {
@@ -54,7 +54,7 @@ pub fn read_results(
     artifacts_dir: &Path,
     run_id: &str,
     path: &str,
-) -> Option<Vec<analyst_protocol::kernel::NamedResult>> {
+) -> Option<Vec<fibration_protocol::kernel::NamedResult>> {
     let local = crate::util::resolve_in_repo(repo, path, true)
         .ok()
         .filter(|p| p.is_file());
@@ -63,7 +63,7 @@ pub fn read_results(
         .filter(|p| p.is_file());
     let file = local.or(pulled)?;
     let text = std::fs::read_to_string(file).ok()?;
-    let parsed: analyst_protocol::kernel::ResultsFile = serde_json::from_str(&text).ok()?;
+    let parsed: fibration_protocol::kernel::ResultsFile = serde_json::from_str(&text).ok()?;
     Some(parsed.results)
 }
 
@@ -75,7 +75,7 @@ pub fn named_result(
     artifacts_dir: &Path,
     run_id: &str,
     name: &str,
-) -> Option<analyst_protocol::kernel::NamedResult> {
+) -> Option<fibration_protocol::kernel::NamedResult> {
     runs.artifacts(run_id)
         .into_iter()
         .filter(|a| a.kind == ArtifactKind::Results)
@@ -87,14 +87,14 @@ pub fn named_result(
 /// One named result of one run of the project, read from the run records on disk with no
 /// session or kernel: the kernel's run directory (`<home>/runs/<run id>/artifacts.jsonl`) and,
 /// for every session of this project, the copy kept with the session (a remote run) and the
-/// artifacts it pulled. This is the view `analyst deck check` uses, so the command line and
+/// artifacts it pulled. This is the view `fibration deck check` uses, so the command line and
 /// the desktop report the same bound numbers.
 pub fn project_named_result(
     home: &Path,
     repo: &Path,
     run_id: &str,
     name: &str,
-) -> Option<analyst_protocol::kernel::NamedResult> {
+) -> Option<fibration_protocol::kernel::NamedResult> {
     if !super::figures::safe_run_id(run_id) {
         return None;
     }
@@ -204,7 +204,7 @@ pub async fn place_figure(
     runs: &RunService,
     session: &Session,
     repo: &Path,
-    svc: &analyst_deck::service::DeckService,
+    svc: &fibration_deck::service::DeckService,
     slide_id: &str,
     run_id: &str,
     artifact: &str,
@@ -212,7 +212,7 @@ pub async fn place_figure(
     alt: Option<&str>,
 ) -> super::ServiceResult<PlacedElement> {
     use super::ServiceError;
-    use analyst_deck_protocol::template::ContentKind;
+    use fibration_deck_protocol::template::ContentKind;
     use serde_json::json;
     let entry = find(runs, session, repo, run_id, artifact).ok_or_else(|| {
         ServiceError::not_found(format!(
@@ -220,7 +220,7 @@ pub async fn place_figure(
         ))
     })?;
     let asset = copy_figure_asset(session, repo, svc, &entry)?;
-    let id = analyst_deck_protocol::ids::SlideId::new(slide_id.to_string())
+    let id = fibration_deck_protocol::ids::SlideId::new(slide_id.to_string())
         .map_err(|_| ServiceError::invalid("`slide_id` is not a slide id"))?;
     let (slide, hash) = svc
         .ws
@@ -267,7 +267,7 @@ pub type PlacedFigure = PlacedElement;
 pub(crate) fn copy_figure_asset(
     session: &Session,
     repo: &Path,
-    svc: &analyst_deck::service::DeckService,
+    svc: &fibration_deck::service::DeckService,
     entry: &ArtifactEntry,
 ) -> super::ServiceResult<String> {
     use super::ServiceError;
@@ -297,7 +297,7 @@ pub(crate) fn copy_figure_asset(
     let asset = format!("assets/{}.{ext}", &crate::util::sha256_hex(&bytes)[..16]);
     let target = svc.ws.project.root.join(&asset);
     if !target.is_file() {
-        analyst_deck::util::write_atomic(&target, &bytes)
+        fibration_deck::util::write_atomic(&target, &bytes)
             .map_err(|e| ServiceError::io(format!("writing {asset}: {e}")))?;
     }
     Ok(asset)
@@ -306,15 +306,15 @@ pub(crate) fn copy_figure_asset(
 /// The placeholder an element goes into: `placeholder` when given, else the first free one of
 /// the slide's layout that accepts one of `kinds` (titles skipped unless `titles`).
 pub(crate) async fn free_placeholder(
-    svc: &analyst_deck::service::DeckService,
+    svc: &fibration_deck::service::DeckService,
     layout: &str,
     doc: &serde_json::Value,
     placeholder: Option<&str>,
-    kinds: &[analyst_deck_protocol::template::ContentKind],
+    kinds: &[fibration_deck_protocol::template::ContentKind],
     titles: bool,
 ) -> super::ServiceResult<String> {
     use super::ServiceError;
-    use analyst_deck_protocol::template::PlaceholderType;
+    use fibration_deck_protocol::template::PlaceholderType;
     if let Some(k) = placeholder {
         return Ok(k.to_string());
     }

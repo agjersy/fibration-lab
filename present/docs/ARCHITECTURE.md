@@ -1,8 +1,8 @@
 # Personal Present — Application Design and Architecture
 
-> **Historical design note.** This document describes Personal Present before it was folded into Personal Analyst. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `analyst` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.analyst` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
+> **Historical design note.** This document describes Personal Present before it was folded into Fibration Lab. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `fibration` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.fibration` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
 
-*Status: workshop decisions closed (2026-11-15); every item in the decision summary is decided. The build is specified in [BUILD-SPEC.md](BUILD-SPEC.md) with contracts in [PROTOCOL.md](PROTOCOL.md) and [IPC.md](IPC.md). Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Reference architecture: Personal Analyst `docs/ARCHITECTURE.md`; sections marked **(shared)** reuse its design and are only summarized here.*
+*Status: workshop decisions closed (2026-11-15); every item in the decision summary is decided. The build is specified in [BUILD-SPEC.md](BUILD-SPEC.md) with contracts in [PROTOCOL.md](PROTOCOL.md) and [IPC.md](IPC.md). Companion documents: [VISION.md](VISION.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Reference architecture: Fibration Lab `docs/ARCHITECTURE.md`; sections marked **(shared)** reuse its design and are only summarized here.*
 
 ## 1. Decision summary
 
@@ -15,7 +15,7 @@
 | P5 | Preview and PDF/PNG export | Live HTML/SVG preview from the deck document (structured mode), plus a fidelity render of the actual `.pptx` by PowerPoint automation when installed, else a separately installable bundled LibreOffice, else a system LibreOffice | Decided (OQ-P6) |
 | P6 | Model access | Analyst's `ModelClient` with its two wire adapters (Anthropic Messages, OpenAI-compatible). First version targets the Anthropic API, internal gateways speaking either format, and open-weight models on internal servers. Cloud-platform auth back ends (Bedrock, Vertex, Foundry) are a later addition behind the same interface | Decided (OQ-P2) |
 | P7 | Skills | Full Anthropic Agent Skills (`SKILL.md` + resources + scripts), discovered, loaded, and executed by the app, never by the provider, so skills work identically on every endpoint; scripts in the code sandbox, ask by default | Decided (OQ-P7) |
-| P8 | References | Always copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML, and Personal Analyst outputs. Hybrid search: SQLite FTS5 plus a bundled offline embedding model (endpoint optional). No OCR and no web access in v1. Per-element citations | Decided (OQ-P8) |
+| P8 | References | Always copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown/text, email (`.eml`, `.msg`), HTML, and Fibration Lab outputs. Hybrid search: SQLite FTS5 plus a bundled offline embedding model (endpoint optional). No OCR and no web access in v1. Per-element citations | Decided (OQ-P8) |
 | P9 | Edit gating | The shared policy engine (`wb-policy`) applied per slide: review (default), auto-new-slides, auto, deny; the three presets `review`, `auto`, `read-only`; locked slides and elements; scope declaration | Decided (shared) |
 | P10 | Checkpoints | App-owned content-addressed snapshot store in `.present/history/`; no git dependency or integration (a user may still version the folder with git) | Decided (OQ-P10) |
 | P11 | Code execution | Required: code generation mode, generated slides, and skill scripts all run the bundled Python with a fixed package set in an OS-native sandbox (macOS `sandbox-exec`, Windows AppContainer + job object) with no network. No general shell or REPL tool | Decided (OQ-P3, OQ-P7) |
@@ -61,7 +61,7 @@ flowchart LR
 
   LLM[(Model endpoints)]
   Files[(Project folder\nreferences on disk)]
-  AN[(Personal Analyst repo)]
+  AN[(Fibration Lab repo)]
 
   UI <-- typed IPC --> Core
   AL --> MP --> LLM
@@ -149,10 +149,10 @@ Rules:
 
 - **Text** is a list of paragraphs with a level and a list of runs. Run formatting is limited to emphasis (bold, italic, underline), hyperlinks, and theme color references (`accent1`, never a hex value unless the contract allows). Font, size, and spacing come from the layout's placeholder styles; the agent cannot set them unless the contract allows overrides.
 - **Charts** are a type (bar, column, line, pie, scatter, area, combo, and their stacked variants), a data source, an optional transform pipeline, and a small set of options (axis titles, labels, legend). Rendered as native PowerPoint charts with an embedded workbook holding the final values, styled from theme colors. Decided (OQ-P9):
-  - **Source:** a cell range or named range in a reference spreadsheet, an extracted table from a PDF, DOCX, or PPTX reference, or an imported Personal Analyst table, always with its reference version. Inline literal data is allowed only with a citation per value.
+  - **Source:** a cell range or named range in a reference spreadsheet, an extracted table from a PDF, DOCX, or PPTX reference, or an imported Fibration Lab table, always with its reference version. Inline literal data is allowed only with a citation per value.
   - **Transforms:** a declarative list of steps from a closed set: `filter`, `select`, `rename`, `sort`, `top_n`, `group_sum` / `group_mean` / `group_count`, `pivot`, `unpivot`, `pct_change`, `share_of_total`, `cumulative`, `scale` (units: thousands, millions, percent), `round`. Executed by the kernel with pandas, deterministic, no user code.
   - **Provenance:** the chart stores source, steps, and the computed values. The source lens on a chart shows the source range, each step, and the resulting table; the checker recomputes the pipeline from the current reference version and flags a chart whose stored values no longer match (`src.chart-stale`).
-  - Anything beyond the closed set belongs in Personal Analyst, which returns a table or figure with run provenance, or in a generated slide or code mode, where the computation is reviewed code.
+  - Anything beyond the closed set belongs in Fibration Lab, which returns a table or figure with run provenance, or in a generated slide or code mode, where the computation is reviewed code.
 - **Tables** are rows and cells of text, with header row and banding flags; rendered as native tables using the template's table style.
 - **Images** reference a file in the project's `assets/` (or an Analyst figure) by hash, with alt text required and a crop and fit mode into the placeholder.
 - **Free elements** (outside placeholders) carry an explicit position and size in EMU and are only allowed where the deck contract allows them.
@@ -274,7 +274,7 @@ No shell tool, no general code REPL, no file write outside the deck store, no ne
 
 **Source lens.** Clicking a cited run opens the Sources panel at the passage with the span highlighted. The number check extracts numeric tokens from a slide's text (with unit, percent, currency, and scale normalization: "18%", "0.18", "€1.2bn") and looks for them in the cited passage; badge green (found), amber (found after normalization or rounding), red (not found), grey (no citation).
 
-**Personal Analyst references (decided, v1).** Pointing a project at an Analyst repo lists its figures (`out/figures/**` with sidecar metadata: script, arguments, run id, target, title, axes) and its output tables. Consistent with both the always-copy rule and Analyst's principle that data stays where it is generated, only what is imported is copied: a figure (PNG and SVG with its sidecar) or a bounded table extract, never the repo or its datasets. Remote-target outputs are read through Analyst's own rendered-products path, not fetched directly. The imported item keeps the Analyst provenance as its citation. A web page or URL is not a reference type in v1 (no web access; later through an MCP connector).
+**Fibration Lab references (decided, v1).** Pointing a project at an Analyst repo lists its figures (`out/figures/**` with sidecar metadata: script, arguments, run id, target, title, axes) and its output tables. Consistent with both the always-copy rule and Analyst's principle that data stays where it is generated, only what is imported is copied: a figure (PNG and SVG with its sidecar) or a bounded table extract, never the repo or its datasets. Remote-target outputs are read through Analyst's own rendered-products path, not fetched directly. The imported item keeps the Analyst provenance as its citation. A web page or URL is not a reference type in v1 (no web access; later through an MCP connector).
 
 ## 9. Deck contract and checker
 

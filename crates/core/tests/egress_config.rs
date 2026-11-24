@@ -1,7 +1,7 @@
 //! The package index setting, end to end, in its own process (the configured index is
 //! process-wide state, so it is not exercised from the unit tests that run in parallel).
 
-use analyst_core::{config, egress};
+use fibration_core::{config, egress};
 
 #[test]
 fn a_configured_index_is_the_only_one_installs_may_use() {

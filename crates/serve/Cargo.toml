@@ -1,5 +1,5 @@
 [package]
-name = "analyst-serve"
+name = "fibration-serve"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,16 +7,16 @@ publish.workspace = true
 description = "Development bridge: serves the real core to a browser renderer over a loopback WebSocket. Never shipped."
 
 [[bin]]
-name = "analyst-serve"
+name = "fibration-serve"
 path = "src/main.rs"
 
 [lib]
-name = "analyst_serve"
+name = "fibration_serve"
 path = "src/lib.rs"
 
 [dependencies]
-analyst-core = { path = "../core" }
-analyst-protocol = { path = "../protocol" }
+fibration-core = { path = "../core" }
+fibration-protocol = { path = "../protocol" }
 tokio.workspace = true
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 futures.workspace = true

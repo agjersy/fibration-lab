@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/ui/common/Dialog.tsx at commit f229e4d.
+// Ported from Fibration Lab apps/desktop/src/ui/common/Dialog.tsx at commit f229e4d.
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 

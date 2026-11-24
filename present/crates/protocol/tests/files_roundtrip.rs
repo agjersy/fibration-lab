@@ -4,12 +4,12 @@
 
 mod common;
 
-use analyst_deck_protocol::config::*;
-use analyst_deck_protocol::deck::{DeckMode, ThemeColor};
-use analyst_deck_protocol::evals::*;
-use analyst_deck_protocol::kernel::{RefKind, Severity};
-use analyst_deck_protocol::template::*;
 use common::{round_trip_json, round_trip_toml, round_trip_value};
+use fibration_deck_protocol::config::*;
+use fibration_deck_protocol::deck::{DeckMode, ThemeColor};
+use fibration_deck_protocol::evals::*;
+use fibration_deck_protocol::kernel::{RefKind, Severity};
+use fibration_deck_protocol::template::*;
 use serde_json::json;
 
 // ---- template ----
@@ -281,8 +281,8 @@ fn task_file_defaults_and_modes() {
         round_trip_value::<NativeKind>("native kind", &json!(element));
     }
     // Analyst's check kinds are not Present's.
-    let analyst = "[task]\nname = \"n\"\nprompt = \"p\"\n[[checks]]\nkind = \"contract_clean\"\n";
-    assert!(toml::from_str::<TaskFile>(analyst).is_err());
+    let fibration = "[task]\nname = \"n\"\nprompt = \"p\"\n[[checks]]\nkind = \"contract_clean\"\n";
+    assert!(toml::from_str::<TaskFile>(fibration).is_err());
 }
 
 #[test]

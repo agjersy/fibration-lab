@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/agent/mod.rs` (`maybe_compact`,
+// Ported from Fibration Lab `crates/core/src/agent/mod.rs` (`maybe_compact`,
 // `context_tokens`, `message_tokens`) at commit f229e4d.
 // Adapted: works on a message list with a caller-supplied summarizer instead of the agent's
 // own model; can use the token count the endpoint reported; never leaves tool results

@@ -1,4 +1,4 @@
-//! Global `~/.analyst/config.toml` and project `<repo>/.analyst/project.toml` (PROTOCOL 2.1, 2.2).
+//! Global `~/.fibration/config.toml` and project `<repo>/.fibration/project.toml` (PROTOCOL 2.1, 2.2).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ pub struct GlobalConfig {
     pub targets: Vec<TargetConfig>,
     /// Where Python packages are installed from.
     pub packages: PackagesConfig,
-    /// Interpreter of the app tooling environment (hosts `analyst_kernel`); optional.
+    /// Interpreter of the app tooling environment (hosts `fibration_kernel`); optional.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tooling_python: Option<String>,
 }
@@ -519,7 +519,7 @@ vision = false
 name = "lab-gpu"
 kind = "ssh"
 host = "lab-gpu"
-remote_root = "~/analyst"
+remote_root = "~/fibration"
 python = "3.12"
 sandbox = "auto"
 data_dirs = ["/data/shared"]
