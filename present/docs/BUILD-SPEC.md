@@ -6,7 +6,7 @@
 
 ## 1. Ground rules
 
-1. **The reference implementation is Fibration Lab** (`agjersy/personal-analyst`, branch `claude/analyst-desktop-app-spec-ef5mu2`, commit `f229e4d` or later). Mirror its structure, conventions, CI, and test style. Where a work package says "port", copy the code with a header comment naming the source path and commit, then adapt.
+1. **The reference implementation is Fibration Lab** (`agjersy/fibration-lab`, branch `claude/analyst-desktop-app-spec-ef5mu2`, commit `f229e4d` or later). Mirror its structure, conventions, CI, and test style. Where a work package says "port", copy the code with a header comment naming the source path and commit, then adapt.
 2. **Do not modify the Analyst repository** from this work. Extraction into a shared repository (section 4) is a separate, explicitly approved task.
 3. **No model-specific code paths.** No prompt text, tool schema, or branch conditioned on a model or provider name. Capability records only.
 4. **Permissive licenses only.** No GPL, AGPL, or LGPL dependencies (Rust, Python, npm, bundled binaries, model weights). MPL-2.0 only for LibreOffice as an unmodified external program. Every new dependency is added to `THIRD-PARTY.md` with its license in the same commit. Known exclusions: PyMuPDF (AGPL), `extract-msg` (GPL), `python-pptx` forks under other licenses.

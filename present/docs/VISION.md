@@ -2,7 +2,7 @@
 
 > **Historical design note.** This document describes Personal Present before it was folded into Fibration Lab. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `fibration` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.fibration` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
 
-*Status: workshop decisions closed (2026-11-15). Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Sister product: Fibration Lab (`agjersy/personal-analyst`), whose architecture, conventions, and visual style this product follows.*
+*Status: workshop decisions closed (2026-11-15). Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Sister product: Fibration Lab (`agjersy/fibration-lab`), whose architecture, conventions, and visual style this product follows.*
 
 ## 1. One line
 

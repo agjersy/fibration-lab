@@ -8,7 +8,7 @@
 | Present | Decks built from the analysis, on your template, with every figure, equation and number traced to its run | `present/` |
 | Math | Live, replayable mathematical scenes whose plots and claims are backed by a symbolic engine | `math/` |
 
-One `fibration` command and one desktop app cover the Analyst and Present workbenches; the Math workbench has its own `fibration-math` command and can ship as its own app. The home directory is `~/.fibration` (`FIBRATION_HOME`), and a project keeps its settings in `.fibration/`. The repository is still named `personal-analyst`.
+One `fibration` command and one desktop app cover the Analyst and Present workbenches; the Math workbench has its own `fibration-math` command and can ship as its own app. The home directory is `~/.fibration` (`FIBRATION_HOME`), and a project keeps its settings in `.fibration/`.
 
 This document describes the Analyst and Present workbenches. Math is described in [math/README.md](math/README.md).
 
