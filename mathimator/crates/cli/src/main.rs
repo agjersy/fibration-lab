@@ -98,6 +98,13 @@ async fn main() -> Result<()> {
             let memo = memo_dir.unwrap_or_else(|| scene_dir.join(".cache/memo"));
             let cfg = engine_config(cli.engine_python).with_memo_dir(memo);
             let engine = Arc::new(EngineClient::spawn(&cfg).await?);
+            if engine.isolation.starts_with("none") {
+                // As Analyst badges an unsandboxed kernel: say so, never run quietly unisolated.
+                eprintln!(
+                    "warning: network not isolated for the engine and cells ({})",
+                    engine.isolation
+                );
+            }
             let tmp = tempfile::Builder::new().prefix("mathimator-").tempdir()?;
             let router = Arc::new(Router::new(Arc::clone(&engine), call_log.as_deref())?);
             let handle = router.serve(&tmp.path().join("sock/attach.sock"))?;

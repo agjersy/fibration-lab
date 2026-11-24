@@ -30,6 +30,9 @@ jobs:
       - run: cargo fmt --all -- --check
       # The desktop shell needs a system WebView toolkit on Linux; it has its own job.
       - run: cargo clippy --workspace --exclude analyst-desktop --all-targets -- -D warnings
+      # Mathimator's crates first, in their own step, so a failure elsewhere cannot hide them.
+      - name: Mathimator crates (drive the real engine and runner)
+        run: cargo test -p math-protocol -p math-core -p mathimator-cli
       - run: cargo test --workspace --exclude analyst-desktop
         env:
           PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
