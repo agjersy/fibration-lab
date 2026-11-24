@@ -1,4 +1,16 @@
-# Personal Analyst
+# Datum
+
+**Datum** is the name of this suite: three workbenches that share one verification-first core.
+
+| Workbench | What it is | Where |
+|---|---|---|
+| Analyst | Analysis tools an agent writes under your supervision, with code, math and figures made quick to verify | `crates/`, `python/kernel`, `apps/desktop` |
+| Present | Decks built from the analysis, on your template, with every figure, equation and number traced to its run | `present/` |
+| Math (working name Mathimator) | Live, replayable mathematical scenes whose plots and claims are backed by a symbolic engine | `mathimator/` |
+
+Names in the code have not changed yet. The repository, the `analyst` and `mathimator` binaries, `~/.analyst`, and the crate and package names keep their current spelling until a separate, mechanical rename. The rest of this document describes the Analyst and Present workbenches under their current name, Personal Analyst; Math is described in [mathimator/README.md](mathimator/README.md).
+
+## Personal Analyst
 
 A desktop workbench for scientific, technical, and numerical analysis: an AI agent writes reusable Python analysis tools under your supervision, and the application makes verifying that work (code, math, figures) fast.
 
