@@ -6,11 +6,12 @@ serves one request at a time on its main thread. Scene state allows one call seq
 time anyway, and the main thread is where call budgets can interrupt SymPy.
 
 Methods: ``engine.hello``, ``engine.shutdown``, ``call``, ``describe_api``, ``state.get``,
-``state.snapshot``, ``state.restore``, ``reset``, and (with the sampler) ``sample``.
+``state.snapshot``, ``state.restore``, ``reset``, ``sample``, ``export.render``, and ``code.glsl``.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import sys
@@ -65,7 +66,9 @@ class Methods:
         fn = params.get("fn")
         if not isinstance(fn, str):
             raise RpcError(INVALID_PARAMS, "call needs fn: string")
-        return self.engine.call(fn, params.get("args") or {}, params.get("origin"), bool(params.get("memo", True)))
+        return self.engine.call(
+            fn, params.get("args") or {}, params.get("origin"), bool(params.get("memo", True))
+        )
 
     def restore(self, params: dict[str, Any]) -> dict[str, Any]:
         from .errors import CallError
@@ -96,9 +99,17 @@ def handle_line(methods: Methods, line: bytes) -> tuple[dict[str, Any] | None, b
     try:
         msg = json.loads(line)
     except ValueError:
-        return {"jsonrpc": "2.0", "id": None, "error": RpcError(PARSE_ERROR, "not valid JSON").to_json()}, False
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": RpcError(PARSE_ERROR, "not valid JSON").to_json(),
+        }, False
     if not isinstance(msg, dict) or not isinstance(msg.get("method"), str):
-        return {"jsonrpc": "2.0", "id": None, "error": RpcError(INVALID_REQUEST, "not a request").to_json()}, False
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": RpcError(INVALID_REQUEST, "not a request").to_json(),
+        }, False
     rid = msg.get("id")
     method = msg["method"]
     try:
@@ -118,12 +129,14 @@ def serve(engine: Engine, stdin: BinaryIO | None = None, stdout: BinaryIO | None
     inp = stdin if stdin is not None else sys.stdin.buffer
     out = stdout if stdout is not None else sys.stdout.buffer
     methods = Methods(engine)
-    try:
-        from .sample import register as register_sampler
-    except ImportError:  # the sampler is optional while it is being built
-        pass
-    else:
-        register_sampler(methods)
+    # Methods that live in their own modules: certified sampling, static export, shader code.
+    for module in ("sample", "export", "glsl"):
+        try:
+            register = importlib.import_module(f".{module}", __package__).register
+        except ImportError as exc:
+            log.warning("engine method module %s is unavailable: %s", module, exc)
+        else:
+            register(methods)
     for raw in inp:
         if not raw.strip():
             continue
@@ -133,7 +146,11 @@ def serve(engine: Engine, stdin: BinaryIO | None = None, stdout: BinaryIO | None
                 data = encode(response)
             except ValueError:
                 data = encode(
-                    {"jsonrpc": "2.0", "id": response.get("id"), "error": RpcError(INTERNAL_ERROR, "result is not JSON").to_json()}
+                    {
+                        "jsonrpc": "2.0",
+                        "id": response.get("id"),
+                        "error": RpcError(INTERNAL_ERROR, "result is not JSON").to_json(),
+                    }
                 )
             try:
                 out.write(data)

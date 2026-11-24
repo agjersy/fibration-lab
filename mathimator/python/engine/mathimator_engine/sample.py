@@ -701,8 +701,10 @@ def _analyze(
         cuts = [comp.start, *inner, comp.end]
         for i, (a, b) in enumerate(itertools.pairwise(cuts)):
             # SymPy reports openness as sympy.true/false, so test truthiness, never identity.
-            a_closed = i == 0 and not comp.left_open
-            b_closed = i == len(cuts) - 2 and not comp.right_open
+            # An outer end that is itself a jump point is classified like any other: the
+            # value there may not be the limit from inside (floor(x) at the right edge).
+            a_closed = i == 0 and not comp.left_open and comp.start not in splits
+            b_closed = i == len(cuts) - 2 and not comp.right_open and comp.end not in splits
             pieces.append(Piece(a, b, a_closed, b_closed))
 
     # Classify every open end and every split point.
@@ -725,11 +727,74 @@ def _analyze(
     return pieces, markers, isolated
 
 
-def one_sided_limit(f, x, p, side: str):
-    """lim f(x) as x -> p from one side, computed as h -> 0+ of f(p -+ h) with h > 0.
+_STEP_ATOMS = (sp.floor, sp.ceiling, sp.sign, sp.Heaviside)
 
-    SymPy's own ``limit(f, x, p, '-')`` is wrong for some Piecewise expressions (it returns
-    the right-hand value); the substitution form is not."""
+
+def _settle_steps(f, x, p, side: str):
+    """f with every step function replaced by the constant it equals just beside p.
+
+    floor(g), ceiling(g), sign(g) and Heaviside(g) are constant on a one-sided neighbourhood
+    of p whenever g is continuous and strictly monotone there (g'(p) != 0), or g(p) is not a
+    step point at all. Under those conditions the replacement is exact, and the one-sided
+    limit of f is the limit of the settled expression, which no longer jumps at p. Returns
+    None when a step cannot be settled this way; the caller then asks SymPy.
+    """
+    replacements = {}
+    for atom in f.atoms(*_STEP_ATOMS):
+        g = atom.args[0]
+        if x not in g.free_symbols:
+            continue
+        gp = g.subs(x, p)
+        if not (gp.is_real and gp.is_finite):
+            return None
+        at_step = gp.is_integer if isinstance(atom, sp.floor | sp.ceiling) else gp.is_zero
+        if at_step is None:
+            return None
+        if not at_step:
+            # g is away from a step point; the atom takes its value at p on both sides,
+            # provided g is continuous at p (it is real and finite there and has no steps).
+            if g.atoms(*_STEP_ATOMS, sp.Piecewise):
+                return None
+            replacements[atom] = atom.subs(x, p)
+            continue
+        slope = sp.diff(g, x).subs(x, p)
+        if g.atoms(*_STEP_ATOMS, sp.Piecewise) or not (slope.is_real and slope.is_finite):
+            return None
+        if slope.is_positive:
+            rising = True
+        elif slope.is_negative:
+            rising = False
+        else:
+            return None  # a stationary point of g: the side cannot be read off the slope
+        above = rising == (side == "right")  # is g just above its value at p on this side?
+        if isinstance(atom, sp.floor):
+            replacements[atom] = gp if above else gp - 1
+        elif isinstance(atom, sp.ceiling):
+            replacements[atom] = gp + 1 if above else gp
+        else:  # sign and Heaviside step at g = 0
+            replacements[atom] = (
+                sp.Integer(1) if above else (sp.Integer(-1) if isinstance(atom, sp.sign) else sp.Integer(0))
+            )
+    return f.xreplace(replacements) if replacements else None
+
+
+def one_sided_limit(f, x, p, side: str):
+    """lim f(x) as x -> p from one side.
+
+    Step functions are settled first (see ``_settle_steps``): SymPy's limit of an expression
+    with ``floor`` can take minutes. If the settled expression has a finite real value at p
+    and no steps or pieces left, that value is the limit, since the expression is then a
+    composition of functions continuous where they are finite. Otherwise the limit is
+    computed as h -> 0+ of f(p -+ h) with h > 0: SymPy's own ``limit(f, x, p, '-')`` is wrong
+    for some Piecewise expressions (it returns the right-hand value); the substitution form
+    is not. Every result is cross-checked numerically by the caller.
+    """
+    settled = _settle_steps(f, x, p, side)
+    if settled is not None and not settled.atoms(*_STEP_ATOMS, sp.Piecewise):
+        value = settled.subs(x, p)
+        if value.is_real and value.is_finite:
+            return sp.nsimplify(value) if value.is_Float else value
+        f = settled
     h = sp.Dummy("h", positive=True)
     shifted = f.subs(x, p - h if side == "left" else p + h)
     return sp.limit(shifted, h, 0, "+")
@@ -865,6 +930,30 @@ def _certify_segment(fiv, dfiv, view: View, a: float, b: float, ya: float, yb: f
     return max(abs(dlo), abs(dhi)) * view.sy <= TOL_PX
 
 
+def _looks_like_a_jump(fnum, view: View, a: float, ya: float, b: float, yb: float) -> bool:
+    """Whether f jumps between a and b, judged numerically.
+
+    Used only for a segment that could not be checked. Bisect towards the half with the larger
+    change: across a jump the change stays the same however narrow the interval gets, while a
+    continuous function, however steep, changes less and less.
+    """
+    gap = abs(yb - ya) * view.sy
+    if gap <= 1.0:
+        return False
+    for _ in range(40):
+        m = (a + b) / 2
+        if m in (a, b):
+            break
+        ym = fnum(m)
+        if math.isnan(ym):
+            return False
+        if abs(ym - ya) >= abs(yb - ym):
+            b, yb = m, ym
+        else:
+            a, ya = m, ym
+    return abs(yb - ya) * view.sy >= 0.9 * gap
+
+
 def _sample_piece(fnum, fiv, dfiv, view: View, a: float, b: float, work: Work) -> list[list[list[float]]]:
     """Adaptive sampling of one continuous piece; each accepted segment is certified when possible."""
     n0 = max(8, min(400, int((b - a) * view.sx / 4) + 1))
@@ -899,12 +988,27 @@ def _sample_piece(fnum, fiv, dfiv, view: View, a: float, b: float, work: Work) -
                         not math.isnan(ym)
                         and _seg_dist(view.px(sm, ym), view.px(sa, sya), view.px(sb, syb)) <= TOL_PX / 2
                     )
+            if ok and width_px <= 1.0 and _looks_like_a_jump(fnum, view, sa, sya, sb, syb):
+                # A narrow, steep segment can pass the distance check across a jump (the
+                # near-vertical line stays close to the graph's enclosure). Where breakpoint
+                # analysis ran, pieces never span a jump, so this only fires without it.
+                work.miss(sa)
+                if polylines[-1]:
+                    polylines.append([])
+                emit(sb, syb)
+                continue
             if ok:
                 emit(sb, syb)
                 continue
             if width_px <= MIN_PX or work.exhausted is not None or work.points >= MAX_POINTS:
                 if (fiv is not None and finite) or not finite:
                     work.miss(sa)
+                if finite and _looks_like_a_jump(fnum, view, sa, sya, sb, syb):
+                    # An unanalysed jump: end the line here and start a new one, so the
+                    # drawing has no riser. The miss above already makes the result sampled.
+                    work.miss(sa)
+                    if polylines[-1]:
+                        polylines.append([])
                 emit(sb, syb)
                 continue
             sm = (sa + sb) / 2

@@ -147,3 +147,61 @@ def test_math_text_is_accepted_where_an_expression_is_expected(s):
     assert s.err("expr.parts", relation="x + 1")["kind"] == "bad_handle"
     assert s.err("set.is_empty", set="x")["kind"] == "bad_args"  # sets have no text form
     assert s.err("diff", expr="__import__('os')", var="x")["kind"] == "parse"
+
+
+def test_long_staircases_certify_quickly_with_every_step_end_marked(s):
+    import time
+
+    from mathimator_engine.sample import sample
+
+    s.ok("plot.explicit", expr="floor(x)/2", var="x", domain=[-6, 6], id="c")
+    started = time.perf_counter()
+    out = sample(s.engine, "c", {"x": [-6, 6], "y": [-4, 4]})
+    assert time.perf_counter() - started < 2.0
+    assert out["status"] == "certified" and len(out["segments"]) == 12
+    # No segment rises: each step is flat.
+    assert all(abs(seg[0][1] - seg[-1][1]) < 1e-9 for seg in out["segments"])
+    ends = [m for m in out["markers"] if m["kind"] == "jump_end"]
+    assert sum(m["closed"] for m in ends) == 11 and sum(not m["closed"] for m in ends) == 11
+
+
+@pytest.mark.parametrize(
+    ("text", "point", "left", "right"),
+    [
+        ("floor(x)/2", 2, "1/2", "1"),
+        ("ceiling(2*x)", "1/2", "1", "2"),
+        ("floor(-x)", 3, "-3", "-4"),
+        ("sign(sin(x))", "pi", "1", "-1"),
+        ("x*Heaviside(x) + 1", 0, "1", "1"),
+        ("floor(x**2)", 0, "0", "0"),  # a stationary point of the argument: SymPy's limit is used
+    ],
+)
+def test_one_sided_limits_at_step_points(text, point, left, right):
+    import sympy as sp
+
+    from mathimator_engine.mathparse import read_math
+    from mathimator_engine.sample import one_sided_limit
+
+    x = sp.Symbol("x", real=True)
+    f, p = read_math(text), read_math(str(point))
+    assert one_sided_limit(f, x, p, "left") == read_math(left)
+    assert one_sided_limit(f, x, p, "right") == read_math(right)
+
+
+def test_an_unanalysed_jump_is_drawn_as_a_break_not_a_riser(s, monkeypatch):
+    """When the symbolic analysis cannot run, the fallback must still not join across a jump,
+    and must not break a steep continuous curve."""
+    import mathimator_engine.sample as sample_mod
+    from mathimator_engine.errors import CallError
+
+    def no_analysis(*args, **kwargs):
+        raise CallError("timeout", "simulated")
+
+    monkeypatch.setattr(sample_mod, "_analyze", no_analysis)
+    s.ok("plot.explicit", expr="floor(x)", var="x", id="steps")
+    out = sample_mod.sample(s.engine, "steps", VIEW)
+    assert out["status"] == "sampled"
+    assert len(out["segments"]) == 6
+    assert all(abs(seg[0][1] - seg[-1][1]) < 1e-9 for seg in out["segments"])
+    s.ok("plot.explicit", expr="root(x, 9)", var="x", id="steep")
+    assert len(sample_mod.sample(s.engine, "steep", VIEW)["segments"]) == 1
