@@ -237,11 +237,26 @@ mod tests {
                 "/proc",
                 "true",
             ]);
-            let st = std::process::Command::new(&w.argv[0])
+            let out = std::process::Command::new(&w.argv[0])
                 .args(&w.argv[1..])
-                .status()
+                .output()
                 .unwrap();
-            assert!(st.success(), "a nested bwrap sandbox must still start");
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if !out.status.success() && stderr.contains("No permissions to create a new namespace")
+            {
+                // Recent Ubuntu confines bwrap's children with an AppArmor profile that
+                // forbids another user namespace. Kernels detect this and report "limits";
+                // any other failure to nest is still an error here.
+                eprintln!(
+                    "note: bubblewrap cannot nest on this system: {}",
+                    stderr.trim()
+                );
+            } else {
+                assert!(
+                    out.status.success(),
+                    "a nested bwrap sandbox must still start: {stderr}"
+                );
+            }
         }
     }
 }
