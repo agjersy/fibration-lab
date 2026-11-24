@@ -1,6 +1,6 @@
-# Datum
+# Fibration Lab
 
-**Datum** is the name of this suite: three workbenches that share one verification-first core.
+**Fibration Lab** is the name of this suite: three workbenches that share one verification-first core.
 
 | Workbench | What it is | Where |
 |---|---|---|
