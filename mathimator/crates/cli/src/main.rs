@@ -5,6 +5,7 @@
 //! * `mathimator api` prints the engine's operation manifest.
 //! * `mathimator chat <scene.py> [-m <message>]` runs agent turns on a scene (one per line of
 //!   standard input without `-m`), using the model configured in `<home>/config.toml`.
+//! * `mathimator export <scene.py> <out.svg>` renders a figure with its sidecar.
 //! * `mathimator eval --model <provider>/<id>` runs the evaluation tasks and writes a scorecard.
 //! * `mathimator chips <scene.py>` lists what can be done next; `chip <scene.py> <id>` fires a
 //!   direct chip; `set <scene.py> a=2.5` commits a parameter. Each becomes a cell.
@@ -98,6 +99,14 @@ enum Command {
         #[arg(long)]
         project_python: Option<PathBuf>,
     },
+    /// Render a scene to a figure (.svg, .pdf or .png) with a sidecar recording what it shows.
+    Export {
+        scene: PathBuf,
+        out: PathBuf,
+        /// Dots per inch, for .png only.
+        #[arg(long)]
+        dpi: Option<u32>,
+    },
     /// List the chips for a scene: what can be done next, with no model involved.
     Chips {
         scene: PathBuf,
@@ -176,6 +185,12 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
             Ok(())
+        }
+        Command::Export { scene, out, dpi } => {
+            let opened = work::open(&scene, engine_config(cli.engine_python), None).await?;
+            let result = work::export(&opened, &out, dpi).await;
+            opened.session.close().await.ok();
+            result
         }
         Command::Chips { scene, json } => {
             let opened = work::open(&scene, engine_config(cli.engine_python), None).await?;

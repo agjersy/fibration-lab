@@ -312,3 +312,60 @@ pub async fn eval_run(engine: EngineConfig, args: EvalArgs) -> Result<bool> {
     );
     Ok(passed == results.len())
 }
+
+/// Render the scene to `out` (format from its extension) with its sidecar next to it.
+pub async fn export(opened: &Opened, out: &Path, dpi: Option<u32>) -> Result<()> {
+    let format = match out.extension().and_then(|e| e.to_str()) {
+        Some(e @ ("svg" | "pdf" | "png")) => e.to_string(),
+        _ => bail!("the output file must end in .svg, .pdf or .png"),
+    };
+    let dir = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let path = dir.canonicalize()?.join(
+        out.file_name()
+            .context("the output path has no file name")?,
+    );
+    let mut params = serde_json::json!({"format": format, "path": path});
+    if let Some(dpi) = dpi {
+        params["dpi"] = dpi.into();
+    }
+    let result = opened
+        .session
+        .engine_request("export.render", params)
+        .await?;
+    if result["status"] == "error" {
+        bail!(
+            "{}",
+            result["error"]["detail"]
+                .as_str()
+                .unwrap_or("the export failed")
+        );
+    }
+    println!("wrote {}", path.display());
+    println!("sidecar {}", result["sidecar"].as_str().unwrap_or(""));
+    let sampled: Vec<String> = result["objects"]
+        .as_array()
+        .map(|objects| {
+            objects
+                .iter()
+                .filter(|o| o["status"] != "certified")
+                .map(|o| {
+                    format!(
+                        "{} ({})",
+                        o["id"].as_str().unwrap_or("?"),
+                        o["reason"].as_str().unwrap_or("sampled")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if sampled.is_empty() {
+        println!("every object is certified");
+    } else {
+        println!("not certified: {}", sampled.join("; "));
+    }
+    Ok(())
+}

@@ -23,6 +23,8 @@
 "state.restore":   { revision: number } -> { revision, hash, diff }
 "reset":           {} -> { revision: 0, hash }        // empties the scene; handles and memo are kept
 "sample":          see section 6
+"export.render":   see section 7
+"code.glsl":       see section 8
 
 type Origin = { kind: "cell" | "chip" | "slider" | "agent" | "attach" | "script", cell?: string }
 type HandleRef = { "$h": number, kind: "expr" | "relation" | "boolean" | "set" | "numeric_fn" }
@@ -172,7 +174,25 @@ Generated from the registry (`describe_api` is authoritative; this table is rege
 - **Explicit curves** are certified when every on-screen point of the true graph is within 0.5 px of the polyline, except within 0.5 px of a marked breakpoint (`asymptote`, `hole`, `jump_end`, `point`).
 - **Anything that cannot be established** is `sampled`, with the reason. That covers oscillation without a limit, functions interval arithmetic can't evaluate, breakpoints that can't be determined, and every implicit curve.
 
-## 7. Runner
+## 7. Export
+
+`export.render` draws the scene to a file: `{format: "svg" | "pdf" | "png", path, viewport?, size?: {w_in, h_in}, dpi?, style?: {mplstyle}, title?, params?}` returns `{path, sidecar, format, viewport, objects: [{id, kind, status, reason?}], certified, hash, revision}`.
+
+- The exporter draws only what `sample` returns, on the output's pixel grid (size × dpi for PNG, 300 dpi for SVG and PDF). It never evaluates an expression.
+- A figure with any object that is not certified carries the footnote "sampled, not certified: <ids>".
+- The same scene gives byte-identical SVG, PDF and PNG on every run.
+- The sidecar `<stem>.json` is the record a citation reads: `{schema: 1, kind: "scene-export", format, created_at, scene: {revision, hash}, api_version, engine_version, viewport, size, params, objects: [{id, kind, status, reason?, exprs: {name: {hash, text, latex}}, origin?}], certified}`.
+- Without a viewport: the `cam.view` window if the scene has one, else a fit to the objects with a margin, else [-10, 10] on both axes.
+
+## 8. Shader code
+
+`code.glsl` returns GLSL ES 3.00 for one object, with the scene's parameters as uniforms, so dragging a slider is a uniform update: `{object}` returns `{object, kind, supported: true, glsl, prelude, uniforms: [{name: "u_a", param: "a", value}]}`, or `{supported: false, reason}`.
+
+- The function is `float f(float x)` for explicit curves, `vec2 p(float t)` for parametric, `float r(float t)` for polar, `float F(vec2 xy)` for implicit (the curve is F = 0), and `bool inside(vec2 xy)` for regions.
+- The translation is an allowlist walk. A node it does not know makes the object unsupported; it never emits code it cannot stand behind. Where the real function is undefined the shader yields NaN.
+- This is the preview path only. It carries no certification, and it draws jumps as steep lines; the certified `sample` result replaces it when a drag ends.
+
+## 9. Runner
 
 `python -m mathimator.runner`, with `MATHIMATOR_SOCKET` set:
 - **Input:** one JSON document on stdin, `{"cells": [{"id", "code"}]}`.
