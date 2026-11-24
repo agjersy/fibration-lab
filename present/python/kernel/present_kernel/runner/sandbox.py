@@ -108,6 +108,27 @@ def _userns_usable() -> bool:
     return True
 
 
+_SANDBOX_EXEC_PROBE: bool | None = None
+
+
+def sandbox_exec_applies() -> bool:
+    """Whether ``sandbox-exec`` can apply a profile from this process. macOS refuses to
+    sandbox an already sandboxed process (exit 71), and the app starts this kernel under a
+    no-network ``sandbox-exec`` wrapper. Probed once with a no-op under an allow-all profile."""
+    global _SANDBOX_EXEC_PROBE
+    if _SANDBOX_EXEC_PROBE is None:
+        try:
+            proc = subprocess.run(
+                ["sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                capture_output=True,
+                timeout=10,
+            )
+            _SANDBOX_EXEC_PROBE = proc.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _SANDBOX_EXEC_PROBE = False
+    return _SANDBOX_EXEC_PROBE
+
+
 def bwrap_available() -> bool:
     if sys.platform != "linux" or shutil.which("bwrap") is None or not _userns_usable():
         return False
@@ -153,7 +174,14 @@ def _probe_helper(helper: str | None) -> tuple[bool, str]:
 def detect(requested: str = "auto", home: Path | None = None) -> dict[str, Any]:
     """Resolve the sandbox preference to ``SandboxInfo`` (PROTOCOL 1.3)."""
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
-        native = ("sandbox-exec", True, "macOS sandbox-exec with a generated profile")
+        ok = sandbox_exec_applies()
+        native = (
+            "sandbox-exec",
+            ok,
+            "macOS sandbox-exec with a generated profile"
+            if ok
+            else "sandbox-exec cannot be applied from an already sandboxed process",
+        )
     elif sys.platform == "linux":
         ok = bwrap_available()
         native = ("bwrap", ok, "bubblewrap" if ok else "bubblewrap is not installed or user namespaces are disabled")

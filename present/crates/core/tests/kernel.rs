@@ -171,10 +171,32 @@ async fn the_kernel_runs_without_network_and_still_nests_its_sandbox() {
         if sandbox == "limits" {
             assert_eq!(kind, "limits");
         } else if *probe() == NetIsolation::Bubblewrap {
+            // Where bubblewrap can nest, the per-run sandbox must be used inside the wrapper.
+            // Where it cannot (recent Ubuntu confines bwrap's children with an AppArmor
+            // profile that forbids new user namespaces), the kernel must say "limits".
+            let nested = wb_sandbox::no_network::wrap([
+                "bwrap",
+                "--ro-bind",
+                "/",
+                "/",
+                "--unshare-all",
+                "--",
+                "/bin/true",
+            ]);
+            let nests = std::process::Command::new(&nested.argv[0])
+                .args(&nested.argv[1..])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
             assert_eq!(
-                kind, "bwrap",
-                "the per-run sandbox must still be usable inside the wrapper"
+                kind,
+                if nests { "bwrap" } else { "limits" },
+                "the kernel must use the per-run sandbox exactly when it can nest (nests: {nests})"
             );
+        } else if *probe() == NetIsolation::SandboxExec {
+            // macOS refuses to sandbox an already sandboxed process, so inside the wrapper
+            // the kernel falls back and says so. The network stays denied by the wrapper.
+            assert_eq!(kind, "limits");
         }
         // The script never saves a deck, so the build fails and carries its output.
         let err = kernel

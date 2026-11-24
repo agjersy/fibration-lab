@@ -197,8 +197,35 @@ def bwrap_available(which: Callable[[str], str | None] = shutil.which) -> bool:
         return False
 
 
+_SANDBOX_EXEC_PROBE: bool | None = None
+
+
+def sandbox_exec_applies() -> bool:
+    """Whether ``sandbox-exec`` can apply a profile from this process.
+
+    macOS refuses to sandbox a process that is already sandboxed (``sandbox_apply: Operation
+    not permitted``, exit 71). The app starts the kernel under a no-network ``sandbox-exec``
+    wrapper, so a per-run profile cannot be applied there; assuming it can made every run
+    fail instead of falling back. Probed once by running a no-op under an allow-all profile.
+    """
+    global _SANDBOX_EXEC_PROBE
+    if _SANDBOX_EXEC_PROBE is None:
+        try:
+            proc = subprocess.run(
+                ["sandbox-exec", "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                capture_output=True,
+                timeout=10,
+            )
+            _SANDBOX_EXEC_PROBE = proc.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            _SANDBOX_EXEC_PROBE = False
+        if not _SANDBOX_EXEC_PROBE:
+            log.warning("sandbox-exec cannot be applied here (already sandboxed?); runs use resource limits only")
+    return _SANDBOX_EXEC_PROBE
+
+
 def sandbox_exec_available(which: Callable[[str], str | None] = shutil.which) -> bool:
-    return sys.platform == "darwin" and which("sandbox-exec") is not None
+    return sys.platform == "darwin" and which("sandbox-exec") is not None and sandbox_exec_applies()
 
 
 def detect(requested: str = "auto") -> str:
