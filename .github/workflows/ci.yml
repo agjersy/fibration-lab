@@ -101,6 +101,11 @@ jobs:
         run: rustup show
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor, which leaves
+      # bubblewrap unusable and the kernel unsandboxed (every run then asks for approval, which
+      # these tests do not expect). Lift the restriction on this runner.
+      - name: Allow unprivileged user namespaces (for bubblewrap)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Install LibreOffice and bubblewrap
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap ripgrep
       - name: Kernel environments

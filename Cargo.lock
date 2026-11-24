@@ -86,6 +86,7 @@ dependencies = [
  "globset",
  "hex",
  "ignore",
+ "libc",
  "notify",
  "portable-pty",
  "regex",

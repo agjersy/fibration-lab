@@ -271,6 +271,47 @@ async fn abandoned_connect_kills_the_child() {
     );
 }
 
+/// A kernel under a wrapper that does not die with its parent must not outlive an abandoned
+/// connect either: killing the wrapper alone would leave the kernel running. (This is what
+/// `bwrap --die-with-parent` turns into where the parent-death signal is cleared.)
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn abandoned_connect_kills_a_child_behind_a_wrapper() {
+    let dir = tempfile::tempdir().unwrap();
+    let pidfile = dir.path().join("pid");
+    let code = format!(
+        "import os,time; open({:?},'w').write(str(os.getpid())); time.sleep(600)",
+        pidfile.to_string_lossy()
+    );
+    let args = KernelArgs {
+        python: "python3".into(),
+        root: dir.path().to_string_lossy().to_string(),
+        runs_dir: dir.path().to_string_lossy().to_string(),
+        out_dir: None,
+        sandbox: None,
+        data_dirs: vec![],
+    };
+    // The shell stays as the direct child; the "kernel" is its background job.
+    let wrapper = "python3 -c \"$KERNEL_CODE\" & wait".to_string();
+    std::env::set_var("KERNEL_CODE", &code);
+    let transport = LocalStdio::with_launcher(vec!["sh".into(), "-c".into(), wrapper], args);
+    let r = tokio::time::timeout(
+        Duration::from_secs(3),
+        KernelClient::connect(Box::new(transport), "test"),
+    )
+    .await;
+    assert!(r.is_err(), "connect should still be waiting for hello");
+    let pid: u32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        wait_gone(pid).await,
+        "process {pid} behind the wrapper leaked after the abandoned connect"
+    );
+}
+
 /// R8: dropping the last client handle ends the kernel process.
 #[cfg(target_os = "linux")]
 #[tokio::test]

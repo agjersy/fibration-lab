@@ -134,6 +134,20 @@ def test_every_step_of_the_interpreter_symlink_chain_is_made_readable(tmp_path: 
     assert len(sandbox._symlink_chain(tmp_path / "a")) == 16
 
 
+def test_venv_is_found_when_its_python_is_a_symlink(tmp_path: Path):
+    """The usual layout: ``.venv/bin/python`` links to a base interpreter elsewhere. Resolving
+    the link before looking for pyvenv.cfg left the venv and found nothing."""
+    base = tmp_path / "base" / "bin"
+    base.mkdir(parents=True)
+    (base / "python3").write_text("")
+    venv = tmp_path / "v"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\n")
+    (venv / "bin" / "python").symlink_to(base / "python3")
+    assert sandbox.venv_of(venv / "bin" / "python") == venv
+    assert sandbox.venv_of(base / "python3") is None
+
+
 def test_pyvenv_cfg_home_is_used_when_python_is_not_a_symlink(tmp_path: Path):
     base = tmp_path / "base"
     (base / "bin").mkdir(parents=True)

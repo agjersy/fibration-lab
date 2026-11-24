@@ -262,7 +262,17 @@ def test_bwrap_run_cannot_write_the_source_tree_or_reach_the_network(bwrap_kerne
     out = "".join(p["chunk"] for p in notes.of("run.stdout", res["run_id"]))
     err = (tmp_path / "runs" / res["run_id"] / "stderr.log").read_text()
     assert not (sandbox._home() / "analyst-bwrap-test-marker").exists(), "the real home directory was written"
-    assert "home ['analyst-bwrap-test-marker']" in out, "the home directory is not hidden: " + out
+    # The home directory is a throwaway tmpfs holding the marker and, when a granted directory
+    # lies under the real home (a CI checkout, the kernel's own venv), the first path component
+    # leading to it. Nothing else of the real home may be visible.
+    import ast
+
+    home = Path(os.path.realpath(sandbox._home()))
+    listing = set(ast.literal_eval(next(line for line in out.splitlines() if line.startswith("home "))[5:]))
+    granted = [Path(os.path.realpath(p)) for p in (sys.prefix, sandbox.__file__, repo, tmp_path)]
+    leading = {p.relative_to(home).parts[0] for p in granted if home in p.parents}
+    assert "analyst-bwrap-test-marker" in listing, "the home directory is not hidden: " + out
+    assert listing - {"analyst-bwrap-test-marker"} <= leading, "the home directory is not hidden: " + out
     assert "WROTE" not in out and out.count("denied") == 3 and "NET denied" in out and "tmp True" in out, out + err
     assert (repo / "analysis" / "models.py").read_bytes() == before and not (repo / "new.py").exists()
     assert (repo / res["out_dir"] / "fine.txt").read_text() == "ok"

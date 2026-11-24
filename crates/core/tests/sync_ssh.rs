@@ -184,8 +184,14 @@ async fn sync_over_a_real_ssh_server() {
     let target = ssh_target(host);
     let mirror = PathBuf::from(target.mirror_dir(&repo).unwrap());
     let bare = PathBuf::from(sync::bare_repo(&mirror.display().to_string()));
-    let control = tmp.path().join("ctl");
-    std::fs::create_dir_all(&control).unwrap();
+    // A short directory of its own: a Unix socket path is limited to about 104 bytes, and
+    // macOS's temporary directory alone is half of that. (The app keeps control sockets in
+    // `~/.analyst/ssh`, which is short.)
+    let control_dir = tempfile::Builder::new()
+        .prefix("actl-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let control = control_dir.path().to_path_buf();
     let push = |force: bool| sync::push(&repo, &target, Some(control.as_path()), None, force);
 
     // A host that is not a configured target is refused before anything connects.

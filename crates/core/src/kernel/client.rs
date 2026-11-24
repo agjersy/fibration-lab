@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin};
+use tokio::process::ChildStdin;
 use tokio::sync::{broadcast, oneshot, Mutex};
 
 #[derive(Debug, thiserror::Error)]
@@ -60,7 +60,7 @@ type Pending = HashMap<RequestId, (u64, oneshot::Sender<Result<Value, RpcError>>
 struct Inner {
     transport: Box<dyn KernelTransport>,
     stdin: Mutex<Option<ChildStdin>>,
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<super::transport::KernelChild>>,
     pending: Mutex<Pending>,
     next_id: AtomicI64,
     /// Default per-call timeout in milliseconds.
@@ -465,6 +465,7 @@ impl KernelClient {
     /// run from its recorded offsets so streaming resumes. Returns the new hello.
     pub async fn reconnect(&self, core_version: &str) -> Result<HelloResult, KernelError> {
         if let Some(mut child) = self.inner.child.lock().await.take() {
+            child.kill_group();
             let _ = child.start_kill();
             let _ = child.wait().await;
         }

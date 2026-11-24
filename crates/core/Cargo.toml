@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+libc = "0.2.170"
 ts-rs.workspace = true
 analyst-protocol = { path = "../protocol" }
 analyst-deck = { path = "../../present/crates/core" }

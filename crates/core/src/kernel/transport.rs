@@ -58,9 +58,58 @@ impl KernelArgs {
     }
 }
 
+/// The kernel's child process, in a process group of its own.
+///
+/// Killing only the direct child is not enough when the kernel runs under a wrapper
+/// (`bwrap`, `sandbox-exec`): the wrapper dies and the kernel can stay behind. `bwrap
+/// --die-with-parent` relies on the parent-death signal, which the kernel clears when the
+/// wrapped program starts under a changed security profile (as with the AppArmor profile
+/// recent Ubuntu releases apply to `bwrap`). So the whole group is killed, both when the
+/// handle is dropped and before a reconnect. Detached runs start their own sessions and are
+/// not in this group.
+pub struct KernelChild {
+    child: Child,
+    #[cfg(unix)]
+    group: Option<i32>,
+}
+
+impl KernelChild {
+    /// Kill every process in the kernel's group. Does nothing once the child has been
+    /// reaped, since its process-group id may then belong to something else.
+    pub fn kill_group(&self) {
+        #[cfg(unix)]
+        if let (Some(group), Some(_)) = (self.group, self.child.id()) {
+            // SAFETY: killpg has no memory-safety preconditions; the group id is this
+            // child's own, and the child has not been reaped.
+            unsafe {
+                libc::killpg(group, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for KernelChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for KernelChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+}
+
+impl Drop for KernelChild {
+    fn drop(&mut self) {
+        self.kill_group();
+    }
+}
+
 /// A spawned kernel process with its stdio handles.
 pub struct SpawnedKernel {
-    pub child: Child,
+    pub child: KernelChild,
     pub stdin: ChildStdin,
     pub stdout: ChildStdout,
 }
@@ -121,6 +170,8 @@ pub fn spawn_line_without_env(line: &[String], env_remove: &[String]) -> Result<
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
     for name in PROVIDER_KEY_VARS {
         cmd.env_remove(name);
     }
@@ -145,6 +196,11 @@ pub fn spawn_line_without_env(line: &[String], env_remove: &[String]) -> Result<
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("kernel stdout not captured"))?;
+    let child = KernelChild {
+        #[cfg(unix)]
+        group: child.id().and_then(|pid| i32::try_from(pid).ok()),
+        child,
+    };
     Ok(SpawnedKernel {
         child,
         stdin,

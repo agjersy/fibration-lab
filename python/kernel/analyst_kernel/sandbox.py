@@ -376,14 +376,22 @@ def wrap(kind: str, spec: SandboxSpec, cmd: list[str]) -> SandboxCommand:
 
 
 def venv_of(python: Path) -> Path | None:
-    """The virtual environment containing ``python`` (first ancestor with pyvenv.cfg)."""
+    """The virtual environment containing ``python`` (first ancestor with pyvenv.cfg).
+
+    The path is searched as given first. A venv's ``bin/python`` is normally a symlink to the
+    base interpreter, so resolving it first leaves the venv and finds nothing; the venv was
+    then not made readable, and a run failed with "execvp ... No such file or directory"
+    whenever the venv lay under the hidden home directory but outside the project root.
+    """
+    candidates = [Path(os.path.abspath(python))]
     try:
-        p = python.resolve()
+        candidates.append(python.resolve())
     except OSError:
-        return None
-    for parent in p.parents:
-        if (parent / "pyvenv.cfg").is_file():
-            return parent
+        pass
+    for p in candidates:
+        for parent in p.parents:
+            if (parent / "pyvenv.cfg").is_file():
+                return parent
     return None
 
 
