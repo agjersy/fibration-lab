@@ -21,6 +21,18 @@ from .scene import SceneState, diff
 SNAPSHOT_LIMIT = 256
 
 
+def require_defined(obj: Any, what: str = "the result") -> None:
+    """Refuse an expression that is undefined: SymPy's complex infinity (1/0) or nan (0/0).
+
+    These are not real numbers, so no object the engine hands out or plots may contain them.
+    Signed infinities are fine: they are the extended-real values limits return.
+    """
+    if isinstance(obj, sp.Basic) and not isinstance(obj, sp.Set) and obj.has(sp.zoo, sp.nan):
+        raise CallError(
+            "math", f"{what} is undefined (a division by zero or an indeterminate form such as 0/0)"
+        )
+
+
 class Engine:
     def __init__(self, memo_dir: Path | None = None):
         # Importing the operation modules fills the registry.
@@ -159,7 +171,11 @@ class Engine:
     def _run(self, op, args: dict[str, Any]) -> Any:
         with budget(op.budget_s):
             try:
-                return op.impl(self, **args)
+                value = op.impl(self, **args)
+                # Turn results into handles here, inside the budget and the error mapping:
+                # hashing a result prints it, which can be slow or fail for a huge object.
+                self._externalize(value)
+                return value
             except CallError:
                 raise
             except RecursionError:
@@ -177,6 +193,7 @@ class Engine:
 
     def _externalize(self, value: Any) -> Any:
         if isinstance(value, Out):
+            require_defined(value.obj)
             return self.handles.put(value.obj)
         if isinstance(value, dict):
             return {k: self._externalize(v) for k, v in value.items()}

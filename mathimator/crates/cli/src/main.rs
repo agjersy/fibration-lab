@@ -133,6 +133,10 @@ async fn main() -> Result<()> {
                         }
                         (CellStatus::Error, None) => println!("{:<10} error  {caption}", r.id),
                     }
+                    // What the cell printed, indented under its status line.
+                    for line in r.stdout.lines() {
+                        println!("           | {line}");
+                    }
                 }
                 println!("revision {}  hash {}", result.revision, result.hash);
             }

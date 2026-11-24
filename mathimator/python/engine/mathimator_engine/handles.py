@@ -44,8 +44,17 @@ class NumericFn:
         return f"NumericFn({sp.srepr(self.expr)}, {sp.srepr(sp.Tuple(*self.args))})"
 
 
+MAX_SREPR = 2_000_000  # characters; an object larger than this is refused
+
+
 def content_hash(obj: Any) -> str:
-    text = obj.srepr() if isinstance(obj, NumericFn) else sp.srepr(obj)
+    try:
+        text = obj.srepr() if isinstance(obj, NumericFn) else sp.srepr(obj)
+    except ValueError:
+        # Python refuses to print integers beyond its digit limit.
+        raise CallError("budget", "the result contains a number too large to represent") from None
+    if len(text) > MAX_SREPR:
+        raise CallError("budget", "the result is too large to keep")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 

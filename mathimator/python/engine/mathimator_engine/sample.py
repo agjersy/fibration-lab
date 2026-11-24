@@ -219,7 +219,7 @@ _UNARY: dict[type, Callable] = {
     sp.tan: iv.tan,
     sp.exp: iv.exp,
     sp.log: _log,
-    sp.erf: iv.erf,
+    sp.erf: _monotone(mpmath.erf),  # mpmath.iv has no erf
     sp.Abs: _abs,
     sp.floor: _floor,
     sp.ceiling: _ceiling,
@@ -736,15 +736,29 @@ def one_sided_limit(f, x, p, side: str):
 
 
 def _consistent(fnum, view: View | None, p, side: str, expected: sp.Expr) -> bool:
-    """Numeric cross-check of a symbolic limit just beside p (to within TOL_PX)."""
+    """Numeric cross-check of a symbolic limit: do the values beside p approach it?
+
+    The function is evaluated at three distances from p, each a hundred times closer. The
+    limit is accepted when the closest value is within TOL_PX of it, or when the gap shrinks by
+    a fifth or more at every step (a steep but convergent approach such as x**(1/9) at 0). A wrong limit
+    across a jump leaves a gap that does not shrink, and is rejected.
+    """
     if fnum is None or view is None:
         return True
     pf = float(p)
-    eps = max((view.xhi - view.xlo) * 1e-10, abs(pf) * 1e-13)
-    y = fnum(pf - eps if side == "left" else pf + eps)
-    if math.isnan(y):
-        return False
-    return abs(y - float(expected)) * view.sy <= TOL_PX
+    target = float(expected)
+    span = view.xhi - view.xlo
+    floor = abs(pf) * 1e-13
+    gaps = []
+    for scale in (1e-6, 1e-8, 1e-10):
+        eps = max(span * scale, floor)
+        y = fnum(pf - eps if side == "left" else pf + eps)
+        if math.isnan(y):
+            return False
+        gaps.append(abs(y - target) * view.sy)
+    if gaps[-1] <= TOL_PX:
+        return True
+    return all(b <= 0.8 * a for a, b in itertools.pairwise(gaps))
 
 
 def _classify(
@@ -898,7 +912,22 @@ def _sample_piece(fnum, fiv, dfiv, view: View, a: float, b: float, work: Work) -
             work.points += 1
             stack.append((sm, ym, sb, syb))
             stack.append((sa, sya, sm, ym))
-    return [_thin(p, view) for p in polylines if len(p) >= 2]
+    return [_thin(_clamp(p, view), view) for p in polylines if len(p) >= 2 and not _all_far(p)]
+
+
+def _all_far(polyline: list[list[float]]) -> bool:
+    """A run of samples that all overflowed: a division by zero over a whole stretch (1/floor(x)
+    on [0, 1)), which is an undefined stretch, not a curve."""
+    return all(abs(y) >= FAR for _, y in polyline)
+
+
+def _clamp(polyline: list[list[float]], view: View) -> list[list[float]]:
+    """Bring overflowed samples to a million view-heights off screen. The on-screen part of a
+    segment that leaves the view moves by less than a millionth of a pixel column, and the
+    coordinates stay representable in a renderer's 32-bit floats."""
+    reach = 1e6 * (view.yhi - view.ylo)
+    lo, hi = view.ylo - reach, view.yhi + reach
+    return [[x, min(max(y, lo), hi)] for x, y in polyline]
 
 
 def _explicit(f, x, lo_exact, hi_exact, view: View, work: Work) -> tuple[list, list]:
@@ -1270,7 +1299,12 @@ def sample(
         raise CallError("bad_args", f"there is no object {object_id!r}")
     subs = _substitution(engine, params)
     work = Work(deadline=started + WALL_CLOCK_S)
-    out = _geometry(engine, obj, view, subs, work)
+    try:
+        out = _geometry(engine, obj, view, subs, work)
+    except CallError:
+        raise
+    except Exception as exc:  # a gap in the sampler must be a reported failure, never a crash
+        raise CallError("math", f"could not sample this object ({type(exc).__name__}: {exc})") from None
     status, reason = work.status()
     result = {"object": object_id, "kind": obj.kind, "status": status, "segments": [], "markers": []}
     result.update(out)

@@ -6,7 +6,7 @@ description, the chip generator) sees exactly what the engine enforces.
 
 Standard keywords: ``type`` (object, array, string, number, integer, boolean), ``properties``,
 ``required``, ``items``, ``minItems``, ``maxItems``, ``enum``, ``minimum``, ``maximum``,
-``maxLength``, ``anyOf``, ``description``. Objects reject unknown properties.
+``maxLength``, ``pattern``, ``anyOf``, ``description``. Objects reject unknown properties.
 
 Engine types (``type`` values that are not JSON Schema's):
 
@@ -18,6 +18,7 @@ Engine types (``type`` values that are not JSON Schema's):
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 from .errors import CallError
@@ -78,7 +79,12 @@ STYLE = {
     },
 }
 
-OBJECT_ID = {"type": "string", "maxLength": 64, "description": "Scene object id"}
+OBJECT_ID = {
+    "type": "string",
+    "maxLength": 64,
+    "pattern": "^[A-Za-z][A-Za-z0-9_.-]*$",
+    "description": "Scene object id: a letter, then letters, digits, _ . -",
+}
 
 
 def _fail(path: str, message: str) -> CallError:
@@ -132,6 +138,8 @@ def validate(schema: dict[str, Any], value: Any, path: str = "") -> None:
             raise _fail(path, "must be a string")
         if len(value) > schema.get("maxLength", 4000):
             raise _fail(path, f"is longer than {schema.get('maxLength', 4000)} characters")
+        if "pattern" in schema and not re.match(schema["pattern"], value):
+            raise _fail(path, f"{value!r} is not valid ({schema.get('description', schema['pattern'])})")
     elif kind in ("number", "integer"):
         if not _is_number(value) or (isinstance(value, float) and not math.isfinite(value)):
             raise _fail(path, "must be a finite number")

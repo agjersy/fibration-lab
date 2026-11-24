@@ -11,6 +11,7 @@ from typing import Any
 
 import sympy as sp
 
+from ..engine import require_defined
 from ..errors import CallError
 from ..memo import Out
 from ..registry import HEAVY_BUDGET_S, op
@@ -32,13 +33,55 @@ def _place(engine, prefix: str, kind: str, obj_id: str | None, exprs, spec, styl
         raise CallError("bad_args", f"{obj_id!r} is already a {table[obj_id].kind}; choose another id")
     elif obj_id in (engine.scene.notes if not notes else engine.scene.objects):
         raise CallError("bad_args", f"the id {obj_id!r} is already used")
+    for name, expr in exprs.items():
+        require_defined(expr, f"the {kind}'s {name}")
     table[obj_id] = SceneObject(obj_id, kind, exprs, spec, dict(style or {}), engine.origin)
     return obj_id
 
 
-def _range(engine, pair, what: str) -> tuple[dict[str, Any], dict[str, Any]]:
+CURVE_KINDS = ("explicit", "parametric", "polar", "implicit", "region", "area", "riemann")
+VAR_KEYS = ("var", "x", "y")
+
+
+def _bounds(engine, pair, what: str, finite: bool = False):
+    """An interval of a scene object: two real numbers (no symbols), finite when asked."""
     lo, hi = engine.interval(pair, what)
+    for end in (lo, hi):
+        if end.free_symbols:
+            raise CallError(
+                "bad_args",
+                f"the {what} end {end} contains a symbol; interval ends must be numbers",
+                hint="use numbers or constants such as pi",
+            )
+        if end.is_extended_real is not True or (finite and end.is_finite is not True):
+            raise CallError("bad_args", f"the {what} end {end} is not a {'finite ' if finite else ''}real number")
+    return lo, hi
+
+
+def _range(engine, pair, what: str, finite: bool = False) -> tuple[dict[str, Any], dict[str, Any]]:
+    lo, hi = _bounds(engine, pair, what, finite)
     return exact_text(lo), exact_text(hi)
+
+
+def _var(engine, arg, what: str = "variable") -> sp.Symbol:
+    """A plot variable: a symbol that is not a declared parameter."""
+    var = engine.symbol(arg, what)
+    if str(var) in engine.scene.params:
+        raise CallError(
+            "bad_args",
+            f"{var} is a declared parameter, so it cannot also be the {what}",
+            hint="use another variable name, or another parameter name",
+        )
+    return var
+
+
+def _coordinate(engine, arg, what: str = "coordinate") -> sp.Expr:
+    """A point coordinate: real and finite, possibly depending on parameters."""
+    value = engine.expr(arg, what)
+    check_bound(engine, value, set(), what)
+    if value.is_extended_real is False or value.is_finite is False:
+        raise CallError("bad_args", f"the {what} {value} is not a finite real number")
+    return value
 
 
 # ---- parameters ------------------------------------------------------------------
@@ -66,6 +109,13 @@ def declare(engine, name, value, min, max, step=None):
         raise CallError("bad_args", f"the range [{min}, {max}] is empty")
     if not min <= value <= max:
         raise CallError("bad_args", f"the value {value} is outside the range [{min}, {max}]")
+    for obj in engine.scene.objects.values():
+        if obj.kind in CURVE_KINDS and any(obj.exprs.get(k) == sym for k in VAR_KEYS):
+            raise CallError(
+                "bad_args",
+                f"{name} is the plot variable of {obj.id!r}, so it cannot also be a parameter",
+                hint="choose another parameter name",
+            )
     engine.scene.params[name] = Param(name, float(value), float(min), float(max), None if step is None else float(step))
     return Out(sym)
 
@@ -109,7 +159,7 @@ COMMON = {"id": OBJECT_ID, "style": STYLE}
     result="{id}",
 )
 def explicit(engine, expr, var, domain=None, id=None, style=None):
-    f, x = engine.value(expr), engine.symbol(var)
+    f, x = engine.value(expr), _var(engine, var)
     if not isinstance(f, sp.Expr):
         raise CallError("bad_args", "plot.explicit needs an expression, not an equation", hint="use plot.implicit")
     check_bound(engine, f, {x}, "curve")
@@ -126,10 +176,10 @@ def explicit(engine, expr, var, domain=None, id=None, style=None):
     result="{id}",
 )
 def parametric(engine, x, y, var, range, id=None, style=None):
-    fx, fy, t = engine.expr(x, "x(t)"), engine.expr(y, "y(t)"), engine.symbol(var)
+    fx, fy, t = engine.expr(x, "x(t)"), engine.expr(y, "y(t)"), _var(engine, var)
     check_bound(engine, fx, {t}, "x(t)")
     check_bound(engine, fy, {t}, "y(t)")
-    lo, hi = _range(engine, range, "parameter range")
+    lo, hi = _range(engine, range, "parameter range", finite=True)
     return {
         "id": _place(engine, "curve", "parametric", id, {"x": fx, "y": fy, "var": t}, {"range": [lo, hi]}, style)
     }
@@ -144,9 +194,9 @@ def parametric(engine, x, y, var, range, id=None, style=None):
     result="{id}",
 )
 def polar(engine, r, var, range=None, id=None, style=None):
-    fr, th = engine.expr(r, "r(theta)"), engine.symbol(var)
+    fr, th = engine.expr(r, "r(theta)"), _var(engine, var)
     check_bound(engine, fr, {th}, "r(theta)")
-    lo, hi = _range(engine, range or [0, "2*pi"], "angle range")
+    lo, hi = _range(engine, range or [0, "2*pi"], "angle range", finite=True)
     return {"id": _place(engine, "curve", "polar", id, {"r": fr, "var": th}, {"range": [lo, hi]}, style)}
 
 
@@ -160,7 +210,9 @@ def polar(engine, r, var, range=None, id=None, style=None):
 )
 def implicit(engine, equation, x, y, id=None, style=None):
     rel = engine.value(equation)
-    vx, vy = engine.symbol(x, "x variable"), engine.symbol(y, "y variable")
+    vx, vy = _var(engine, x, "x variable"), _var(engine, y, "y variable")
+    if vx == vy:
+        raise CallError("bad_args", "the x and y variables must be different symbols")
     if isinstance(rel, sp.Expr):
         rel = sp.Eq(rel, 0, evaluate=False)
     if not isinstance(rel, sp.Eq):
@@ -179,7 +231,9 @@ def implicit(engine, equation, x, y, id=None, style=None):
 )
 def region(engine, condition, x, y, id=None, style=None):
     cond = engine.value(condition)
-    vx, vy = engine.symbol(x, "x variable"), engine.symbol(y, "y variable")
+    vx, vy = _var(engine, x, "x variable"), _var(engine, y, "y variable")
+    if vx == vy:
+        raise CallError("bad_args", "the x and y variables must be different symbols")
     if not isinstance(cond, sp.logic.boolalg.Boolean) or isinstance(cond, sp.Eq):
         raise CallError("bad_args", "plot.region needs an inequality or a combination of them")
     check_bound(engine, cond, {vx, vy}, "condition")
@@ -195,9 +249,7 @@ def region(engine, condition, x, y, id=None, style=None):
     result="{id}",
 )
 def point(engine, at, label=None, id=None, style=None):
-    px, py = (engine.expr(v, "coordinate") for v in at)
-    check_bound(engine, px, set(), "point")
-    check_bound(engine, py, set(), "point")
+    px, py = (_coordinate(engine, v) for v in at)
     spec = {"label": label} if label else {}
     return {"id": _place(engine, "point", "point", id, {"x": px, "y": py}, spec, style)}
 
@@ -211,10 +263,8 @@ def point(engine, at, label=None, id=None, style=None):
     result="{id}",
 )
 def vector(engine, origin, vector, id=None, style=None):
-    ox, oy = (engine.expr(v) for v in origin)
-    vx, vy = (engine.expr(v) for v in vector)
-    for e in (ox, oy, vx, vy):
-        check_bound(engine, e, set(), "vector")
+    ox, oy = (_coordinate(engine, v, "origin") for v in origin)
+    vx, vy = (_coordinate(engine, v, "vector component") for v in vector)
     return {"id": _place(engine, "vector", "vector", id, {"ox": ox, "oy": oy, "vx": vx, "vy": vy}, {}, style)}
 
 
@@ -262,7 +312,7 @@ def tangent(engine, of, at, id=None, style=None):
 def area(engine, of, over, id=None, style=None):
     curve = _curve(engine, of)
     f, x = curve.exprs["f"], curve.exprs["var"]
-    lo, hi = engine.interval(over, "area interval")
+    lo, hi = _bounds(engine, over, "area interval", finite=True)
     value = sp.integrate(f, (x, lo, hi))
     exact = not value.has(sp.Integral)
     spec = {"of": of, "over": [exact_text(lo), exact_text(hi)]}
@@ -287,7 +337,7 @@ def area(engine, of, over, id=None, style=None):
 )
 def riemann(engine, of, over, n, rule="mid", id=None, style=None):
     curve = _curve(engine, of)
-    lo, hi = engine.interval(over, "interval")
+    lo, hi = _bounds(engine, over, "interval", finite=True)
     spec = {"of": of, "over": [exact_text(lo), exact_text(hi)], "n": int(n), "rule": rule}
     return {"id": _place(engine, "riemann", "riemann", id, dict(curve.exprs), spec, style)}
 
@@ -322,7 +372,7 @@ def _at(engine, at) -> dict[str, Any]:
         if at not in engine.scene.objects:
             raise CallError("bad_args", f"there is no object {at!r} to attach the note to")
         return {"object": at}
-    px, py = (engine.expr(v, "coordinate") for v in at)
+    px, py = (_coordinate(engine, v) for v in at)
     return {"point": [exact_text(px), exact_text(py)]}
 
 
@@ -361,8 +411,8 @@ def latex(engine, expr, at, id=None, style=None):
     result="{id}",
 )
 def arrow(engine, start, end, id=None, style=None):
-    a = [exact_text(engine.expr(v)) for v in start]
-    b = [exact_text(engine.expr(v)) for v in end]
+    a = [exact_text(_coordinate(engine, v)) for v in start]
+    b = [exact_text(_coordinate(engine, v)) for v in end]
     return {"id": _place(engine, "note", "arrow", id, {}, {"start": a, "end": b}, style, notes=True)}
 
 
@@ -461,8 +511,8 @@ def cam_fit(engine):
     changes_view=True,
 )
 def cam_view(engine, x, y=None):
-    view: dict[str, Any] = {"mode": "window", "x": [exact_text(v) for v in engine.interval(x, "x range")]}
+    view: dict[str, Any] = {"mode": "window", "x": [exact_text(v) for v in _bounds(engine, x, "x range", finite=True)]}
     if y is not None:
-        view["y"] = [exact_text(v) for v in engine.interval(y, "y range")]
+        view["y"] = [exact_text(v) for v in _bounds(engine, y, "y range", finite=True)]
     engine.scene.view = view
     return None

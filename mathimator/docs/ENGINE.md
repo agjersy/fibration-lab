@@ -56,7 +56,12 @@ The router (`math-core::router`) exposes only `call`, `state.get`, and `describe
   - chained comparisons and `and`/`or` are accepted;
   - there is no implicit multiplication.
 
+  - `cbrt(x)` and `root(x, n)` are the *real* roots, so `cbrt(-8)` is −2;
+  - a name that math text reads as a constant or function (`pi`, `e`, `I`, `oo`, `sin`, ...) cannot be a symbol or a parameter.
+
   `srepr` text is read by a second allowlist. Neither reader calls `eval`, `sympify`, or `parse_expr`.
+- **Undefined values.** No object the engine hands out or plots may contain SymPy's complex infinity or `nan`: `1/0`, `0/0`, `sin(x)/x` evaluated at 0, and a tangent at a pole are all `math` errors. Signed infinities are allowed; they are what limits return.
+- **Result size.** A result whose printed form passes 2 MB, or holds an integer Python refuses to print, is a `budget` error.
 - **Purity and memo.** Pure operations change no state and are memoized on (name, args with content hashes). With `--memo-dir`, entries persist as JSON with `srepr`, and an unreadable entry is recomputed. Scene operations bump `revision` when they change anything except the view, and return the diff and the new hash. A failed scene call leaves the state exactly as before.
 - **Budgets.** Each operation has a wall-clock budget: 5 s by default, 20 s for `simplify`, `integrate`, `limit`, `solve` and similar, as listed in the manifest.
 - **Truth.** `method` says how an answer was reached. Only `symbolic` answers can support a **proven** claim; `numeric` ones support **checked**.
@@ -91,7 +96,9 @@ type StateDiff = { objects?: {added, updated, removed}, notes?: {...}, params?: 
   - `data` (spec `x`, `y`, `mode`, `source`);
   - `highlight` (`target`, `over?`).
 - **Note kinds:** `label`, `latex`, `arrow`.
-- Every free symbol of a plotted object is a plot variable or a declared parameter, so the engine never shows an unbound name.
+- Every free symbol of a plotted object is a plot variable or a declared parameter, so the engine never shows an unbound name. A name is one or the other, never both.
+- Interval ends (domains, ranges, areas, the view) are real numbers with no symbols; domains may be infinite, the rest are finite. Point and vector coordinates are finite reals and may depend on parameters.
+- Object ids match `^[A-Za-z][A-Za-z0-9_.-]*$`, at most 64 characters.
 
 ## 5. Operations
 

@@ -44,6 +44,11 @@ def symbol(name: str) -> sp.Symbol:
     """The one way the engine makes a symbol from a name: real-valued."""
     if not _NAME_RE.match(name) or len(name) > MAX_NAME:
         raise CallError("parse", f"{name!r} is not a valid symbol name", hint="use letters, digits and _")
+    if name in CONSTANTS or name in FUNCTIONS:
+        # Math text reads these names as the constant or function, so a symbol with the same
+        # name could never be referred to.
+        what = "constant" if name in CONSTANTS else "function"
+        raise CallError("parse", f"{name!r} is the name of a {what} and cannot be a symbol", hint="choose another name")
     return sp.Symbol(name, real=True)
 
 
@@ -56,7 +61,14 @@ def _log(*args):
 
 
 def _root(x, n):
-    return sp.root(x, n)
+    """The real n-th root: variables are real, so cbrt(-8) is -2, not a complex number."""
+    if not (n.is_Integer and n > 0):
+        raise CallError("parse", "root(x, n) needs a positive whole number n")
+    return sp.real_root(x, n)
+
+
+def _cbrt(x):
+    return sp.real_root(x, 3)
 
 
 # name -> (callable, min args, max args)
@@ -84,7 +96,7 @@ FUNCTIONS: dict[str, tuple[Callable[..., Any], int, int]] = {
     "log": (_log, 1, 2),
     "ln": (sp.log, 1, 1),
     "sqrt": (sp.sqrt, 1, 1),
-    "cbrt": (sp.cbrt, 1, 1),
+    "cbrt": (_cbrt, 1, 1),
     "root": (_root, 2, 2),
     "abs": (sp.Abs, 1, 1),
     "Abs": (sp.Abs, 1, 1),
