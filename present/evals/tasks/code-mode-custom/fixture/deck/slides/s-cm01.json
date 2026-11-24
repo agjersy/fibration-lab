@@ -1,0 +1,73 @@
+{
+  "id": "s-cm01",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tcm01",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Six capabilities define the operating model"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bcm01",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Strategy"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Process"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Data"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Technology"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "People"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Governance"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

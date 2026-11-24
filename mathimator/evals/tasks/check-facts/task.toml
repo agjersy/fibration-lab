@@ -1,0 +1,35 @@
+[task]
+name = "check-facts"
+mode = "plan"
+max_steps = 10
+prompt = """
+Without changing the scene: where are the critical points of x**3 - 3*x on [-3, 3], and does cos(x) = x have a solution between 0 and 2?
+"""
+
+[[checks]]
+kind = "ended"
+
+[[checks]]
+kind = "scene_unchanged"
+
+[[checks]]
+kind = "cells"
+max = 0
+
+# The critical points can be found exactly.
+[[checks]]
+kind = "claims"
+status = ["proven"]
+matches = "critical|x = -?1|maxim|minim"
+
+# The root of cos(x) = x has no closed form: a numeric answer is the honest one, and it
+# must not be presented as proven.
+[[checks]]
+kind = "claims"
+status = ["checked"]
+matches = "cos|root|solution|0\\.739"
+
+[[checks]]
+kind = "claims"
+min_count = 0
+max_unverified = 0

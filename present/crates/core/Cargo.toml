@@ -1,0 +1,38 @@
+[package]
+name = "analyst-deck"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+analyst-deck-protocol = { path = "../protocol" }
+wb-net = { path = "../../../crates/wb-net" }
+wb-sandbox = { path = "../../../crates/wb-sandbox" }
+wb-providers = { path = "../../../crates/wb-providers" }
+wb-policy = { path = "../../../crates/wb-policy" }
+wb-transcript = { path = "../../../crates/wb-transcript" }
+wb-skills = { path = "../../../crates/wb-skills" }
+json-patch = "4"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+regex.workspace = true
+base64.workspace = true
+walkdir.workspace = true
+rusqlite.workspace = true
+zstd.workspace = true
+rand.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

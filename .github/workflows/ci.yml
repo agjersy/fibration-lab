@@ -1,0 +1,317 @@
+name: ci
+
+# One pipeline for the merged repository. Linux and macOS are the supported platforms;
+# Windows is parked (its code stays in the tree and is not gated here).
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Kernel environments (core integration tests drive the real kernels)
+        run: |
+          (cd python/kernel && uv sync)
+          (cd present/python/kernel && uv sync)
+          (cd mathimator/python/engine && uv sync)
+      # ripgrep: the core's search service runs `rg` (bundled with the app as a sidecar; the
+      # runner images do not all ship it). bubblewrap: the Mathimator engine and runner run
+      # without network.
+      - name: ripgrep and bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep bubblewrap
+      - name: ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: command -v rg || brew install ripgrep
+      - run: cargo fmt --all -- --check
+      # The desktop shell needs a system WebView toolkit on Linux; it has its own job.
+      - run: cargo clippy --workspace --exclude analyst-desktop --all-targets -- -D warnings
+      # Mathimator's crates first, in their own step, so a failure elsewhere cannot hide them.
+      - name: Mathimator crates (drive the real engine and runner)
+        run: cargo test -p math-protocol -p math-core -p mathimator-cli
+      - run: cargo test --workspace --exclude analyst-desktop
+        env:
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
+
+  python:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        project: [python/kernel, present/python/sdk, present/python/kernel, mathimator/python/engine, mathimator/python/sdk]
+    defaults:
+      run:
+        working-directory: ${{ matrix.project }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install LibreOffice and bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap ripgrep
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+        env:
+          PRESENT_TEST_ARTIFACTS: ${{ runner.temp }}/present-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.project == 'present/python/kernel' && runner.os == 'Linux'
+        with:
+          name: rendered-diagrams
+          path: ${{ runner.temp }}/present-artifacts
+          if-no-files-found: ignore
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Shared UI package
+        working-directory: packages/wb-ui
+        run: pnpm typecheck && pnpm lint && pnpm test
+      - name: Renderer (both workbenches)
+        working-directory: apps/desktop
+        run: pnpm typecheck && pnpm lint && pnpm test && pnpm build
+
+  # The Playwright suite runs the built renderer against the real core through the development
+  # bridge (analyst-serve), with the scripted model server and fixture projects that
+  # `analyst init` makes (apps/desktop/e2e/harness.ts).
+  e2e:
+    # Pinned: the Playwright version in apps/desktop has no browser build for Ubuntu 26.04,
+    # which ubuntu-latest now is. Unpin when Playwright is upgraded.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor, which leaves
+      # bubblewrap unusable and the kernel unsandboxed (every run then asks for approval, which
+      # these tests do not expect). Lift the restriction on this runner.
+      - name: Allow unprivileged user namespaces (for bubblewrap)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Install LibreOffice and bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap ripgrep
+      - name: Kernel environments
+        run: |
+          (cd python/kernel && uv sync)
+          (cd present/python/kernel && uv sync)
+      - name: The bridge and the CLI that makes the fixture projects
+        run: cargo build -p analyst-serve -p analyst-cli -p wb-sandbox
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile && pnpm --dir apps/desktop build
+      - name: Browser tests against the real core
+        env:
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
+        run: |
+          pnpm --dir apps/desktop exec playwright install --with-deps chromium
+          pnpm --dir apps/desktop test:e2e --trace off
+
+  # Mathimator's evaluation tasks through the whole stack (provider layer over HTTP, agent loop,
+  # session, cell runner, engine) with the scripted model server. This checks the plumbing and
+  # the graders, not a model.
+  mathimator-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Engine environment
+        run: cd mathimator/python/engine && uv sync
+      - run: cargo build -p mathimator-cli
+      - name: Evaluation tasks with the scripted model
+        run: |
+          export MATHIMATOR_HOME="$RUNNER_TEMP/mathimator-home"
+          mkdir -p "$MATHIMATOR_HOME"
+          printf 'default_model = "fake/scripted"\n\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8767/v1"\n' > "$MATHIMATOR_HOME/config.toml"
+          python3 mathimator/evals/fake_model_server.py --port 8767 &
+          sleep 1
+          ./target/debug/mathimator eval --results "$RUNNER_TEMP/mathimator-eval"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathimator-eval
+          path: ${{ runner.temp }}/mathimator-eval
+          if-no-files-found: ignore
+
+  desktop:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: WebView build dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libsoup-3.0-dev libxdo-dev patchelf
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # The shell embeds the built renderer (`apps/desktop/dist`).
+      - run: pnpm install --frozen-lockfile && pnpm --dir apps/desktop build
+      - run: cargo clippy -p analyst-desktop --all-targets -- -D warnings
+      - run: cargo test -p analyst-desktop
+      - run: cargo build -p analyst-desktop
+
+  loop:
+    runs-on: ${{ matrix.os }}
+    needs: [rust, python]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install LibreOffice and bubblewrap (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap ripgrep
+      - name: ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: command -v rg || brew install ripgrep
+      - run: |
+          (cd python/kernel && uv sync)
+          (cd present/python/kernel && uv sync)
+      - run: cargo build -p analyst-cli -p wb-sandbox
+      - name: Analysis loop against the scripted model server
+        shell: bash
+        env:
+          ANALYST_HOME: ${{ runner.temp }}/analyst-home
+        run: |
+          mkdir -p "$ANALYST_HOME"
+          printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8765/v1"\n' > "$ANALYST_HOME/config.toml"
+          python3 evals/fake_model_server.py --port 8765 &
+          server=$!
+          sleep 1
+          ./target/debug/analyst eval run --model fake/scripted --tasks evals/tasks --task parameter-sweep --auto --results "$ANALYST_HOME/results"
+          ./target/debug/analyst eval run --model fake/scripted --tasks evals/tasks --task reuse-library-function --auto --results "$ANALYST_HOME/results"
+          kill $server
+      - name: Deck commands walk-through against the scripted model server
+        shell: bash
+        run: tools/deck_walkthrough.sh
+      - name: Sample deck for checking in PowerPoint (no model)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: tools/make_sample_deck.sh "$RUNNER_TEMP/sample-deck"
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: sample-deck
+          path: |
+            ${{ runner.temp }}/sample-deck/sample.pptx
+            ${{ runner.temp }}/sample-deck/sample.pdf
+      - name: Deck evaluations through the one loop against the scripted model server
+        shell: bash
+        working-directory: present
+        env:
+          ANALYST_HOME: ${{ runner.temp }}/analyst-deck-home
+          PRESENT_FONT_DIRS: ${{ github.workspace }}/present/vendor/fonts
+        run: |
+          mkdir -p "$ANALYST_HOME"
+          printf '[defaults]\nmodel = "fake/scripted"\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8766/v1"\n' > "$ANALYST_HOME/config.toml"
+          python evals/fake_model_server.py --port 8766 &
+          server=$!
+          sleep 2
+          ../target/debug/analyst eval run --tasks evals/tasks --task spreadsheet-to-charts --results "$ANALYST_HOME/results"
+          ../target/debug/analyst eval run --tasks evals/tasks --task fix-checker-failures --results "$ANALYST_HOME/results"
+          kill $server
+
+  desktop-smoke:
+    runs-on: ubuntu-latest
+    needs: [frontend, desktop, python]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux webview dependencies
+        run: |
+          sudo apt-get update
+          # The WebDriver package was renamed in Ubuntu 26.04.
+          driver=webkit2gtk-driver
+          apt-cache show webkitgtk-webdriver >/dev/null 2>&1 && driver=webkitgtk-webdriver
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev patchelf "$driver" xvfb bubblewrap ripgrep
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: cargo install tauri-driver --locked
+      - run: cd python/kernel && uv sync
+      - run: pnpm install --frozen-lockfile && pnpm --dir apps/desktop build
+      - run: cargo build -p analyst-desktop --features custom-protocol
+      - name: Prepare a repo with the sweep fixture
+        run: |
+          cargo build -p analyst-cli
+          ./target/debug/analyst init "$RUNNER_TEMP/demo"
+          cp evals/tasks/parameter-sweep/fixture/analysis/models.py "$RUNNER_TEMP/demo/analysis/"
+          cp evals/tasks/parameter-sweep/fixture/scripts/decay_sim.py "$RUNNER_TEMP/demo/scripts/"
+      - run: apps/desktop/smoke/run.sh "$RUNNER_TEMP/demo" "$RUNNER_TEMP/smoke-out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-smoke
+          path: ${{ runner.temp }}/smoke-out
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+      - uses: astral-sh/setup-uv@v5
+      - name: Python license check (deck kernel)
+        working-directory: present/python/kernel
+        run: |
+          uv sync
+          uv run --with pip-licenses pip-licenses --format=csv > licenses.csv
+          python3 ../../tools/check_python_licenses.py licenses.csv
+
+  boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Crate boundaries (shared crates; no evals or bridge in the desktop app)
+        run: python3 tools/check_wb_boundaries.py
+      - name: Only the network gate can reach the network; only the dev bridge listens
+        run: python3 tools/check_egress.py

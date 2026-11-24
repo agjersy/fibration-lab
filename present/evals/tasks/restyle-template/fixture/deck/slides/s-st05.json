@@ -1,0 +1,52 @@
+{
+  "id": "s-st05",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst05",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Risks is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst05",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Risks point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Risks point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

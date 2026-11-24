@@ -1,0 +1,295 @@
+from __future__ import annotations
+
+import dataclasses
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+from analyst_kernel import sandbox
+from analyst_kernel.errors import SANDBOX_UNAVAILABLE, RpcError
+from analyst_kernel.sandbox import (
+    SandboxSpec,
+    bwrap_argv,
+    detect,
+    sandbox_exec_argv,
+    sandbox_exec_profile,
+    wrap,
+)
+
+
+def spec(tmp_path: Path) -> SandboxSpec:
+    root = tmp_path / "repo"
+    (root / "data" / "derived").mkdir(parents=True)
+    venv = root / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    # a uv-style venv: bin/python is a symlink into a base installation under HOME
+    base = tmp_path / "home" / ".local" / "share" / "uv" / "python" / "cpython-3.12"
+    (base / "bin").mkdir(parents=True)
+    (base / "bin" / "python3.12").write_text("#!/bin/sh\n")
+    (venv / "bin" / "python").symlink_to(base / "bin" / "python3.12")
+    (venv / "pyvenv.cfg").write_text(f"home = {base / 'bin'}\nversion = 3.12.0\n")
+    data = tmp_path / "shared"
+    data.mkdir()
+    tooling = tmp_path / "tooling"
+    tooling.mkdir()
+    run_dir = tmp_path / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    out = root / "out" / "s" / "r1"
+    out.mkdir(parents=True)
+    return SandboxSpec(
+        root=root,
+        venv=venv,
+        run_dir=run_dir,
+        out_dir=out,
+        data_dirs=[data, tmp_path / "missing"],
+        tooling_dir=tooling,
+        derived_dir=root / "data" / "derived",
+        home=tmp_path / "home",
+        python=venv / "bin" / "python",
+    )
+
+
+def test_interpreter_base_is_readable_despite_hidden_home(tmp_path: Path):
+    s = spec(tmp_path)
+    base = tmp_path / "home" / ".local" / "share" / "uv" / "python" / "cpython-3.12"
+    assert base in s.read_only_dirs()
+    assert f"--ro-bind {base} {base}" in " ".join(bwrap_argv(s, ["/py"]))
+    prof = sandbox_exec_profile(s)
+    deny = prof.index(f'(deny file-read* (subpath "{tmp_path / "home"}"))')
+    assert prof.index(f'(allow file-read* (subpath "{base}"))') > deny
+
+
+def test_profile_grants_metadata_on_ancestors_under_home(tmp_path: Path):
+    # repo under HOME plus a uv interpreter under HOME: every ancestor between HOME and each
+    # allowed subtree gets file-read-metadata, and those rules precede the subtree allows
+    home = tmp_path / "home"
+    s = spec(tmp_path)
+    repo = home / "projects" / "analysis"
+    repo.mkdir(parents=True)
+    s.root = repo
+    prof = sandbox_exec_profile(s)
+    lines = prof.splitlines()
+    deny = lines.index(f'(deny file-read* (subpath "{home}"))')
+    for a in (
+        home,
+        home / "projects",
+        home / ".local",
+        home / ".local" / "share",
+        home / ".local" / "share" / "uv",
+        home / ".local" / "share" / "uv" / "python",
+    ):
+        rule = f'(allow file-read-metadata (literal "{a}"))'
+        assert rule in lines, rule
+        assert lines.index(rule) > deny
+    assert f'(allow file-read-metadata (literal "{repo}"))' not in lines  # the subtree itself gets file-read*
+    base = home / ".local" / "share" / "uv" / "python" / "cpython-3.12"
+    assert lines.index(f'(allow file-read* (subpath "{base}"))') > lines.index(
+        f'(allow file-read-metadata (literal "{home}"))'
+    )
+    # a directory outside HOME needs no ancestor grants
+    assert '(allow file-read-metadata (literal "/"))' not in lines
+
+
+def test_sandbox_probe_prints_profile(tmp_path: Path, capsys):
+    s = spec(tmp_path)
+    rc = (
+        sandbox._probe_main(["--python", str(s.python), "--root", str(s.root), "--kind", "sandbox-exec"])
+        if sys.platform == "darwin"
+        else sandbox._probe_main(["--python", str(s.python), "--root", str(s.root), "--kind", "limits"])
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out.startswith("kind: ")
+
+
+def test_every_step_of_the_interpreter_symlink_chain_is_made_readable(tmp_path: Path):
+    """uv links a venv through a version alias that is itself a symlink. The kernel starts the
+    interpreter by the venv's path, so the alias has to exist in the sandbox, not only the
+    directory it finally names (a run failed with "execvp ... No such file or directory")."""
+    store = tmp_path / "home" / ".local" / "share" / "uv" / "python"
+    real = store / "cpython-3.14.1-linux-x86_64-gnu"
+    (real / "bin").mkdir(parents=True)
+    (real / "bin" / "python3.14").write_text("")
+    alias = store / "cpython-3.14-linux-x86_64-gnu"
+    alias.symlink_to(real.name)  # a relative link, as uv writes it
+    venv = tmp_path / "repo" / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").symlink_to(alias / "bin" / "python3.14")
+    dirs = sandbox.interpreter_dirs(venv / "bin" / "python", tmp_path / "home")
+    assert dirs == [alias, real]
+    s = sandbox.SandboxSpec(
+        root=tmp_path / "repo", venv=venv, run_dir=tmp_path / "run", out_dir=tmp_path / "repo" / "out",
+        home=tmp_path / "home", python=venv / "bin" / "python",
+    )
+    argv = sandbox.bwrap_argv(s, ["/py"])
+    binds = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert str(alias) in binds and str(real) in binds
+    # A chain of links between files is followed too, and a loop ends instead of hanging.
+    (venv / "bin" / "python3").symlink_to("python")
+    assert sandbox.interpreter_dirs(venv / "bin" / "python3", tmp_path / "home") == [venv, alias, real]
+    (tmp_path / "a").symlink_to("b")
+    (tmp_path / "b").symlink_to("a")
+    assert len(sandbox._symlink_chain(tmp_path / "a")) == 16
+
+
+def test_venv_is_found_when_its_python_is_a_symlink(tmp_path: Path):
+    """The usual layout: ``.venv/bin/python`` links to a base interpreter elsewhere. Resolving
+    the link before looking for pyvenv.cfg left the venv and found nothing."""
+    base = tmp_path / "base" / "bin"
+    base.mkdir(parents=True)
+    (base / "python3").write_text("")
+    venv = tmp_path / "v"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"home = {base}\n")
+    (venv / "bin" / "python").symlink_to(base / "python3")
+    assert sandbox.venv_of(venv / "bin" / "python") == venv
+    assert sandbox.venv_of(base / "python3") is None
+
+
+def test_pyvenv_cfg_home_is_used_when_python_is_not_a_symlink(tmp_path: Path):
+    base = tmp_path / "base"
+    (base / "bin").mkdir(parents=True)
+    venv = tmp_path / "v"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("")
+    (venv / "pyvenv.cfg").write_text(f"home = {base / 'bin'}\n")
+    assert sandbox.interpreter_dirs(venv / "bin" / "python") == [venv, base]
+
+
+def test_symlinked_paths_are_listed_canonically(tmp_path: Path):
+    s = spec(tmp_path)
+    link = tmp_path / "link-to-repo"
+    link.symlink_to(s.root)
+    s.root = link
+    ro = s.read_only_dirs()
+    assert link in ro and Path(os.path.realpath(link)) in ro
+    prof = sandbox_exec_profile(s)
+    assert f'(subpath "{link}")' in prof and f'(subpath "{os.path.realpath(link)}")' in prof
+
+
+def test_bwrap_argv(tmp_path: Path):
+    s = spec(tmp_path)
+    cmd = ["/py", "script.py", "--x", "1"]
+    argv = bwrap_argv(s, cmd)
+    home = str(tmp_path / "home")
+    assert argv[:5] == ["bwrap", "--ro-bind", "/", "/", "--tmpfs"] and argv[5] == home
+    text = " ".join(argv)
+    for d in (s.root, s.venv, s.tooling_dir, tmp_path / "shared"):
+        assert f"--ro-bind {d} {d}" in text
+    assert f"--ro-bind {tmp_path / 'missing'}" not in text
+    for d in (s.out_dir, s.derived_dir, s.run_dir):
+        assert f"--bind {d} {d}" in text
+    # tmpfs HOME comes before the ro-binds of things that may live under HOME
+    assert argv.index("--tmpfs") < argv.index(str(s.root))
+    assert "--tmpfs /tmp" in text
+    # the /tmp tmpfs precedes every specific bind so repos or run dirs under /tmp stay visible
+    assert argv.index("/tmp") < argv.index(str(s.root))
+    assert "--unshare-net" in argv
+    for flag in ("--die-with-parent", "--new-session", "--unshare-pid"):
+        assert flag in argv
+    assert "--proc /proc --dev /dev" in text
+    assert argv[argv.index("--") + 1 :] == cmd
+    # No field of the spec can turn the network on.
+    assert "network" not in {f.name for f in dataclasses.fields(SandboxSpec)}
+    with pytest.raises(TypeError):
+        SandboxSpec(root=s.root, venv=None, run_dir=s.run_dir, out_dir=s.out_dir, network=True)
+
+
+def test_sandbox_exec_profile_and_argv(tmp_path: Path):
+    s = spec(tmp_path)
+    prof = sandbox_exec_profile(s)
+    lines = prof.splitlines()
+    assert lines[0] == "(version 1)"
+    assert lines[1] == "(deny default)"
+    assert lines[2] == '(allow file-read* (subpath "/"))'
+    assert lines[3] == f'(deny file-read* (subpath "{tmp_path / "home"}"))'
+    for d in (s.root, s.venv, s.tooling_dir, tmp_path / "shared"):
+        assert f'(allow file-read* (subpath "{d}"))' in lines
+    for d in (s.out_dir, s.derived_dir, s.run_dir):
+        assert f'(allow file-read* file-write* (subpath "{d}"))' in lines
+    assert '(allow file-write* (subpath "/private/tmp"))' in lines
+    assert '(allow file-write* (subpath "/private/var/folders"))' in lines
+    for rule in ("(allow process*)", "(allow sysctl-read)", "(allow mach-lookup)", "(deny network*)"):
+        assert rule in lines
+    assert not any("allow network" in line for line in lines)
+    argv = sandbox_exec_argv(s, ["/py", "s.py"])
+    assert argv[:2] == ["sandbox-exec", "-p"] and argv[2] == prof and argv[3:] == ["/py", "s.py"]
+
+
+def test_wrap_kinds(tmp_path: Path):
+    s = spec(tmp_path)
+    cmd = ["/py", "s.py"]
+    lim = wrap("limits", s, cmd)
+    # B10: no address-space limit unless [limits] asks for one
+    assert lim.argv == cmd and lim.rlimit_as is None and lim.rlimit_nofile == 4096
+    assert callable(lim.preexec())
+    s.rlimit_as = 2 * 1024**3
+    assert wrap("limits", s, cmd).rlimit_as == 2 * 1024**3
+    none = wrap("none", s, cmd)
+    assert none.argv == cmd and none.preexec() is None
+    bw = wrap("bwrap", s, cmd)
+    assert bw.kind == "bwrap" and bw.argv[0] == "bwrap" and bw.rlimit_as == 2 * 1024**3
+    se = wrap("sandbox-exec", s, cmd)
+    assert se.profile and se.argv[0] == "sandbox-exec"
+    with pytest.raises(RpcError):
+        wrap("docker", s, cmd)
+
+
+def test_limits_preexec_applies_rlimits():
+    import json
+    import resource
+    import subprocess
+
+    hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+
+    code = "import resource,json;print(json.dumps([resource.getrlimit(resource.RLIMIT_AS)[0], resource.getrlimit(resource.RLIMIT_NOFILE)[0]]))"
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        preexec_fn=sandbox.limits_preexec(1 * 1024**3, min(256, hard)),
+    ).stdout
+    as_limit, nofile = json.loads(out)
+    # macOS accepts the call and does not apply an address-space limit (ARCHITECTURE 5.6).
+    assert as_limit == (resource.getrlimit(resource.RLIMIT_AS)[0] if sys.platform == "darwin" else 1 * 1024**3)
+    assert nofile == min(256, hard)
+
+
+def test_detect_fallback_and_explicit_unavailable(monkeypatch):
+    monkeypatch.setattr(sandbox, "bwrap_available", lambda *a, **k: False)
+    monkeypatch.setattr(sandbox, "sandbox_exec_available", lambda *a, **k: False)
+    assert detect("auto") == "limits"
+    assert detect("limits") == "limits" and detect("none") == "none"
+    for kind in ("bwrap", "sandbox-exec"):
+        with pytest.raises(RpcError) as exc:
+            detect(kind)
+        assert exc.value.code == SANDBOX_UNAVAILABLE
+    with pytest.raises(RpcError):
+        detect("firejail")
+
+
+def test_detect_order(monkeypatch):
+    monkeypatch.setattr(sandbox, "bwrap_available", lambda *a, **k: True)
+    monkeypatch.setattr(sandbox, "sandbox_exec_available", lambda *a, **k: True)
+    assert detect("auto") == "bwrap"
+    monkeypatch.setattr(sandbox, "bwrap_available", lambda *a, **k: False)
+    assert detect("auto") == "sandbox-exec"
+
+
+def test_bwrap_available_needs_binary(monkeypatch):
+    assert sandbox.bwrap_available(which=lambda name: None) is False
+    assert sandbox.sandbox_exec_available(which=lambda name: "/usr/bin/sandbox-exec") is (
+        sys.platform == "darwin"
+    )
+
+
+def test_venv_of(tmp_path: Path):
+    venv = tmp_path / "v"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr\n")
+    py = venv / "bin" / "python"
+    py.write_text("")
+    assert sandbox.venv_of(py) == venv.resolve()
+    assert sandbox.venv_of(tmp_path / "nope" / "python") is None

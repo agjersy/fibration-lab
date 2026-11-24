@@ -1,0 +1,119 @@
+{
+ "kind": "pptx",
+ "title": "Market Update",
+ "pages": 5,
+ "outline": [
+  {
+   "title": "Market Update",
+   "loc": "s1",
+   "children": []
+  },
+  {
+   "title": "Key messages",
+   "loc": "s2",
+   "children": []
+  },
+  {
+   "title": "Units by region",
+   "loc": "s3",
+   "children": []
+  },
+  {
+   "title": "Shipments table",
+   "loc": "s4",
+   "children": []
+  },
+  {
+   "title": "Long commentary",
+   "loc": "s5",
+   "children": []
+  }
+ ],
+ "chunks": [
+  {
+   "loc": "s1",
+   "heading_path": [
+    "Market Update"
+   ],
+   "text": "Market Update\nPrepared for the steering group"
+  },
+  {
+   "loc": "s2",
+   "heading_path": [
+    "Key messages"
+   ],
+   "text": "Key messages\nDemand is stable\nFreight costs fell 12%\nInventory turns improved\nNotes: Mention the supplier contract renewal."
+  },
+  {
+   "loc": "s3",
+   "heading_path": [
+    "Units by region"
+   ],
+   "text": "Units by region\nCategory\t2025\t2026\nNorth\t120\t150\nSouth\t80\t91\nEast\t64\t77"
+  },
+  {
+   "loc": "s4",
+   "heading_path": [
+    "Shipments table"
+   ],
+   "text": "Shipments table\nRegion\tQ1\tQ2\tQ3\nNorth\t120\t135\t150\nSouth\t80\t82\t91\nEast\t64\t70\t77\nWest\t101\t99\t113\nTotal\t365\t386\t431"
+  },
+  {
+   "loc": "s5/sh2",
+   "heading_path": [
+    "Long commentary"
+   ],
+   "text": "Long commentary"
+  },
+  {
+   "loc": "s5/sh3",
+   "heading_path": [
+    "Long commentary"
+   ],
+   "text": "Retention renewal channel supplier channel renewal inventory region guidance volume retention margin. Inventory revenue churn supplier customer backlog logistics productivity inventory backlog order channel demand productivity. Productivity utilization forecast order backlog logistics inventory logistics logistics guidance renewal retention pricing. Outlook order backlog invoice warehouse backlog churn variance inventory demand.\nPartner partner pricing invoice inventory region productivity warehouse budget revenue productivity quarter channel supplier demand logistics. Contract headcount backlog order pricing invoice outlook inventory partner demand volume quarter. Order shipment renewal retention pricing contract forecast channel. Region productivity guidance quarter logistics shipment customer outlook revenue inventory."
+  },
+  {
+   "loc": "s5/sh3",
+   "heading_path": [
+    "Long commentary"
+   ],
+   "text": "renewal retention pricing contract forecast channel. Region productivity guidance quarter logistics shipment customer outlook revenue inventory.\nForecast headcount capacity churn region freight outlook invoice quarter revenue utilization shipment. Demand guidance outlook freight channel volume retention quarter budget supply. Supplier backlog productivity volume backlog productivity partner order partner retention. Volume order productivity quarter utilization variance warehouse customer region quarter revenue capacity pricing logistics.\nBudget shipment growth retention outlook productivity inventory supplier growth forecast invoice contract volume capacity capacity. Retention quarter order inventory pipeline invoice demand logistics productivity quarter order guidance retention inventory. Utilization contract guidance inventory revenue partner supplier customer. Invoice region order backlog volume growth partner partner outlook logistics pricing variance growth growth forecast."
+  },
+  {
+   "loc": "s5/sh3",
+   "heading_path": [
+    "Long commentary"
+   ],
+   "text": "partner supplier customer. Invoice region order backlog volume growth partner partner outlook logistics pricing variance growth growth forecast.\nGuidance invoice guidance variance capacity supplier guidance capacity backlog customer. Growth margin contract revenue pipeline outlook churn customer shipment productivity contract retention quarter. Pipeline capacity variance budget freight budget churn supplier supplier. Capacity revenue outlook margin guidance backlog churn shipment channel partner invoice headcount contract freight headcount."
+  },
+  {
+   "loc": "s5/sh4",
+   "heading_path": [
+    "Long commentary"
+   ],
+   "text": "Supplier warehouse guidance warehouse pricing budget freight pricing margin quarter freight supply. Inventory pipeline revenue inventory capacity customer demand outlook growth volume. Margin guidance margin supplier capacity supplier growth supply productivity backlog channel demand margin pipeline."
+  },
+  {
+   "loc": "s5/sh0",
+   "heading_path": [
+    "Long commentary",
+    "Notes"
+   ],
+   "text": "Long slide notes: Utilization outlook supply revenue logistics shipment channel growth outlook productivity partner. Revenue pipeline invoice supplier warehouse order inventory order channel retention customer backlog inventory inventory renewal pipeline."
+  }
+ ],
+ "tables": [
+  {
+   "loc": "s3/sh3/t1",
+   "rows": 4,
+   "cols": 3,
+   "title": "Units by region"
+  },
+  {
+   "loc": "s4/sh3/t1",
+   "rows": 6,
+   "cols": 4,
+   "title": "Shipments table"
+  }
+ ]
+}

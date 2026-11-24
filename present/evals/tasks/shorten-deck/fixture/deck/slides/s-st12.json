@@ -1,0 +1,52 @@
+{
+  "id": "s-st12",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst12",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Benefits is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst12",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Benefits point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Benefits point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

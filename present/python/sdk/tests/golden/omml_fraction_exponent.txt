@@ -1,0 +1,36 @@
+oMath
+  f
+    num
+      sSup
+        e
+          r
+            t 'a'
+        sup
+          r
+            t '2'
+    den
+      r
+        t 'b'
+      r
+        t '+'
+      r
+        t '1'
+  sSup
+    e
+      r
+        t 'e'
+    sup
+      r
+        t '−'
+      f
+        num
+          r
+            t 't'
+        den
+          sSub
+            e
+              r
+                t 'τ'
+            sub
+              r
+                t '1'

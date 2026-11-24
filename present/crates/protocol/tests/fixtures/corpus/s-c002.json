@@ -1,0 +1,112 @@
+{
+  "id": "s-c002",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t002",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Margin recovered to 18% on pricing actions"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-b2",
+      "text": {
+        "paragraphs": [
+          {
+            "level": 0,
+            "runs": [
+              {
+                "t": "Gross margin up ",
+                "cite": [
+                  "ref:r-q3rep@3f9a1c2b7e01#p11:c120-188"
+                ]
+              },
+              {
+                "t": "3.1 pts",
+                "b": true,
+                "color": "accent2",
+                "cite": [
+                  "ref:r-q3rep@3f9a1c2b7e01#p11:c120-188"
+                ]
+              },
+              {
+                "t": " quarter on quarter"
+              }
+            ]
+          },
+          {
+            "level": 1,
+            "runs": [
+              {
+                "t": "Two thirds from list-price changes in "
+              },
+              {
+                "t": "EMEA",
+                "i": true
+              }
+            ]
+          },
+          {
+            "level": 2,
+            "runs": [
+              {
+                "t": "See the "
+              },
+              {
+                "t": "pricing memo",
+                "link": "https://example.com/memo",
+                "u": true
+              }
+            ]
+          },
+          {
+            "level": 3,
+            "runs": [
+              {
+                "t": "Level four"
+              }
+            ]
+          },
+          {
+            "level": 4,
+            "runs": [
+              {
+                "t": "Level five"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": [],
+  "notes": {
+    "paragraphs": [
+      {
+        "runs": [
+          {
+            "t": "Pause on the EMEA point."
+          }
+        ]
+      },
+      {
+        "runs": [
+          {
+            "t": "Second note paragraph."
+          }
+        ]
+      }
+    ]
+  }
+}

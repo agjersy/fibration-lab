@@ -1,0 +1,20 @@
+[template]
+name = "Corp 2026"
+owner = "Brand team"
+
+[layouts."Title and Content"]
+use_for = "One message with up to five supporting points"
+max_bullets = 5
+
+[layouts."Layout 7"]
+description = "Big number with caption"
+use_for = "A single headline metric"
+
+[layouts."Blank"]
+avoid = true
+
+[rules]
+mandatory = ["Title Slide", "Disclaimer"]   # layouts that must appear at least once
+closing = "Closing"                          # layout of the last slide
+allow_free_elements = false
+icons_dir = "icons"                          # relative to template/

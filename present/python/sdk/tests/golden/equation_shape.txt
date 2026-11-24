@@ -1,0 +1,50 @@
+mc:AlternateContent
+  mc:Choice Requires=a14
+    p:sp
+      p:nvSpPr
+        p:cNvPr
+        p:cNvSpPr txBox=1
+        p:nvPr
+          p:ph idx=1
+          p:custDataLst
+      p:spPr
+        a:xfrm
+          a:off
+          a:ext
+        a:prstGeom prst=rect
+          a:avLst
+        a:noFill
+      p:txBody
+        a:bodyPr
+          a:spAutoFit
+        a:lstStyle
+        a:p
+          a:pPr algn=ctr
+            a:buNone
+          a14:m
+            m:oMathPara
+              m:oMathParaPr
+                m:jc val=centerGroup
+              m:oMath ...
+  mc:Fallback
+    p:sp
+      p:nvSpPr
+        p:cNvPr
+        p:cNvSpPr txBox=1
+        p:nvPr
+          p:custDataLst
+      p:spPr
+        a:xfrm
+          a:off
+          a:ext
+        a:prstGeom prst=rect
+          a:avLst
+        a:blipFill rotWithShape=1
+          a:blip r:embed=<image>
+          a:stretch
+            a:fillRect
+      p:txBody
+        a:bodyPr
+        a:lstStyle
+        a:p
+          a:endParaRPr

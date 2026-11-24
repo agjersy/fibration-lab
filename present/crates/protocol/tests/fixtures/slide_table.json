@@ -1,0 +1,43 @@
+{
+  "id": "s-tb19",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t3c0",
+      "text": { "paragraphs": [{ "runs": [{ "t": "Headcount is flat outside engineering" }] }] }
+    },
+    "body": {
+      "type": "table",
+      "id": "e-tb01",
+      "table": {
+        "columns": 3,
+        "header_row": true,
+        "banded_rows": true,
+        "rows": [
+          { "cells": [
+            { "text": { "paragraphs": [{ "runs": [{ "t": "Function" }] }] } },
+            { "text": { "paragraphs": [{ "runs": [{ "t": "FTE" }] }] }, "span": 2 }
+          ] },
+          { "cells": [
+            { "text": { "paragraphs": [{ "runs": [{ "t": "Engineering" }] }] } },
+            { "text": { "paragraphs": [{ "runs": [{ "t": "212" }] }] } },
+            { "text": { "paragraphs": [{ "align": "right", "runs": [{ "t": "+14" }] }] } }
+          ] }
+        ],
+        "source": {
+          "kind": "inline",
+          "table": {
+            "columns": ["Function", "FTE", "Change"],
+            "rows": [["Engineering", 212, 14], ["Sales", 88, 0]],
+            "loc": ""
+          },
+          "cites": ["ref:r-hcount@0123456789ab#r1-13", "ref:r-hcount@0123456789ab#r2-3:c1-3"]
+        },
+        "steps": [{ "op": "sort", "by": ["FTE"] }]
+      }
+    }
+  },
+  "elements": []
+}

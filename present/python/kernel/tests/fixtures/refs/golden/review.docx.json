@@ -1,0 +1,86 @@
+{
+ "kind": "docx",
+ "title": "Supplier Review",
+ "pages": null,
+ "outline": [
+  {
+   "title": "Supplier Review",
+   "loc": "c0-15",
+   "children": [
+    {
+     "title": "Overview",
+     "loc": "c406-414",
+     "children": [
+      {
+       "title": "Regional figures",
+       "loc": "c2311-2327",
+       "children": []
+      }
+     ]
+    },
+    {
+     "title": "Risks",
+     "loc": "c2471-2476",
+     "children": []
+    }
+   ]
+  }
+ ],
+ "chunks": [
+  {
+   "loc": "c0-404",
+   "heading_path": [
+    "Supplier Review"
+   ],
+   "text": "Supplier Review\n\nWarehouse logistics supply pricing renewal supply freight renewal pipeline logistics capacity supplier customer guidance quarter. Logistics contract revenue outlook region growth quarter pricing partner margin warehouse utilization logistics pricing. Channel retention demand revenue customer warehouse churn headcount customer backlog utilization channel supply retention margin region."
+  },
+  {
+   "loc": "c406-1288",
+   "heading_path": [
+    "Supplier Review",
+    "Overview"
+   ],
+   "text": "Overview\n\nVariance pipeline retention budget region margin revenue volume volume. Freight budget variance headcount region pricing churn shipment. Capacity shipment revenue headcount forecast inventory partner pipeline revenue. Warehouse demand renewal pricing logistics supply pricing inventory. Budget forecast variance headcount volume revenue churn capacity margin volume renewal variance pipeline quarter.\n\nVolume logistics backlog revenue shipment retention budget region region customer. Partner revenue invoice invoice warehouse inventory freight inventory budget renewal supplier. Channel partner pricing contract pricing budget freight customer headcount growth pipeline pipeline. Supply backlog partner variance backlog headcount demand retention. Renewal region inventory channel freight region churn volume volume margin region churn headcount logistics partner growth."
+  },
+  {
+   "loc": "c1147-2309",
+   "heading_path": [
+    "Supplier Review",
+    "Overview"
+   ],
+   "text": "demand retention. Renewal region inventory channel freight region churn volume volume margin region churn headcount logistics partner growth.\n\nRenewal retention invoice outlook inventory customer invoice inventory. Shipment outlook inventory quarter margin freight order capacity quarter margin region freight region capacity utilization. Region region logistics guidance invoice quarter inventory shipment order customer. Region headcount margin demand revenue budget budget revenue region customer customer forecast backlog headcount shipment. Warehouse logistics warehouse guidance customer outlook supply margin capacity customer freight margin channel forecast.\n\nDemand backlog revenue invoice capacity supplier pricing outlook contract shipment logistics demand partner utilization variance. Pricing productivity pricing volume budget channel utilization volume inventory inventory demand order. Region churn contract forecast logistics freight churn volume. Budget outlook demand utilization logistics utilization region quarter churn quarter churn order capacity margin. Variance warehouse pricing margin churn partner supplier growth forecast logistics."
+  },
+  {
+   "loc": "c2311-2469",
+   "heading_path": [
+    "Supplier Review",
+    "Overview",
+    "Regional figures"
+   ],
+   "text": "Regional figures\n\nThe table below lists shipments by region.\n\nRegion\tQ1\tQ2\tQ3\nNorth\t120\t135\t150\nSouth\t80\t82\t91\nEast\t64\t70\t77\nWest\t101\t99\t113\nTotal\t365\t386\t431"
+  },
+  {
+   "loc": "c2471-3382",
+   "heading_path": [
+    "Supplier Review",
+    "Risks"
+   ],
+   "text": "Risks\n\nGuidance invoice region pricing pricing freight backlog renewal revenue. Guidance quarter renewal channel churn order guidance outlook supply contract variance channel customer headcount budget. Logistics warehouse pricing revenue budget supply shipment warehouse utilization volume. Forecast volume partner budget customer capacity guidance utilization backlog. Order supply customer quarter logistics shipment headcount churn.\n\nMargin volume region productivity quarter renewal guidance shipment inventory freight supplier outlook outlook logistics demand. Channel logistics outlook retention contract outlook supply backlog capacity. Volume capacity supplier guidance outlook churn demand pricing headcount guidance forecast supply revenue budget. Guidance quarter outlook variance guidance forecast demand customer. Region guidance warehouse headcount variance churn partner freight demand inventory."
+  },
+  {
+   "loc": "c3238-3912",
+   "heading_path": [
+    "Supplier Review",
+    "Risks"
+   ],
+   "text": "quarter outlook variance guidance forecast demand customer. Region guidance warehouse headcount variance churn partner freight demand inventory.\n\nProductivity freight outlook utilization pipeline pricing headcount margin backlog inventory margin quarter pricing. Channel revenue retention utilization order partner demand pipeline demand forecast. Backlog pricing outlook productivity margin budget headcount outlook contract guidance volume guidance volume outlook volume guidance. Channel order renewal utilization utilization pricing volume pricing pipeline inventory. Inventory customer backlog budget pipeline productivity headcount guidance inventory pricing variance."
+  }
+ ],
+ "tables": [
+  {
+   "loc": "c2373-2469/t1",
+   "rows": 6,
+   "cols": 4
+  }
+ ]
+}

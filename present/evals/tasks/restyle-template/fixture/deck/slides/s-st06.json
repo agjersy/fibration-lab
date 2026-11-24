@@ -1,0 +1,52 @@
+{
+  "id": "s-st06",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-tst06",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Team is on track for the March go-live"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "body": {
+      "type": "text",
+      "id": "e-bst06",
+      "text": {
+        "paragraphs": [
+          {
+            "runs": [
+              {
+                "t": "Team point one for the programme"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "Team point two with supporting detail"
+              }
+            ]
+          },
+          {
+            "runs": [
+              {
+                "t": "A third point"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

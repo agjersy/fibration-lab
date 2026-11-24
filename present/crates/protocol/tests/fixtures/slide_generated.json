@@ -1,0 +1,9 @@
+{
+  "id": "s-gn06",
+  "kind": "generated",
+  "layout": "Title Only",
+  "placeholders": {},
+  "elements": [],
+  "generated": { "script": "from present_sdk import theme\n\ndef draw(slide):\n    slide.title(\"Waterfall of margin drivers\")\n" },
+  "hidden": true
+}

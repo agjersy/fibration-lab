@@ -1,0 +1,19 @@
+[task]
+name = "code-mode-custom"
+mode = "build"
+timeout_s = 900
+max_steps = 40
+prompt = """
+Replace the bullet list with a radial diagram: a central circle labelled "Operating model" with the six capabilities arranged evenly on a ring around it, each connected to the centre. The structured deck has no radial primitive, so switch the project to code generation mode and draw it with native shapes in the build script, using theme colors and the deck SDK. Build it and make sure the checker is clean.
+"""
+
+[[checks]]
+kind = "mode"
+mode = "code"
+
+[[checks]]
+kind = "opens_clean"
+
+[[checks]]
+kind = "checker_clean"
+max_warnings = 0

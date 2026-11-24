@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities of the main window, limited to what the renderer uses: event listening and destroying or closing its own window (the unsaved-changes guard on close), and the native open dialog. Everything else goes through the app's own commands. No window or webview creation.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-destroy",
+    "core:window:allow-close",
+    "dialog:allow-open"
+  ]
+}

@@ -1,0 +1,26 @@
+[project]
+name = "Q3 review"
+created = "2026-11-15T10:00:00Z"
+
+[policy]
+edits = "review"                      # review | auto-new-slides | auto
+code = "ask"                          # builds and generated slides: ask | auto | deny
+skills_scripts = "ask"                # ask | auto | deny
+code_mode = "allow"                   # allow | deny (switching to code generation mode)
+export = "auto"
+max_steps = 60
+build_timeout_s = 60
+
+[contract]                            # rule id = severity (section 7); omitted rules use defaults
+"density.bullets" = "warn"
+"fit.overflow" = "error"
+max_bullets = 6
+max_words = 70
+min_font_pt = 12
+allow_free_elements = false
+
+[[export_presets]]
+name = "pre-read"
+format = "pdf"
+dpi = 150
+file = "{project}-{date}-preread.pdf"

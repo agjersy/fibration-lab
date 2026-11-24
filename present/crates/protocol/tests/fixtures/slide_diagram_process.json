@@ -1,0 +1,29 @@
+{
+  "id": "s-dp01",
+  "kind": "layout",
+  "layout": "Title and Content",
+  "placeholders": {
+    "title": { "type": "text", "id": "e-t4d0", "text": { "paragraphs": [{ "runs": [{ "t": "Approval takes three hand-offs" }] }] } },
+    "body": {
+      "type": "diagram",
+      "id": "e-dg01",
+      "diagram": {
+        "family": "process",
+        "variant": "flowchart",
+        "nodes": [
+          { "id": "n1", "label": { "paragraphs": [{ "runs": [{ "t": "Request" }] }] }, "kind": "start" },
+          { "id": "n2", "label": { "paragraphs": [{ "runs": [{ "t": "Over 10k?" }] }] }, "detail": { "paragraphs": [{ "runs": [{ "t": "Threshold set by finance" }] }] }, "kind": "decision" },
+          { "id": "n3", "label": { "paragraphs": [{ "runs": [{ "t": "CFO sign-off" }] }] }, "kind": "step" },
+          { "id": "n4", "label": { "paragraphs": [{ "runs": [{ "t": "Approved" }] }] }, "kind": "end" }
+        ],
+        "edges": [
+          { "from": "n1", "to": "n2" },
+          { "from": "n2", "to": "n3", "label": "yes" },
+          { "from": "n2", "to": "n4", "label": "no" },
+          { "from": "n3", "to": "n4" }
+        ]
+      }
+    }
+  },
+  "elements": []
+}

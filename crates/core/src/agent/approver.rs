@@ -1,0 +1,110 @@
+//! Approval of policy `Ask` decisions.
+
+use crate::tools::proposals::Proposal;
+use async_trait::async_trait;
+use serde_json::Value;
+
+#[derive(Debug, Clone)]
+pub struct ApprovalRequest {
+    pub tool: String,
+    pub args: Value,
+    pub reason: String,
+    /// Present for edit-class tools: summary and diff to show.
+    pub proposal: Option<Proposal>,
+    /// Id of the tool call being approved. It is also the id of the transcript's `proposal`
+    /// and `decision` events for this call, so UIs can use it as the proposal id.
+    pub call_id: String,
+    /// Present for deck changes: the change with its before/after shape.
+    pub deck: Option<DeckProposal>,
+}
+
+/// A proposed change to a deck (a storyline, a slide, a build script, the deck's mode).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeckProposal {
+    /// The deck's slug.
+    pub deck: String,
+    pub kind: analyst_protocol::transcript::ProposalKind,
+    pub summary: String,
+    /// A textual before/after.
+    pub diff: String,
+    pub slide_ids: Vec<String>,
+    /// Repo-relative files the change writes or removes.
+    pub targets: Vec<String>,
+    /// The slide document (or outline rows, or script text) before and after.
+    pub before: Option<Value>,
+    pub after: Option<Value>,
+}
+
+/// The outcome of an approval. `Accept { content: Some(..) }` carries the file content the user
+/// wants written instead of the proposed one (per-hunk review in the desktop app); for a
+/// slide proposal it is the slide document (JSON) as the user edited it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalDecision {
+    Accept { content: Option<String> },
+    Reject { reason: Option<String> },
+}
+
+impl ApprovalDecision {
+    pub fn accepted(&self) -> bool {
+        matches!(self, ApprovalDecision::Accept { .. })
+    }
+}
+
+#[async_trait]
+pub trait Approver: Send + Sync {
+    async fn approve(&self, req: &ApprovalRequest) -> bool;
+
+    /// Richer decision used by the agent loop; the default delegates to [`Approver::approve`].
+    async fn decide(&self, req: &ApprovalRequest) -> ApprovalDecision {
+        if self.approve(req).await {
+            ApprovalDecision::Accept { content: None }
+        } else {
+            ApprovalDecision::Reject { reason: None }
+        }
+    }
+}
+
+/// Accepts everything (evals, `--auto`-style runs).
+pub struct AutoApprover;
+
+#[async_trait]
+impl Approver for AutoApprover {
+    async fn approve(&self, _req: &ApprovalRequest) -> bool {
+        true
+    }
+}
+
+/// Rejects everything (tests).
+pub struct RejectAllApprover;
+
+#[async_trait]
+impl Approver for RejectAllApprover {
+    async fn approve(&self, _req: &ApprovalRequest) -> bool {
+        false
+    }
+}
+
+/// Records every request and answers with a fixed decision (tests).
+pub struct RecordingApprover {
+    pub decision: bool,
+    pub seen: std::sync::Mutex<Vec<ApprovalRequest>>,
+}
+
+impl RecordingApprover {
+    pub fn new(decision: bool) -> Self {
+        RecordingApprover {
+            decision,
+            seen: std::sync::Mutex::new(vec![]),
+        }
+    }
+}
+
+#[async_trait]
+impl Approver for RecordingApprover {
+    async fn approve(&self, req: &ApprovalRequest) -> bool {
+        if let Ok(mut s) = self.seen.lock() {
+            s.push(req.clone());
+        }
+        self.decision
+    }
+}

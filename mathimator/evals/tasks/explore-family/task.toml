@@ -1,0 +1,45 @@
+[task]
+name = "explore-family"
+mode = "explore"
+max_steps = 12
+prompt = """
+Graph a*sin(b*x) for x from -10 to 10, with a and b as parameters I can drag (a between -3 and 3, b between 0.1 and 5, both starting at 1). Does it have any singularities?
+"""
+
+[[checks]]
+kind = "ended"
+
+[[checks]]
+kind = "runs_clean"
+
+[[checks]]
+kind = "param"
+name = "a"
+
+[[checks]]
+kind = "param"
+name = "b"
+
+[[checks]]
+kind = "object"
+object_kind = "explicit"
+equals = "a*sin(b*x)"
+
+# The answer about singularities must be a claim the engine backs symbolically.
+[[checks]]
+kind = "claims"
+status = ["proven"]
+matches = "singularit"
+
+[[checks]]
+kind = "claims"
+min_count = 0
+max_unverified = 0
+
+[[checks]]
+kind = "cells"
+min = 1
+max = 3
+
+[[checks]]
+kind = "replay_deterministic"

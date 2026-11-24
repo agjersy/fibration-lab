@@ -1,0 +1,64 @@
+{
+  "id": "s-fe05",
+  "kind": "layout",
+  "layout": "Picture with Caption",
+  "placeholders": {
+    "title": { "type": "text", "id": "e-t8b1", "text": { "paragraphs": [{ "runs": [{ "t": "The new plant opened in May" }] }] } },
+    "picture": {
+      "type": "image",
+      "id": "e-im01",
+      "asset": "assets/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08.png",
+      "alt": "Aerial photo of the plant",
+      "fit": "crop",
+      "crop": { "l": 0.1, "t": 0.0, "r": 0.1, "b": 0.25 },
+      "cite": ["ref:r-photo@0a1b2c3d4e5f#box:0.1,0.2,0.5,0.5"]
+    }
+  },
+  "elements": [
+    {
+      "id": "e-sh01", "x": 914400, "y": 5486400, "cx": 2743200, "cy": 457200,
+      "content": {
+        "type": "shape", "id": "e-sh01", "shape": "rounded-rect", "fill": "accent1", "line": "dk1",
+        "text": { "paragraphs": [{ "align": "center", "runs": [{ "t": "Draft", "color": "lt1" }] }] }
+      }
+    },
+    {
+      "id": "e-sh02", "x": -12700, "y": 0, "cx": 12192000, "cy": 0,
+      "content": { "type": "shape", "id": "e-sh02", "shape": "line" }
+    },
+    {
+      "id": "e-tx01", "x": 457200, "y": 6172200, "cx": 4572000, "cy": 365760,
+      "content": { "type": "text", "id": "e-tx01", "text": { "paragraphs": [{ "runs": [{ "t": "Source: site visit", "cite": ["ref:r-notes@00ff00ff00ff#c3400-3520"] }] }] } }
+    },
+    {
+      "id": "e-im02", "x": 9144000, "y": 457200, "cx": 1828800, "cy": 1828800,
+      "content": {
+        "type": "image", "id": "e-im02",
+        "asset": "assets/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.png",
+        "alt": "Residual plot from the Analyst run",
+        "cite": ["ref:r-resid@abcdef012345#run:20261104-1132-ab12/residuals"]
+      }
+    },
+    {
+      "id": "e-ch02", "x": 457200, "y": 1371600, "cx": 4572000, "cy": 2743200,
+      "content": {
+        "type": "chart", "id": "e-ch02",
+        "chart": { "type": "pie", "source": { "kind": "ref", "cite": "ref:r-q3rep@3f9a1c2b7e01#p12/t1" }, "series_from": "rows" }
+      }
+    },
+    {
+      "id": "e-tb02", "x": 5486400, "y": 1371600, "cx": 4572000, "cy": 914400,
+      "content": {
+        "type": "table", "id": "e-tb02",
+        "table": { "columns": 1, "header_row": false, "banded_rows": false, "rows": [{ "cells": [{ "text": { "paragraphs": [] } }] }] }
+      }
+    },
+    {
+      "id": "e-dg07", "x": 5486400, "y": 2743200, "cx": 4572000, "cy": 1371600,
+      "content": {
+        "type": "diagram", "id": "e-dg07",
+        "diagram": { "family": "process", "variant": "chevrons", "nodes": [{ "id": "a", "label": { "paragraphs": [{ "runs": [{ "t": "Plan" }] }] } }] }
+      }
+    }
+  ]
+}

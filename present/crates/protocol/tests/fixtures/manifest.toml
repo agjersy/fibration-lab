@@ -1,0 +1,25 @@
+[[refs]]
+id = "r-q3rep"
+file = "references/3f9a1c2b7e01.pdf"   # <first 12 hex of sha256>.<ext>; versions are separate files
+kind = "pdf"
+title = "Q3 report"
+original_path = "C:/Users/.../Q3 report.pdf"
+imported = "2026-11-15T10:02:11Z"
+version = "3f9a1c2b7e01"
+previous_versions = []
+parent = ""                            # set for email attachments
+source = "file"                        # file | analyst
+analyst = { repo = "", item = "", run_id = "" }
+
+[[refs]]
+id = "r-resid"
+file = "references/abcdef012345.png"
+kind = "analyst-figure"
+title = "Residuals"
+original_path = "/home/ana/decay/out/fit_decay/20261104-1132-ab12/figures/residuals.png"
+imported = "2026-11-15T10:05:00Z"
+version = "abcdef012345"
+previous_versions = ["00aa11bb22cc"]
+parent = ""
+source = "analyst"
+analyst = { repo = "/home/ana/decay", item = "20261104-1132-ab12/residuals", run_id = "20261104-1132-ab12" }

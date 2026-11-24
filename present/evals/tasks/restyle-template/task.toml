@@ -1,0 +1,27 @@
+[task]
+name = "restyle-template"
+mode = "build"
+timeout_s = 900
+max_steps = 40
+prompt = """
+This deck was moved onto the corporate template. Make it comply: the template requires a title slide at the start, a disclaimer slide, and a closing slide at the end, and allows at most five bullets on a content slide. Do not change the locked slide.
+"""
+
+[[checks]]
+kind = "checker_clean"
+max_warnings = 0
+
+[[checks]]
+kind = "layout_used"
+layout = "Title Slide"
+
+[[checks]]
+kind = "layout_used"
+layout = "Disclaimer"
+
+[[checks]]
+kind = "layout_used"
+layout = "Closing"
+
+[[checks]]
+kind = "locked_untouched"

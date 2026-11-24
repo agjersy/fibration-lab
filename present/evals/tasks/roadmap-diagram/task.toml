@@ -1,0 +1,26 @@
+[task]
+name = "roadmap-diagram"
+mode = "build"
+timeout_s = 900
+max_steps = 40
+prompt = """
+From the delivery plan in the references, build two slides: the programme timeline with its phases and milestones as a native timeline diagram, and the change request process as a native process diagram. Give each an action title and cite the plan.
+"""
+
+[[checks]]
+kind = "opens_clean"
+
+[[checks]]
+kind = "checker_clean"
+
+[[checks]]
+kind = "slide_count"
+exact = 2
+
+[[checks]]
+kind = "uses_native"
+element = "diagram"
+min = 2
+
+[[checks]]
+kind = "edits_within_scope"

@@ -1,0 +1,335 @@
+# Desktop IPC Contract
+
+*Status: phase 1 baseline. Normative for `apps/desktop/src-tauri` (Rust) and `apps/desktop/src` (React). Shared types live in `crates/protocol/src/ui.rs` with `ts-rs` export to `apps/desktop/src/ipc/generated/`; the TypeScript shapes below are what that export must produce. Kernel-level types (ScriptInfo, LibFunction, RunMeta, Artifact, FigureSidecar, Equation, Diagnostic, SimilarPair) are the ones already defined in [PROTOCOL.md](PROTOCOL.md) and are re-exported unchanged.*
+
+## 1. Shape of the boundary
+
+- The renderer calls **commands** (Tauri `invoke`) for request/response. Every command takes a JSON object of named arguments and returns a JSON value or a structured error `{ code: string, message: string, detail?: unknown }`. Error codes: `not_found`, `conflict`, `policy_denied`, `kernel_offline`, `target_offline`, `engine_unavailable`, `sandbox_unavailable` (deck commands, section 9), `invalid`, `io`, `internal`.
+- The backend pushes **events** on a per-session **channel** (`tauri::ipc::Channel<SessionEvent>`) that the renderer opens with `session_subscribe`. One channel per open session per window. Events are ordered per session.
+- Long operations (bootstrap, sync, package changes) return a `task_id` immediately and report through `task_log` and `task_done` events.
+- The renderer never touches the filesystem, processes, or network directly. In a plain browser (no Tauri) the renderer talks to the real core through the development bridge `analyst-serve` (section 11); this is how the frontend is developed and tested headlessly.
+- All paths crossing the boundary are repo-relative with forward slashes unless the field is named `*_abs`.
+
+The renderer-side interface (`src/ipc/backend.ts`):
+
+```ts
+export interface Backend {
+  invoke<K extends keyof Commands>(cmd: K, args: Commands[K]["args"]): Promise<Commands[K]["result"]>;
+  subscribe(session: SessionId, onEvent: (e: SessionEvent) => void): Promise<() => void>;   // returns unsubscribe
+}
+```
+
+`TauriBackend` maps `invoke` to `@tauri-apps/api/core` `invoke` and `subscribe` to `session_subscribe` with a `Channel`. `WsBackend` (`src/ipc/ws.ts`) is the same interface over the bridge's WebSocket (section 11).
+
+## 2. Types
+
+```ts
+type SessionId = string; type ConversationId = string; type RunId = string;
+type TerminalId = string; type ProposalId = string; type TaskId = string; type TurnId = string;
+type Mode = "plan" | "build" | "run";
+type KernelState = "stopped" | "starting" | "ready" | "error" | "offline";
+
+interface AppInfo { version: string; home_abs: string; platform: "macos" | "linux" | "windows"; dev_mode: boolean }
+
+interface SessionSummary {
+  id: SessionId; name: string;            // name = repo directory name unless renamed
+  repo_abs: string; target: string;       // target name, "local" by default
+  model: string | null;                   // "provider/id"
+  created_at: string; last_opened_at: string; open: boolean;
+}
+interface PolicyView {
+  preset: "review" | "auto" | "read-only" | null;   // what the five keys amount to; null when custom
+  edits: "review" | "auto-new-files" | "auto" | "deny"; runs: "auto" | "ask";
+  packages: "ask" | "auto" | "deny"; shell: "ask" | "auto" | "deny";
+  git: "ask" | "auto" | "deny";   // no network setting: runs never have network
+  protected: string[]; max_steps: number;
+}
+interface ConversationSummary { id: ConversationId; title: string; model: string | null; mode: Mode; created_at: string; turns: number; busy: boolean }
+interface SessionInfo extends SessionSummary {
+  policy: PolicyView; kernel: KernelState; sandbox: string | null; python_abs: string | null;
+  kernel_network_isolation: string | null;   // "bwrap" | "sandbox-exec" | "none"; null before the first kernel start
+  conversations: ConversationSummary[]; active_conversation: ConversationId;
+  active_deck: string | null;   // the deck last opened with deck_open; reopened with the session
+  target_kind: "local" | "ssh"; target_host: string | null;
+}
+
+interface FileEntry { path: string; name: string; kind: "file" | "dir"; size: number | null; children: FileEntry[] | null }  // children null = not expanded
+interface FileContent { path: string; content: string; hash: string }      // hash = sha256 hex of bytes
+interface WriteResult { hash: string }
+interface SearchHit { path: string; line: number; col: number; text: string }
+
+interface IndexResult { scripts: ScriptInfo[]; library: LibFunction[] }
+
+interface RunView {
+  meta: RunMeta; target: string; artifacts: Artifact[];
+  stdout_tail: string; stderr_tail: string;     // last 4 KiB each; full text via run_get
+}
+interface FigureView {
+  run_id: RunId; script: string; path: string;  // repo-relative, e.g. out/fit_decay/<run>/figures/residuals.png
+  name: string; format: "png" | "svg" | "pdf"; sidecar: FigureSidecar | null; created_at: string; size: number;
+}
+interface FigureGroup { run: RunView; figures: FigureView[] }
+interface FigureData { mime: string; base64: string }
+
+interface EqCheck {
+  status: "agree" | "mismatch" | "unavailable"; trials: number;
+  max_abs_err: number | null; max_rel_err: number | null;
+  counterexample: { inputs: Record<string, number>; expected: number; actual: number } | null; reason: string | null;
+}
+interface PackageInfo { name: string; version: string; locked: boolean }
+interface ModelEntry { name: string; provider: string; id: string; kind: "openai-compatible" | "anthropic"; local: boolean;
+                       capabilities: { context_window: number; tools: "native" | "none"; vision: boolean } | null }
+interface TargetInfo { name: string; kind: "local" | "ssh"; host: string | null; remote_root: string | null; sandbox: string; data_dirs: string[]; bootstrapped: boolean | null }
+
+interface ProposalView {
+  id: ProposalId; conversation: ConversationId;
+  kind: "edit" | "create" | "delete" | "package" | "shell" | "commit";
+  path: string | null; summary: string;
+  original: string | null; proposed: string | null;   // full file contents for edit/create (original null for create)
+  diff: string | null;                                // unified diff for display
+  command: string | null; packages: string[] | null; message: string | null;
+  in_scope: boolean; reason: "review" | "ask" | "out_of_scope" | "protected";
+}
+type ProposalDecision =
+  | { decision: "accept"; content?: string }   // content: the file as it should be written after per-hunk review; omitted = proposed as is
+  | { decision: "reject"; reason?: string };
+
+type Attachment =
+  | { kind: "file"; path: string }
+  | { kind: "selection"; path: string; start_line: number; end_line: number; text: string }
+  | { kind: "figure"; path: string };
+
+// Transcript events are PROTOCOL.md section 5, re-exported as TranscriptEvent.
+```
+
+## 3. Events
+
+```ts
+type SessionEvent =
+  | { type: "agent_text"; conversation: ConversationId; turn: TurnId; delta: string }
+  | { type: "agent_tool_call"; conversation: ConversationId; turn: TurnId; id: string; name: string; arguments: unknown }
+  | { type: "agent_tool_result"; conversation: ConversationId; turn: TurnId; id: string; ok: boolean; summary: string }
+  | { type: "proposal"; proposal: ProposalView }
+  | { type: "proposal_resolved"; proposal_id: ProposalId; decision: "accept" | "reject" | "auto"; by: "user" | "policy" }
+  | { type: "turn_started"; conversation: ConversationId; turn: TurnId }
+  | { type: "turn_done"; conversation: ConversationId; turn: TurnId; summary: { text: string; files_changed: string[]; runs: RunId[]; figures: string[] } }
+  | { type: "turn_error"; conversation: ConversationId; turn: TurnId; message: string }
+  | { type: "usage"; conversation: ConversationId; input_tokens: number; output_tokens: number; context_window: number; context_used: number }
+  | { type: "run_started"; run: RunView }
+  | { type: "run_output"; run_id: RunId; stream: "stdout" | "stderr"; chunk: string }
+  | { type: "run_artifact"; run_id: RunId; artifact: Artifact; figure: FigureView | null }
+  | { type: "run_done"; run: RunView }
+  | { type: "diagnostics"; paths: string[]; diagnostics: Diagnostic[] }     // replaces diagnostics for the listed paths
+  | { type: "files_changed"; paths: string[] }                               // created, modified, or deleted on disk by anyone
+  | { type: "index_changed" }
+  | { type: "terminal_data"; terminal_id: TerminalId; data: string }        // UTF-8 text; invalid sequences replaced
+  | { type: "terminal_exit"; terminal_id: TerminalId; code: number | null }
+  | { type: "kernel_state"; state: KernelState; message: string | null; network_isolation: string | null }
+  | { type: "packages_changed" }
+  | { type: "task_log"; task_id: TaskId; line: string }
+  | { type: "task_done"; task_id: TaskId; ok: boolean; message: string | null }
+  | { type: "session_changed"; info: SessionInfo };                         // after target, model, mode, or policy changes
+```
+
+## 4. Commands
+
+Argument names are exact. `session` is always a `SessionId`.
+
+| command | args | result | notes |
+|---|---|---|---|
+| `app_info` | `{}` | `AppInfo` | |
+| `sessions_list` | `{}` | `SessionSummary[]` | newest first |
+| `session_create` | `{ repo_abs, target?, model?, init? }` | `SessionInfo` | `init: true` runs the `analyst init` template on an empty directory; opens the session |
+| `session_open` | `{ session }` | `SessionInfo` | starts the kernel lazily; idempotent |
+| `session_close` | `{ session }` | `null` | suspends; kernel shut down; terminals closed |
+| `session_info` | `{ session }` | `SessionInfo` | |
+| `session_rename` | `{ session, name }` | `SessionSummary` | |
+| `session_subscribe` | `{ session, channel }` | `string` | subscription id; events flow until `session_unsubscribe` or window close |
+| `session_unsubscribe` | `{ subscription }` | `null` | |
+| `session_set_target` | `{ session, target }` | `TaskId` | re-binds env, syncs; `session_changed` on completion |
+| `session_set_policy` | `{ session, policy: Partial<PolicyView> }` | `PolicyView` | session override, not written to project.toml; `preset` sets the five keys first, detailed keys in the same call override |
+| `layout_get` | `{ session }` | `string \| null` | dockview JSON |
+| `layout_save` | `{ session, layout }` | `null` | |
+| `fs_tree` | `{ session, path?, depth? }` | `FileEntry[]` | respects .gitignore; `out/` shown but collapsed |
+| `fs_read` | `{ session, path }` | `FileContent` | text files only; binary -> `invalid` |
+| `fs_read_binary` | `{ session, path }` | `FigureData` | any file under the repo, base64 |
+| `fs_write` | `{ session, path, content, expected_hash? }` | `WriteResult` | `conflict` if the file's hash differs from `expected_hash` |
+| `fs_create` | `{ session, path, is_dir }` | `null` | |
+| `fs_delete` | `{ session, path }` | `null` | moves to the OS trash when available |
+| `fs_rename` | `{ session, from, to }` | `null` | |
+| `fs_search` | `{ session, pattern, glob?, max_results? }` | `SearchHit[]` | ripgrep |
+| `index_get` | `{ session }` | `IndexResult` | cached; refreshed on `files_changed` of .py files |
+| `check_run` | `{ session, paths? }` | `Diagnostic[]` | contract + lint; also emits `diagnostics` |
+| `run_start` | `{ session, script, args }` | `RunView` | syncs mirror on remote targets first |
+| `run_cancel` | `{ session, run_id }` | `null` | |
+| `runs_list` | `{ session, limit? }` | `RunView[]` | newest first |
+| `run_get` | `{ session, run_id }` | `RunView & { stdout: string; stderr: string }` | |
+| `out_list` | `{ session, path?, run_id? }` | kernel `out.list` result | |
+| `out_read` | `{ session, path, max_bytes? }` | kernel `out.read` result | |
+| `figures_list` | `{ session, limit? }` | `FigureGroup[]` | newest run first, includes terminal runs found under out/ |
+| `figure_data` | `{ session, path }` | `FigureData` | pulls from a remote target on first access |
+| `eq_extract` | `{ session, path }` | `Equation[]` | |
+| `eq_check` | `{ session, path, function }` | `EqCheck` | |
+| `env_packages` | `{ session }` | `PackageInfo[]` | |
+| `env_add` | `{ session, packages }` | `TaskId` | `packages_changed` on completion |
+| `env_remove` | `{ session, packages }` | `TaskId` | |
+| `env_sync` | `{ session }` | `TaskId` | |
+| `conversation_new` | `{ session, title? }` | `ConversationSummary` | becomes active |
+| `conversation_select` | `{ session, conversation }` | `null` | |
+| `conversation_transcript` | `{ session, conversation }` | `TranscriptEvent[]` | |
+| `chat_send` | `{ session, conversation, text, attachments? }` | `TurnId` | `invalid` if the conversation is busy |
+| `chat_cancel` | `{ session, conversation }` | `null` | pending proposals are rejected |
+| `chat_set_mode` | `{ session, conversation, mode }` | `null` | |
+| `chat_set_model` | `{ session, conversation, model }` | `null` | |
+| `proposal_respond` | `{ session, proposal_id, decision }` | `null` | `not_found` if already resolved |
+| `models_list` | `{}` | `ModelEntry[]` | from global config plus cached capabilities |
+| `model_probe` | `{ model }` | `ModelEntry` | runs the capability probe |
+| `targets_list` | `{}` | `TargetInfo[]` | |
+| `target_bootstrap` | `{ target }` | `TaskId` | |
+| `terminal_open` | `{ session, cols, rows }` | `TerminalOpened` | local: `$SHELL` in the repo with the venv on PATH and the figure-capture env, started without network access; remote: `ssh -t` into the mirror with the same, under `bwrap --unshare-net` when the host supports it. `TerminalOpened { terminal_id, network_isolated: boolean, network_isolation: "bwrap" | "sandbox-exec" | "none", network_isolation_note: string | null }`; the terminal panel shows "no network" or "network not isolated" |
+| `terminal_write` | `{ terminal_id, data }` | `null` | |
+| `terminal_resize` | `{ terminal_id, cols, rows }` | `null` | |
+| `terminal_close` | `{ terminal_id }` | `null` | |
+| `dialog_pick_directory` | `{ title? }` | `string \| null` | native folder picker (absolute path) |
+| `dialog_pick_files` | `{ title?, filters?: { name, extensions }[], multiple? }` | `string[] \| null` | native open dialog (absolute paths): a deck template, references |
+
+## 5. Behavior that both sides rely on
+
+- **Editor saves are the user's.** `fs_write` writes immediately; no proposal. The agent sees user changes through the working-tree diff before its next turn.
+- **Proposals.** In `review` mode the agent's turn is paused when a `proposal` event arrives and resumes on `proposal_respond`. The renderer shows an edit proposal in a merge view (original vs proposed) with per-hunk accept and reject; on accept it sends the resulting file content. The backend writes that content, reports to the model whether the user modified it, and continues. A `create` proposal has `original: null`. Out-of-scope or protected proposals carry `reason` so the card can say why approval is being asked even in auto mode.
+- **Runs.** A run started from anywhere (chat, run form, terminal) produces `run_started`, `run_output`, `run_artifact`, `run_done`. Terminal runs are discovered through the `out/` watcher and appear with `run_started` and `run_done` together once their `run.json` is seen.
+- **Figures.** `figure_data` returns bytes; the renderer renders PNG and SVG as `<img>` with a data URL. Figures from remote targets are pulled on first access and cached under the session's `artifacts/`.
+- **Diagnostics.** The backend runs `check_run` automatically after an accepted proposal and after a `.py` file is saved from the editor, and pushes `diagnostics` for the affected paths.
+- **Kernel lifecycle.** The kernel starts on `session_open` and on demand; `kernel_state` events report `starting`, `ready`, `offline` (remote unreachable), `error` (with message). Commands that need the kernel fail with `kernel_offline` or `target_offline` while it is not ready; the renderer disables the run form and run tools accordingly and keeps editing and reading working.
+- **Layout.** The renderer saves dockview layout on change (debounced) and restores it on open; absence means the default layout.
+
+## 6. Browser mode (formerly MockBackend)
+
+The in-memory `MockBackend` and the hand-written TypeScript mirror of these types were removed in the simplification round. A plain browser uses the real core through `analyst-serve` (section 11); the renderer's unit tests use a small fake of the `Backend` interface (`src/test/fake.ts`) that enforces the boundary rules and lets each test script its events.
+
+## 7. Additions after the November 2026 review
+
+These are additive and implemented together with the fixes in [REVIEW.md](REVIEW.md).
+
+**Types**
+
+- `OptionInfo` gains `nargs: string | number | null`, `const: any`, and `positional: boolean`. The run form sends positionals as bare values in declaration order, splits list values for `nargs`, and handles `store_true`, `store_false`, `store_const`, `count`, and `BooleanOptionalAction`; anything else gets a raw "extra arguments" field.
+- `RunView` gains `conversation: ConversationId | null`: the conversation whose agent turn started the run, null for manual and terminal runs. Chat run cards attach by this field, not by "whichever conversation is busy".
+- `SessionInfo` gains `pending_proposals: ProposalView[]`, so a renderer that reloads mid-approval shows the cards again.
+- `ProviderKeyStatus { provider, has_key, source: "env" | "stored" | null, api_key_env: string | null }`. `"stored"` means `$ANALYST_HOME/.env`; `api_key_env` is the variable that names the key (configured, or the derived `<PROVIDER NAME>_API_KEY`).
+
+**Events**
+
+- `{ type: "resync" }`: this subscriber fell behind and events were dropped. The renderer refetches `session_info`, `runs_list`, `figures_list`, and the active conversation's transcript, and reconciles run output through `run_get`.
+- Terminal output travels on its own bounded, coalescing path and can no longer displace control events.
+
+**Commands**
+
+| command | args | result | notes |
+|---|---|---|---|
+| `provider_keys_status` | `{}` | `ProviderKeyStatus[]` | one row per configured provider |
+| `provider_key_set` | `{ provider, key }` | `null` | stores the key in `$ANALYST_HOME/.env` (mode 0600) under `api_key_env`, or the derived `<PROVIDER NAME>_API_KEY` when none is configured; an empty key removes it. The same variable in the process environment takes precedence when set |
+
+**Ordering and lifecycle rules**
+
+- The renderer calls `session_open` first, then `session_subscribe`, then `session_info` to reconcile. `session_subscribe` on a session that is not open is `not_found`.
+- `session_open` and `session_create` never wait for the kernel. Data that needs no kernel (`fs_tree`, `runs_list`, `figures_list`, transcripts) loads independently of `index_get`.
+- `chat_cancel` also cancels any run the turn started.
+- When the active sandbox is `limits` or `none`, run-class tools (`run.script`, `exec.snippet`, `shell.run`) arrive as proposals with `reason: "ask"` and a summary that says the run is unsandboxed, unless the project sets `policy.unsandboxed_runs = "auto"`.
+- Edit proposals and renderer file commands refuse paths under `.git/` and `.analyst/`, and any path that resolves outside the repo through a symlink.
+
+## 8. Simplification round (DESIGN-REVIEW.md)
+
+- `FigureView` gains `file_abs: string | null`. When non-null and running under Tauri, the renderer displays the figure with `convertFileSrc(file_abs)` (asset protocol). The backend sets `file_abs` for every figure on this machine (a local run's output, or a remote figure already pulled back) and adds each open session's output directory and pulled-artifact folder to the asset scope (section 9); `figure_data` remains for remote figures not yet pulled and for browser mode.
+- One figure, one tab: the capture backend writes PNG only by default (`[figures] formats = ["png"]` in `project.toml`; `"svg"` and `"pdf"` may be added). The Figures panel groups files by stem, shows the PNG, and offers other formats as alternates.
+- Policy presets: `policy.preset = "review" | "auto" | "read-only"` in `project.toml` expands to the detailed keys (`review`: edits review, runs auto, packages/shell/git ask; `auto`: edits auto within declared scope, runs auto, packages/shell/git ask; `read-only`: edits, packages, shell, git denied, runs auto). Detailed keys still override. The settings dialog offers the three presets. Comment-marker locked regions are removed; protected globs remain. The expansion lives in `wb-policy`; `edits = "deny"` is the read-only edit gate; `PolicyView.preset` reports the preset the keys amount to and `session_set_policy` accepts `preset`.
+- Models must support native tool calling. The text-protocol tier is removed; a model that fails the tool-calling probe is rejected with a clear error.
+- Contract rules `cli.option-for-every-input` and `lib.near-duplicate` are advisory (`warn`) by default and are not fed back to the agent as must-fix diagnostics.
+- Development and tests in a browser use the real core through `analyst-serve` (a separate loopback WebSocket bridge speaking the same commands and events, section 11); `MockBackend` and the hand-written type mirror are removed.
+- Remote sync pushes the checkpoint tree with git: the host holds a bare repository at `<mirror>.git`; the core pushes a commit of the working tree (tracked plus untracked, not ignored) to `refs/analyst/sync`, and the mirror is a detached checkout of it with `out/`, `.venv/`, and `.analyst/` left untouched. The tree id is the sync identity. rsync, the tar fallback, the deletion manifest, and the tree-hash file are removed.
+
+## 9. Decks, history, and the artifact index (one app)
+
+The deck workbench's shell is gone; its commands live in this shell as thin glue over the per-deck service of a session (`analyst_deck::service::DeckService`, owned by `SessionRuntime::decks`). A deck is `decks/<slug>/` in the session's repository; every deck command takes `session` and `deck` (the slug) where the deck workbench took a project id. A deck's kernel (no network) starts on the first command that needs it. Deck types are the ts-rs export of `analyst-deck-protocol` in `apps/desktop/src/ipc/generated/deck/`, re-exported to the renderer as the namespace `Deck` (`Deck.DeckView`, `Deck.SlideView`, `Deck.DeckEvent`, ...), because several names (`Diagnostic`, `SearchHit`, `FileContent`, `IpcError`) exist in both sets. `Mode` gains the deck modes: `"plan" | "build" | "run" | "outline" | "slides" | "polish"`.
+
+**Events** (on the session channel)
+
+- `{ type: "deck"; deck: string; event: Deck.DeckEvent }`: one deck's event. `Deck.DeckEvent` is `deck_changed` (deck document, changed and removed slide ids, `by`), `slide_view`, `diagnostics` (per slide), `refs_changed`, `build_output`, `export_done`, `kernel_state`, `task_progress`, `task_done`, `info_changed`. Deck commands that return a `TaskId` finish with a deck `task_done` (task ids `deck-task-<n>`), not the session-level `task_done`.
+- `{ type: "decks_changed"; decks: DeckSummary[] }`: a deck was created, or a checkpoint restore changed the repository.
+- `{ type: "refresh_failed"; conversation; proposal_id; deck; slide_id; message }`: an accepted refresh from analysis (`slide_refresh`, `deck_refresh_stale`) could not be written, usually because the slide changed after the refresh was proposed. The slide is untouched and the proposal resolves as rejected; the renderer adds an error card to the conversation with a "Refresh again" button (and a toast).
+
+**Commands**
+
+| command | args | result | notes |
+|---|---|---|---|
+| `decks_list` | `{ session }` | `DeckSummary[]` | reads `decks/*/deck/deck.json`; starts nothing |
+| `deck_create` | `{ session, title, template_abs, slug?, code? }` | `DeckSummary` | copies the template into `decks/<slug>/` (slug from the title when omitted); `conflict` when it exists |
+| `deck_open` | `{ session, deck }` | `Deck.DeckInfo` | starts the deck's kernel; deck, template description, engines, sandbox. Records the deck as the session's active deck (`SessionInfo.active_deck`, kept in the session's `meta.json`); when a restored workbench mounts, the renderer reopens it, or shows the Decks list if it no longer exists |
+| `template_thumbnails` | `{ session, deck }` | `Deck.LayoutThumbnail[]` | |
+| `template_replace` | `{ session, deck, template_abs }` | `TaskId` | checkpointed first |
+| `deck_get` | `{ session, deck }` | `Deck.DeckView` | |
+| `slide_update` | `{ session, deck, slide, expected_hash? }` | `Deck.SlideView` | `conflict` on a stale hash; a user edit, so slide and element locks (which hold the agent back) do not apply |
+| `slide_create` | `{ session, deck, after?, layout }` | `Deck.SlideView` | |
+| `slide_delete` | `{ session, deck, slide_id }` | `null` | |
+| `slide_duplicate` | `{ session, deck, slide_id }` | `Deck.SlideView` | |
+| `slide_move` | `{ session, deck, slide_id, after?, section? }` | `null` | |
+| `slide_lock` | `{ session, deck, slide_id, element_id?, locked }` | `null` | slide or element lock |
+| `slide_place_figure` | `{ session, deck, slide_id, run_id, artifact, placeholder? }` | `Deck.SlideView` | the user places a run's figure on a slide: the core function of the agent's `slide.place_figure` (artifact index lookup, figures only, image copied into `assets/` by content hash, image element with a `run_cite`), written at once like `slide_update`; the placeholder defaults to the layout's first free image placeholder |
+| `slide_preview_png` | `{ session, deck, slide_id, png_base64 }` | `null` | renderer-made preview thumbnail |
+| `chart_compute` | `{ session, deck, source, steps? }` | `Deck.ChartComputeResult` | |
+| `deck_code_read` | `{ session, deck, path }` | `Deck.FileContent` | Python files under `deck/` (code mode) |
+| `deck_code_write` | `{ session, deck, path, content, expected_hash? }` | `Deck.WriteResult` | |
+| `deck_build` | `{ session, deck }` | `TaskId` | build script in the sandbox; `build_output` events |
+| `deck_switch_mode` | `{ session, deck, to, via? }` | `TaskId` | to code: checkpointed first; back: `via: "revert"` restores the deck from that checkpoint |
+| `render_fidelity` | `{ session, deck, slides? }` | `TaskId` | engine thumbnails |
+| `deck_check_run` | `{ session, deck, slides? }` | `Deck.Diagnostic[]` | the deck checker, including `stale` run citations; named apart from the analysis `check_run` |
+| `refs_list` | `{ session, deck }` | `Deck.RefView[]` | |
+| `refs_add` | `{ session, deck, paths_abs }` | `TaskId` | copies into `references/` and indexes |
+| `refs_remove` | `{ session, deck, ref_id }` | `null` | refused while slides cite it |
+| `refs_remove_unused` | `{ session, deck }` | `string[]` | |
+| `refs_search` | `{ session, deck, query, ref_ids? }` | `Deck.SearchHit[]` | |
+| `source_passage` | `{ session, deck, cite }` | `Deck.SourcePassage` | |
+| `assets_list` | `{ session, deck }` | `Deck.AssetView[]` | |
+| `asset_add` | `{ session, deck, path_abs }` | `Deck.AssetView` | images only |
+| `exports_list` | `{ session, deck }` | `Deck.ExportView[]` | |
+| `export_run` | `{ session, deck, format }` | `TaskId` | `pptx`, `pdf`, `png`, `md`, `notes-docx`; checkpointed first, `ExportView.checkpoint` names it; `engine_unavailable` without an engine |
+| `export_reveal` | `{ session, deck, export_id }` | `null` | file manager |
+| `export_open` | `{ session, deck, export_id }` | `null` | default application |
+| `history_list` | `{ session, limit? }` | `CheckpointView[]` | the repository's git checkpoints, newest first: turns, exports, mode switches, restores; code and decks together |
+| `history_restore` | `{ session, checkpoint }` | `null` | restores the working tree (the replaced state is checkpointed first); open decks re-read and emit `deck_changed`, then `decks_changed` |
+| `history_revert_turn` | `{ session, turn }` | `CheckpointView` | `turn` is `<conversation>-<n>` |
+| `artifacts_list` | `{ session, run_id?, kind?, limit? }` | `ArtifactEntry[]` | what the session's runs produced, with `stale` when the tree changed since the run; slides cite runs from it |
+
+**Asset scope.** The shell enables Tauri's asset protocol with an empty static scope and adds, for each open session, each deck's `decks/<slug>/.present/cache/` (preview and fidelity thumbnails, layout thumbnails, PDF page images), `decks/<slug>/assets/` and `decks/<slug>/references/` (image references are their own source page) when the session is opened or created, when `decks_list` or `deck_create` runs, and whenever the core emits `decks_changed` for the session (a deck created by any path, the agent's tools and a checkpoint restore included): from the session's open or create on, the shell runs one watcher per open session on its event hub, independent of any window's subscription, and stops it when the session closes. Slugs that are not plain folder names are skipped. The same calls (and `figures_list`) add the session's figure folders: the project's output directory (`out/` by default; an absolute path, `.`, or one that leaves the repository is skipped) and the session's `artifacts/` (figures pulled from a remote target). The renderer loads these paths (relative to the deck folder, or absolute) with `convertFileSrc`; `slide_preview_png` still takes base64, and the CSP keeps only `asset:` / `http://asset.localhost` for images, no remote origin.
+
+Dropped with the deck shell: `project_*` (a deck belongs to a session), `analyst_scan` / `analyst_import` (slides cite runs from the artifact index instead), the snapshot history (`history_*` above is the checkpoint timeline), and the deck shell's own conversation, chat, model, skill, and audit commands (the one loop's commands in section 4 cover decks).
+
+## 10. Verification, equations on slides, named results, refresh
+
+**Types** (ts-rs export of `analyst-protocol`): `VerifyItem` (`{kind: "equation", path, qualname}`, `{kind: "figure", run_id, artifact}`, `{kind: "result", run_id, name}`, `{kind: "slide_claim", deck, slide_id, element_id}`, `{kind: "code_hunk", proposal_id}`), `VerifyState` (`machine_checked | human_verified | flagged`), `VerificationState` (`unverified` or a `VerifyState`), `LedgerEntry { item, key, hash, state, by: "user" | "agent", at, note? }`, `VerificationView { key, item, label, state, stale, hash, entry, on_slides: SlideUse[] }`. `ArtifactKind` gains `results`; `ArtifactEntry` gains `results?: NamedResult[]` (`{name, value, unit?, uncertainty?}`). Deck types gain the `equation` element (`Deck.EqCite`) and `Run.run_cite` (`Deck.ResultCite`), PROTOCOL.md section 12.
+
+**Event**: `{ type: "verification_changed"; key: string }` after `verification_set` or the agent's `verify.record`. The renderer also rereads the queue on `files_changed`, `run_done` and a deck's `deck_changed`, since those change items' content.
+
+| command | args | result | notes |
+|---|---|---|---|
+| `verification_list` | `{ session }` | `VerificationView[]` | every item the project knows (slide claims and what they cite, figures and named results of the session's runs, accepted code changes, items in the ledger) with its state for its content now; used on slides first |
+| `verification_set` | `{ session, item, state, note? }` | `VerificationView` | the user records a state for the item's current content hash (appended to `.analyst/verification.jsonl`); `not_found` when the item cannot be read |
+| `deck_verification_gaps` | `{ session, deck }` | `VerificationView[]` | what the deck depends on (its slide claims and what they cite) that is not `human_verified`; the renderer asks it before a `pptx` or `pdf` export and shows a confirm dialog listing them |
+| `slide_place_equation` | `{ session, deck, slide_id, path, function, placeholder? }` | `Deck.SlideView` | the user places the equation of a function on a slide: the core function of the agent's `slide.place_equation` (`eq.extract`, `eq.check` for a declared equation, the file's content hash), written at once; the placeholder defaults to the first free non-title one that takes text or an image |
+| `slide_refresh` | `{ session, deck, slide_id, element_id? }` | `ProposalView \| null` | refresh from analysis: stale elements of the slide (or one) are brought up to date (the cited script re-run with the cited arguments when the run's tree differs; the equation extracted and checked again) and proposed as a normal `slide-update` proposal in the active conversation, its `message` listing the changed values and the verifications it invalidates; accepting takes a checkpoint first. Null when nothing is stale |
+| `deck_refresh_stale` | `{ session, deck }` | `ProposalView[]` | `slide_refresh` for every slide of the deck; one proposal per slide with a stale element |
+
+The renderer's Verify panel lists every item that is not `human_verified`, used on slides first and grouped by kind (keys: `j`/`k` move, `v` marks verified, `f` flags with a note, `Enter` opens the item in Equations, Figures, Runs, or Canvas). Slide elements, figures and equations show their verification state.
+
+## 11. One command table, two transports
+
+**One table.** Every command of this document is a row of `analyst_core::commands` (`crates/core/src/commands.rs`): the row names the command, deserializes its snake_case arguments, and calls the workbench. Both transports call its `dispatch(workbench, host, command, args)`: the desktop shell's invoke handler and the development bridge. What only a transport can do (native dialogs, the asset scope, the file manager) is its `Host`; `session_subscribe` and `session_unsubscribe` are listed in the table but carried by each transport, since their event stream is the transport's own. Each row also states its result type (`name(args) -> Result { body }`), and the renderer's `src/ipc/commands.ts` is generated from the rows (`analyst_core::commands::commands_ts`): command names, argument names and types (an `Option` argument is optional), and result types, with the types' TypeScript names taken from their ts-rs bindings (deck types as `Deck.X`). `cargo test -p analyst-core --lib commands` writes the file; the same test fails when the committed file was stale, so CI catches a table change without a regenerated `commands.ts`. Identifiers such as run, conversation, and task ids are plain `string` there, as they are in Rust. The types are the ts-rs export only.
+
+**The development bridge.** `analyst-serve` (`crates/serve`) is a separate binary that hosts the same `Workbench` as the shell and speaks the table and the session events over one WebSocket. It is never compiled into the shipped app: `tools/check_egress.py` fails if any crate but `crates/serve` depends on a WebSocket or HTTP server crate, or if the desktop app or the CLI links the bridge (through `Cargo.lock`).
+
+- It binds loopback addresses only (default `127.0.0.1:0`, a free port; `--bind` to choose) and refuses others.
+- Every connection presents the token printed at start (`--token` or `ANALYST_SERVE_TOKEN` to give one) as `?token=` on the WebSocket URL; a missing or wrong token is HTTP 401. A browser `Origin` must be a loopback origin (403 otherwise). It sends no CORS headers and serves no files; the renderer comes from its own dev or preview server.
+- Messages are JSON text frames: request `{"id": n, "cmd": "<command>", "args": {...}}`; reply `{"id": n, "ok": <result>}` or `{"id": n, "error": IpcError}`; event `{"channel": c, "event": SessionEvent}`. `session_subscribe` takes `{ session, channel }`, where `channel` is a number the client picks (the stand-in for a Tauri `Channel`), and returns the subscription id.
+- Native dialogs answer from `--pick-dir` / `--pick-file` or as cancelled; `export_reveal` and `export_open` only log.
+- In browser mode figures load through `figure_data`, and deck images through `fs_read_binary` (repo-relative), as data URLs.
+

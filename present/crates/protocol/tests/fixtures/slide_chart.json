@@ -1,0 +1,64 @@
+{
+  "id": "s-c4a7",
+  "kind": "layout",
+  "layout": "Title Only",
+  "placeholders": {
+    "title": {
+      "type": "text",
+      "id": "e-t2b0",
+      "text": { "paragraphs": [{ "runs": [{ "t": "EMEA leads revenue; top three regions carry 80%" }] }] }
+    },
+    "body": {
+      "type": "chart",
+      "id": "e-ch01",
+      "chart": {
+        "type": "combo",
+        "stacked": "none",
+        "source": { "kind": "ref", "cite": "ref:r-pipe@aa01b2c3d4e5#Pipeline!A1:E9" },
+        "steps": [
+          { "op": "select", "columns": ["Region", "Stage", "Revenue", "Quarter"] },
+          { "op": "rename", "map": { "Revenue": "Revenue (EUR)" } },
+          { "op": "filter", "column": "Stage", "cmp": "in", "value": ["Won", "Committed"] },
+          { "op": "filter", "column": "Revenue (EUR)", "cmp": ">=", "value": 1000 },
+          { "op": "filter", "column": "Region", "cmp": "!=", "value": null },
+          { "op": "group_sum", "by": ["Region", "Quarter"], "columns": ["Revenue (EUR)"] },
+          { "op": "group_mean", "by": ["Region"] },
+          { "op": "group_count", "by": ["Region"], "columns": ["Quarter"] },
+          { "op": "pivot", "index": "Region", "columns": "Quarter", "values": "Revenue (EUR)", "agg": "sum" },
+          { "op": "unpivot", "id_columns": ["Region"], "var_name": "Quarter", "value_name": "Revenue (EUR)" },
+          { "op": "sort", "by": ["Revenue (EUR)"], "descending": true },
+          { "op": "top_n", "n": 3, "by": "Revenue (EUR)", "other_label": "Other" },
+          { "op": "pct_change", "column": "Revenue (EUR)", "periods": 1, "as": "Growth" },
+          { "op": "share_of_total", "column": "Revenue (EUR)", "as": "Share" },
+          { "op": "cumulative", "column": "Share" },
+          { "op": "scale", "columns": ["Revenue (EUR)"], "factor": 0.001 },
+          { "op": "round", "columns": ["Revenue (EUR)", "Share"], "digits": 1 }
+        ],
+        "series_from": "columns",
+        "category": "Region",
+        "series": [
+          { "name": "Revenue", "column": "Revenue (EUR)", "type": "bar", "axis": "primary", "color": "accent1" },
+          { "name": "Share", "column": "Share", "type": "line", "axis": "secondary" }
+        ],
+        "title": "Revenue by region",
+        "x_title": "Region",
+        "y_title": "EUR thousand",
+        "number_format": "#,##0.0",
+        "labels": true,
+        "legend": "bottom",
+        "computed": {
+          "columns": ["Region", "Revenue (EUR)", "Share"],
+          "rows": [
+            ["EMEA", 412.5, 0.4],
+            ["Americas", 310, 0.3],
+            ["APAC", 103.1, 0.1],
+            ["Other", null, 0.2]
+          ],
+          "loc": "Pipeline!A1:E9"
+        },
+        "computed_at_version": "aa01b2c3d4e5"
+      }
+    }
+  },
+  "elements": []
+}

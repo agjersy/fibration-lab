@@ -1,0 +1,534 @@
+{
+  "measuredAt": "2026-11-24T01:15:00.660Z",
+  "softwareRasterizer": true,
+  "results": [
+    {
+      "screen": "1280x800",
+      "config": {
+        "curves": 20,
+        "samples": 2048,
+        "implicit": false,
+        "frames": 300,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 24.1,
+        "p95": 28.9,
+        "p99": 44,
+        "max": 48.4,
+        "mean": 24.67
+      },
+      "intervalMs": {
+        "median": 33.3,
+        "p95": 33.4,
+        "p99": 50,
+        "max": 50.1,
+        "mean": 28.22
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 202,
+      "frames": 300,
+      "drawCalls": 21,
+      "vertices": 82124,
+      "compileMs": 51.1,
+      "programs": 21,
+      "screenshot": "shot-1280x800-20curves-plain.png"
+    },
+    {
+      "screen": "1280x800",
+      "config": {
+        "curves": 20,
+        "samples": 2048,
+        "implicit": true,
+        "frames": 300,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 31.1,
+        "p95": 37.2,
+        "p99": 50.3,
+        "max": 69.8,
+        "mean": 31.92
+      },
+      "intervalMs": {
+        "median": 33.3,
+        "p95": 50,
+        "p99": 50.1,
+        "max": 66.7,
+        "mean": 35.67
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 295,
+      "frames": 300,
+      "drawCalls": 22,
+      "vertices": 82127,
+      "compileMs": 14.1,
+      "programs": 22,
+      "screenshot": "shot-1280x800-20curves-implicit.png"
+    },
+    {
+      "screen": "1280x800",
+      "config": {
+        "curves": 100,
+        "samples": 2048,
+        "implicit": false,
+        "frames": 300,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 101.3,
+        "p95": 115.7,
+        "p99": 123.9,
+        "max": 128,
+        "mean": 101.58
+      },
+      "intervalMs": {
+        "median": 100,
+        "p95": 116.7,
+        "p99": 133.3,
+        "max": 133.4,
+        "mean": 105.55
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 300,
+      "frames": 300,
+      "drawCalls": 101,
+      "vertices": 409804,
+      "compileMs": 11.6,
+      "programs": 21,
+      "screenshot": "shot-1280x800-100curves-plain.png"
+    },
+    {
+      "screen": "1280x800",
+      "config": {
+        "curves": 100,
+        "samples": 2048,
+        "implicit": true,
+        "frames": 300,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 109.5,
+        "p95": 125.6,
+        "p99": 146.2,
+        "max": 158.8,
+        "mean": 111.1
+      },
+      "intervalMs": {
+        "median": 116.7,
+        "p95": 133.4,
+        "p99": 166.7,
+        "max": 333.4,
+        "mean": 116.22
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 300,
+      "frames": 300,
+      "drawCalls": 102,
+      "vertices": 409807,
+      "compileMs": 12.2,
+      "programs": 22,
+      "screenshot": "shot-1280x800-100curves-implicit.png"
+    },
+    {
+      "screen": "1280x800",
+      "config": {
+        "curves": 20,
+        "samples": 512,
+        "implicit": false,
+        "frames": 300,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 10.8,
+        "p95": 15.3,
+        "p99": 22.6,
+        "max": 27.4,
+        "mean": 11.33
+      },
+      "intervalMs": {
+        "median": 16.7,
+        "p95": 16.7,
+        "p99": 33.3,
+        "max": 33.4,
+        "mean": 16.83
+      },
+      "framesOver16_7": 11,
+      "droppedFrames": 3,
+      "frames": 300,
+      "drawCalls": 21,
+      "vertices": 20684,
+      "compileMs": 11.3,
+      "programs": 21,
+      "screenshot": null
+    },
+    {
+      "screen": "1280x800",
+      "config": {
+        "curves": 20,
+        "samples": 1024,
+        "implicit": false,
+        "frames": 300,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 15.2,
+        "p95": 20,
+        "p99": 22.2,
+        "max": 24.3,
+        "mean": 15.63
+      },
+      "intervalMs": {
+        "median": 16.7,
+        "p95": 33.4,
+        "p99": 33.4,
+        "max": 33.4,
+        "mean": 18.67
+      },
+      "framesOver16_7": 75,
+      "droppedFrames": 36,
+      "frames": 300,
+      "drawCalls": 21,
+      "vertices": 41164,
+      "compileMs": 12.5,
+      "programs": 21,
+      "screenshot": null
+    },
+    {
+      "screen": "1280x800",
+      "config": {
+        "curves": 20,
+        "samples": 4096,
+        "implicit": false,
+        "frames": 300,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 37.3,
+        "p95": 66.4,
+        "p99": 71.1,
+        "max": 73.6,
+        "mean": 40.06
+      },
+      "intervalMs": {
+        "median": 49.9,
+        "p95": 66.7,
+        "p99": 83.3,
+        "max": 83.4,
+        "mean": 43.72
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 300,
+      "frames": 300,
+      "drawCalls": 21,
+      "vertices": 164044,
+      "compileMs": 12.5,
+      "programs": 21,
+      "screenshot": null
+    },
+    {
+      "screen": "2560x1600",
+      "config": {
+        "curves": 20,
+        "samples": 2048,
+        "implicit": false,
+        "frames": 300,
+        "auto": true,
+        "width": 2560,
+        "height": 1600,
+        "dpr": 2,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 34,
+        "p95": 56.8,
+        "p99": 70.8,
+        "max": 72.4,
+        "mean": 37.19
+      },
+      "intervalMs": {
+        "median": 50,
+        "p95": 83.3,
+        "p99": 83.4,
+        "max": 100,
+        "mean": 56.16
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 300,
+      "frames": 300,
+      "drawCalls": 21,
+      "vertices": 82124,
+      "compileMs": 11,
+      "programs": 21,
+      "screenshot": "shot-2560x1600-20curves-plain.png"
+    },
+    {
+      "screen": "2560x1600",
+      "config": {
+        "curves": 20,
+        "samples": 2048,
+        "implicit": true,
+        "frames": 300,
+        "auto": true,
+        "width": 2560,
+        "height": 1600,
+        "dpr": 2,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 62.9,
+        "p95": 113.7,
+        "p99": 151.6,
+        "max": 174.6,
+        "mean": 69.97
+      },
+      "intervalMs": {
+        "median": 83.3,
+        "p95": 133.3,
+        "p99": 166.7,
+        "max": 200.1,
+        "mean": 89.61
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 300,
+      "frames": 300,
+      "drawCalls": 22,
+      "vertices": 82127,
+      "compileMs": 11.9,
+      "programs": 22,
+      "screenshot": "shot-2560x1600-20curves-implicit.png"
+    },
+    {
+      "screen": "2560x1600",
+      "config": {
+        "curves": 100,
+        "samples": 2048,
+        "implicit": false,
+        "frames": 300,
+        "auto": true,
+        "width": 2560,
+        "height": 1600,
+        "dpr": 2,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 141.2,
+        "p95": 194,
+        "p99": 261.6,
+        "max": 289.5,
+        "mean": 148.13
+      },
+      "intervalMs": {
+        "median": 166.6,
+        "p95": 216.7,
+        "p99": 283.3,
+        "max": 316.7,
+        "mean": 168.72
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 300,
+      "frames": 300,
+      "drawCalls": 101,
+      "vertices": 409804,
+      "compileMs": 12.4,
+      "programs": 21,
+      "screenshot": "shot-2560x1600-100curves-plain.png"
+    },
+    {
+      "screen": "2560x1600",
+      "config": {
+        "curves": 100,
+        "samples": 2048,
+        "implicit": true,
+        "frames": 300,
+        "auto": true,
+        "width": 2560,
+        "height": 1600,
+        "dpr": 2,
+        "view": [
+          -10,
+          10,
+          -6.25,
+          6.25
+        ]
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 175.6,
+        "p95": 251.3,
+        "p99": 278.5,
+        "max": 287.5,
+        "mean": 185.93
+      },
+      "intervalMs": {
+        "median": 200,
+        "p95": 283.2,
+        "p99": 316.6,
+        "max": 316.7,
+        "mean": 207.05
+      },
+      "framesOver16_7": 300,
+      "droppedFrames": 300,
+      "frames": 300,
+      "drawCalls": 102,
+      "vertices": 409807,
+      "compileMs": 14.7,
+      "programs": 22,
+      "screenshot": "shot-2560x1600-100curves-implicit.png"
+    }
+  ]
+}
