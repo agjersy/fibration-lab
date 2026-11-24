@@ -92,6 +92,10 @@ pub struct Evidence {
     pub args: Value,
     pub ok: bool,
     pub method: Method,
+    /// What the result leaves open, such as a root list the engine could not confirm is
+    /// complete. A claim that cites this evidence carries the caveat as its note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caveat: Option<String>,
     /// The engine's value (handles carry their text), or its error.
     pub result: Value,
 }
@@ -180,38 +184,60 @@ pub struct Agent {
     evidence: Vec<Evidence>,
 }
 
-/// The method behind an engine value: numeric when any part says so, undecided when a truth
-/// is unknown, symbolic otherwise.
-pub fn method_of(function: &str, value: &Value) -> Method {
-    fn walk(v: &Value, numeric: &mut bool, undecided: &mut bool) {
+/// The method behind an engine value, and what it leaves open.
+///
+/// Numeric when any part says so; undecided when the answer itself is an unknown truth (or a
+/// sign or limit the engine could not determine); symbolic otherwise. An unknown truth under
+/// `complete` does not undo the rest of the answer: roots found numerically are still found.
+/// It is returned as a caveat instead.
+pub fn method_of(function: &str, value: &Value) -> (Method, Option<String>) {
+    struct Seen {
+        numeric: bool,
+        undecided: bool,
+        caveat: Option<String>,
+    }
+    fn walk(key: Option<&str>, v: &Value, seen: &mut Seen) {
         match v {
             Value::Object(map) => {
                 if map.get("truth").and_then(Value::as_str) == Some("unknown") {
-                    *undecided = true;
+                    if key == Some("complete") {
+                        let reason = map.get("reason").and_then(Value::as_str);
+                        seen.caveat = Some(format!(
+                            "the engine could not confirm the list is complete{}",
+                            reason.map(|r| format!(": {r}")).unwrap_or_default()
+                        ));
+                    } else {
+                        seen.undecided = true;
+                    }
                 }
                 match map.get("method").and_then(Value::as_str) {
-                    Some("numeric") => *numeric = true,
-                    // A sign or root answer the engine could not reach by any method.
-                    Some("none") if !map.contains_key("truth") => *undecided = true,
+                    Some("numeric") => seen.numeric = true,
+                    // A sign the engine could not reach by any method.
+                    Some("none") if !map.contains_key("truth") => seen.undecided = true,
                     _ => {}
                 }
-                for child in map.values() {
-                    walk(child, numeric, undecided);
+                for (k, child) in map {
+                    walk(Some(k), child, seen);
                 }
             }
-            Value::Array(items) => items.iter().for_each(|i| walk(i, numeric, undecided)),
+            Value::Array(items) => items.iter().for_each(|i| walk(key, i, seen)),
             _ => {}
         }
     }
-    let (mut numeric, mut undecided) = (function == "numeric", false);
-    walk(value, &mut numeric, &mut undecided);
-    if undecided {
+    let mut seen = Seen {
+        numeric: function == "numeric",
+        undecided: false,
+        caveat: None,
+    };
+    walk(None, value, &mut seen);
+    let method = if seen.undecided {
         Method::Undecided
-    } else if numeric {
+    } else if seen.numeric {
         Method::Numeric
     } else {
         Method::Symbolic
-    }
+    };
+    (method, seen.caveat)
 }
 
 /// The badge for a claim citing `support`, from the evidence gathered so far. `Err` when an
@@ -227,6 +253,7 @@ pub fn judge(
         ));
     }
     let mut numeric = false;
+    let mut caveats: Vec<String> = Vec::new();
     for id in support {
         let Some(item) = evidence.iter().find(|e| &e.id == id) else {
             return Err(format!(
@@ -249,11 +276,15 @@ pub fn judge(
             Method::Numeric => numeric = true,
             Method::Symbolic => {}
         }
+        if let Some(c) = &item.caveat {
+            caveats.push(format!("{id}: {c}"));
+        }
     }
+    let note = (!caveats.is_empty()).then(|| caveats.join("; "));
     Ok(if numeric {
-        (ClaimStatus::Checked, None)
+        (ClaimStatus::Checked, note)
     } else {
-        (ClaimStatus::Proven, None)
+        (ClaimStatus::Proven, note)
     })
 }
 
@@ -807,9 +838,13 @@ impl Agent {
                 .to_string();
             let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
             let id = format!("q{}", self.evidence.len() + 1);
-            let (ok, method, result) =
+            let (ok, (method, caveat), result) =
                 match session.query(&function, call_args.clone(), "agent").await {
-                    Err(e) => (false, Method::Undecided, json!({"error": e.to_string()})),
+                    Err(e) => (
+                        false,
+                        (Method::Undecided, None),
+                        json!({"error": e.to_string()}),
+                    ),
                     Ok(reply) if reply["status"] == "ok" => {
                         let mut value = reply["value"].clone();
                         let mut ids = Vec::new();
@@ -828,7 +863,11 @@ impl Agent {
                         attach_text(&mut value, &texts);
                         (true, method_of(&function, &value), value)
                     }
-                    Ok(reply) => (false, Method::Undecided, json!({"error": reply["error"]})),
+                    Ok(reply) => (
+                        false,
+                        (Method::Undecided, None),
+                        json!({"error": reply["error"]}),
+                    ),
                 };
             let item = Evidence {
                 id: id.clone(),
@@ -836,11 +875,14 @@ impl Agent {
                 args: call_args,
                 ok,
                 method,
+                caveat: caveat.clone(),
                 result: result.clone(),
             };
             events.push(AgentEvent::Evidence(item.clone()));
             self.evidence.push(item);
-            out.push(json!({"id": id, "ok": ok, "method": method, "result": result}));
+            out.push(
+                json!({"id": id, "ok": ok, "method": method, "caveat": caveat, "result": result}),
+            );
         }
         Ok(json!({"results": out}))
     }
@@ -857,46 +899,54 @@ mod tests {
             args: json!({}),
             ok,
             method,
+            caveat: None,
             result: json!({}),
         }
     }
 
     #[test]
     fn method_follows_the_engine_result() {
+        let m = |f, v: Value| method_of(f, &v).0;
         assert_eq!(
-            method_of(
+            m(
                 "limit",
-                &json!({"exists": {"truth": "true", "method": "symbolic"}})
+                json!({"exists": {"truth": "true", "method": "symbolic"}})
             ),
             Method::Symbolic
         );
         assert_eq!(
-            method_of("diff", &json!({"$h": 3, "kind": "expr"})),
+            m("diff", json!({"$h": 3, "kind": "expr"})),
             Method::Symbolic
         );
+        // A limit the engine could not evaluate decides nothing.
         assert_eq!(
-            method_of(
-                "roots_in",
-                &json!({"roots": [], "complete": {"truth": "unknown", "method": "none"}, "method": "numeric"})
+            m(
+                "limit",
+                json!({"value": null, "exists": {"truth": "unknown", "method": "none"}})
             ),
             Method::Undecided
         );
         assert_eq!(
-            method_of("sign_on", &json!({"sign": "mixed", "method": "numeric"})),
+            m("sign_on", json!({"sign": "mixed", "method": "numeric"})),
             Method::Numeric
         );
         assert_eq!(
-            method_of("sign_on", &json!({"sign": "unknown", "method": "none"})),
+            m("sign_on", json!({"sign": "unknown", "method": "none"})),
             Method::Undecided
         );
+        assert_eq!(m("numeric", json!({"value": 2.5})), Method::Numeric);
         assert_eq!(
-            method_of("numeric", &json!({"value": 2.5})),
-            Method::Numeric
-        );
-        assert_eq!(
-            method_of("equals", &json!({"truth": "unknown", "method": "none"})),
+            m("equals", json!({"truth": "unknown", "method": "none"})),
             Method::Undecided
         );
+        // Roots found numerically are found; only their completeness is open.
+        let (method, caveat) = method_of(
+            "roots_in",
+            &json!({"roots": [{"approx": 0.739}], "method": "numeric",
+                    "complete": {"truth": "unknown", "method": "none", "reason": "sign changes only"}}),
+        );
+        assert_eq!(method, Method::Numeric);
+        assert!(caveat.unwrap().contains("sign changes only"));
     }
 
     #[test]
@@ -922,6 +972,12 @@ mod tests {
             ClaimStatus::Unverified
         );
         assert_eq!(judge(&evidence, &[]).unwrap().0, ClaimStatus::Unverified);
+        // A caveat on cited evidence travels with the claim.
+        let mut open = ev("q5", true, Method::Numeric);
+        open.caveat = Some("the list may be incomplete".into());
+        let (status, note) = judge(&[open], &s(&["q5"])).unwrap();
+        assert_eq!(status, ClaimStatus::Checked);
+        assert!(note.unwrap().contains("q5: the list may be incomplete"));
         assert!(judge(&evidence, &s(&["q9"])).is_err());
         assert!(judge(&evidence, &s(&["q4"])).is_err());
     }

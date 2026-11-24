@@ -167,15 +167,16 @@ async fn a_turn_grounds_claims_and_repairs_a_failed_cell() {
         [
             ClaimStatus::Proven,
             ClaimStatus::Checked,
-            ClaimStatus::Unverified,
+            ClaimStatus::Checked,
             ClaimStatus::Unverified
         ]
     );
+    // The numeric root search supports "checked", and says what it leaves open.
     assert!(report.claims[2]
         .note
         .as_ref()
         .unwrap()
-        .contains("could not decide"));
+        .contains("could not confirm the list is complete"));
 
     // The scene-changing call inside a query was refused, and the two bad citations were errors.
     let q = tool_results(&client, 1);

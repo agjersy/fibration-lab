@@ -114,6 +114,37 @@ jobs:
           pnpm --dir apps/desktop exec playwright install --with-deps chromium
           pnpm --dir apps/desktop test:e2e --trace off
 
+  # Mathimator's evaluation tasks through the whole stack (provider layer over HTTP, agent loop,
+  # session, cell runner, engine) with the scripted model server. This checks the plumbing and
+  # the graders, not a model.
+  mathimator-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+      - name: Engine environment
+        run: cd mathimator/python/engine && uv sync
+      - run: cargo build -p mathimator-cli
+      - name: Evaluation tasks with the scripted model
+        run: |
+          export MATHIMATOR_HOME="$RUNNER_TEMP/mathimator-home"
+          mkdir -p "$MATHIMATOR_HOME"
+          printf 'default_model = "fake/scripted"\n\n[[providers]]\nname = "fake"\nkind = "openai-compatible"\nbase_url = "http://127.0.0.1:8767/v1"\n' > "$MATHIMATOR_HOME/config.toml"
+          python3 mathimator/evals/fake_model_server.py --port 8767 &
+          sleep 1
+          ./target/debug/mathimator eval --results "$RUNNER_TEMP/mathimator-eval"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mathimator-eval
+          path: ${{ runner.temp }}/mathimator-eval
+          if-no-files-found: ignore
+
   desktop:
     runs-on: ${{ matrix.os }}
     strategy:

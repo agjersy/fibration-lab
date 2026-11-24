@@ -243,3 +243,72 @@ pub async fn chat(opened: &mut Opened, args: ChatArgs) -> Result<()> {
     }
     Ok(())
 }
+
+pub struct EvalArgs {
+    pub tasks: PathBuf,
+    pub only: Vec<String>,
+    pub model: Option<String>,
+    pub results: Option<PathBuf>,
+    pub project_python: Option<PathBuf>,
+}
+
+/// Run evaluation tasks and print a report; `Ok(false)` when any task failed.
+pub async fn eval_run(engine: EngineConfig, args: EvalArgs) -> Result<bool> {
+    use math_core::eval;
+
+    let home = config::home();
+    let cfg = config::load(&home)?;
+    let client = config::client(&home, &cfg, args.model.as_deref())?;
+    let mut dirs = eval::list_tasks(&args.tasks)?;
+    if !args.only.is_empty() {
+        for name in &args.only {
+            eval::require_task(&args.tasks.join(name))?;
+        }
+        dirs.retain(|d| {
+            d.file_name()
+                .is_some_and(|n| args.only.iter().any(|o| n == o.as_str()))
+        });
+    }
+    if dirs.is_empty() {
+        bail!("no tasks under {}", args.tasks.display());
+    }
+    let results_dir = args
+        .results
+        .unwrap_or_else(|| PathBuf::from("mathimator-eval-results"));
+    // Work directories hold Unix sockets, whose paths must stay short.
+    let work_root = tempfile::Builder::new().prefix("meval-").tempdir()?;
+    let mut replay = ReplayOptions::default();
+    if let Some(p) = args.project_python {
+        replay.project_python = p;
+    }
+    let opts = eval::EvalOptions {
+        engine,
+        replay,
+        work_root: work_root.path().to_path_buf(),
+    };
+    let mut results = Vec::new();
+    for dir in dirs {
+        let mut result = eval::run_task(&dir, client.clone(), &opts).await?;
+        // Keep what the task produced next to the scorecard.
+        let keep = results_dir.join(&result.task);
+        std::fs::create_dir_all(&keep)?;
+        for name in ["scene.py", "events.jsonl", "calls.jsonl"] {
+            let from = result.work_dir.join(name);
+            if from.is_file() {
+                std::fs::copy(&from, keep.join(name))?;
+            }
+        }
+        result.work_dir = keep;
+        print!("{}", eval::report(&result));
+        results.push(result);
+    }
+    let card = eval::write_scorecard(&results_dir, &results)?;
+    let passed = results.iter().filter(|r| r.passed).count();
+    println!(
+        "{passed}/{} tasks passed with {}; scorecard: {}",
+        results.len(),
+        results[0].model,
+        card.display()
+    );
+    Ok(passed == results.len())
+}

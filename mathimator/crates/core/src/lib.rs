@@ -9,6 +9,7 @@ pub mod agent;
 pub mod chips;
 pub mod config;
 pub mod engine;
+pub mod eval;
 pub mod notebook;
 pub mod replay;
 pub mod router;

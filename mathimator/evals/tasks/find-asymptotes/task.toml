@@ -1,0 +1,47 @@
+[task]
+name = "find-asymptotes"
+mode = "explore"
+max_steps = 14
+prompt = """
+Graph (x**2 + 1)/(x**2 - 1) and label each of its vertical asymptotes on the plot. Where are they, and what does the function approach far out to the right?
+"""
+
+[[checks]]
+kind = "ended"
+
+[[checks]]
+kind = "runs_clean"
+
+[[checks]]
+kind = "object"
+object_kind = "explicit"
+equals = "(x**2 + 1)/(x**2 - 1)"
+
+# The plot itself must show both poles as asymptotes (the engine's sampler finds them).
+[[checks]]
+kind = "markers"
+marker = "asymptote"
+min_count = 2
+
+# One label per asymptote.
+[[checks]]
+kind = "notes"
+min_count = 2
+
+[[checks]]
+kind = "claims"
+status = ["proven"]
+matches = "asymptote|x = -?1"
+
+[[checks]]
+kind = "claims"
+status = ["proven"]
+matches = "approach|limit|tends"
+
+[[checks]]
+kind = "claims"
+min_count = 0
+max_unverified = 0
+
+[[checks]]
+kind = "replay_deterministic"

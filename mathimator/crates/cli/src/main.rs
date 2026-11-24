@@ -5,6 +5,7 @@
 //! * `mathimator api` prints the engine's operation manifest.
 //! * `mathimator chat <scene.py> [-m <message>]` runs agent turns on a scene (one per line of
 //!   standard input without `-m`), using the model configured in `<home>/config.toml`.
+//! * `mathimator eval --model <provider>/<id>` runs the evaluation tasks and writes a scorecard.
 //! * `mathimator chips <scene.py>` lists what can be done next; `chip <scene.py> <id>` fires a
 //!   direct chip; `set <scene.py> a=2.5` commits a parameter. Each becomes a cell.
 
@@ -80,6 +81,23 @@ enum Command {
         #[arg(long)]
         project_python: Option<PathBuf>,
     },
+    /// Run evaluation tasks (`<tasks>/<name>/task.toml`) and write a scorecard.
+    Eval {
+        /// The directory holding the task directories.
+        #[arg(long, default_value = "mathimator/evals/tasks")]
+        tasks: PathBuf,
+        /// Run only these tasks (may be repeated).
+        #[arg(long = "task")]
+        only: Vec<String>,
+        /// `<provider>/<model id>` (default: default_model in <home>/config.toml).
+        #[arg(long)]
+        model: Option<String>,
+        /// Where the scorecard and each task's final scene and events are written.
+        #[arg(long)]
+        results: Option<PathBuf>,
+        #[arg(long)]
+        project_python: Option<PathBuf>,
+    },
     /// List the chips for a scene: what can be done next, with no model involved.
     Chips {
         scene: PathBuf,
@@ -139,6 +157,25 @@ async fn main() -> Result<()> {
             let result = work::chat(&mut opened, args).await;
             opened.session.close().await.ok();
             result
+        }
+        Command::Eval {
+            tasks,
+            only,
+            model,
+            results,
+            project_python,
+        } => {
+            let args = work::EvalArgs {
+                tasks,
+                only,
+                model,
+                results,
+                project_python,
+            };
+            if !work::eval_run(engine_config(cli.engine_python), args).await? {
+                std::process::exit(1);
+            }
+            Ok(())
         }
         Command::Chips { scene, json } => {
             let opened = work::open(&scene, engine_config(cli.engine_python), None).await?;
