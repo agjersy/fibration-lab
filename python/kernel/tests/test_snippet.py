@@ -59,7 +59,9 @@ def test_snippet_limits_from_project_config(repo, tmp_path):
     try:
         code = "import resource; (resource.getrlimit(resource.RLIMIT_AS)[0], resource.getrlimit(resource.RLIMIT_NOFILE)[0])"
         r = k.call("exec.snippet", {"code": code})
-        assert r["ok"] and eval(r["value_repr"]) == (3 * 1024**3, 512)
+        # macOS accepts the address-space limit and does not apply it (ARCHITECTURE 5.6).
+        as_limit = resource.getrlimit(resource.RLIMIT_AS)[0] if sys.platform == "darwin" else 3 * 1024**3
+        assert r["ok"] and eval(r["value_repr"]) == (as_limit, 512)
     finally:
         k.close()
 

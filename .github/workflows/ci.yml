@@ -24,9 +24,15 @@ jobs:
           (cd python/kernel && uv sync)
           (cd present/python/kernel && uv sync)
           (cd mathimator/python/engine && uv sync)
-      - name: bubblewrap (the Mathimator engine and runner run without network)
+      # ripgrep: the core's search service runs `rg` (bundled with the app as a sidecar; the
+      # runner images do not all ship it). bubblewrap: the Mathimator engine and runner run
+      # without network.
+      - name: ripgrep and bubblewrap (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep bubblewrap
+      - name: ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: command -v rg || brew install ripgrep
       - run: cargo fmt --all -- --check
       # The desktop shell needs a system WebView toolkit on Linux; it has its own job.
       - run: cargo clippy --workspace --exclude analyst-desktop --all-targets -- -D warnings
@@ -52,7 +58,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Install LibreOffice and bubblewrap (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap ripgrep
       - run: uv sync
       - run: uv run ruff check .
       - run: uv run pytest -q
@@ -86,7 +92,9 @@ jobs:
   # bridge (analyst-serve), with the scripted model server and fixture projects that
   # `analyst init` makes (apps/desktop/e2e/harness.ts).
   e2e:
-    runs-on: ubuntu-latest
+    # Pinned: the Playwright version in apps/desktop has no browser build for Ubuntu 26.04,
+    # which ubuntu-latest now is. Unpin when Playwright is upgraded.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Rust toolchain (pinned by rust-toolchain.toml)
@@ -94,7 +102,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
       - name: Install LibreOffice and bubblewrap
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap ripgrep
       - name: Kernel environments
         run: |
           (cd python/kernel && uv sync)
@@ -190,7 +198,10 @@ jobs:
           python-version: "3.12"
       - name: Install LibreOffice and bubblewrap (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-impress bubblewrap ripgrep
+      - name: ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: command -v rg || brew install ripgrep
       - run: |
           (cd python/kernel && uv sync)
           (cd present/python/kernel && uv sync)
@@ -246,7 +257,7 @@ jobs:
       - name: Linux webview dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev patchelf webkit2gtk-driver xvfb bubblewrap
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libxdo-dev patchelf webkit2gtk-driver xvfb bubblewrap ripgrep
       - name: Rust toolchain (pinned by rust-toolchain.toml)
         run: rustup show
       - uses: Swatinem/rust-cache@v2

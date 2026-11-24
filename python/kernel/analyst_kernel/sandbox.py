@@ -105,6 +105,13 @@ def interpreter_dirs(python: Path, home: Path | None = None) -> list[Path]:
     """
     home_r = Path(os.path.realpath(home or _home()))
     prefixes: list[Path] = []
+    # Every step of the symlink chain, not only its end. ``uv`` links a venv's interpreter
+    # through a version alias (``.../cpython-3.14-linux-x86_64-gnu`` is itself a symlink to
+    # ``.../cpython-3.14.1-linux-x86_64-gnu``); the kernel launches the interpreter by the
+    # venv's path, so the alias must exist in the sandbox as well as the directory it names.
+    # Binding the alias's path mounts the directory it points to there.
+    for step in _symlink_chain(python):
+        prefixes.append(step.parent.parent if step.parent.name == "bin" else step.parent)
     real = Path(os.path.realpath(python))
     prefixes.append(real.parent.parent if real.parent.name == "bin" else real.parent)
     cfg = python.parent.parent / "pyvenv.cfg"
@@ -124,6 +131,21 @@ def interpreter_dirs(python: Path, home: Path | None = None) -> list[Path]:
             log.warning("interpreter prefix %s would expose the home directory; not made readable", p)
             continue
         out.append(p)
+    return out
+
+
+def _symlink_chain(path: Path, limit: int = 16) -> list[Path]:
+    """The targets a symlink leads through, each as written (not resolved), ending at a
+    path that is not itself a symlink. Empty when ``path`` is not a symlink."""
+    out: list[Path] = []
+    current = path
+    for _ in range(limit):
+        try:
+            target = os.readlink(current)
+        except OSError:
+            break
+        current = Path(os.path.normpath(os.path.join(current.parent, target)))
+        out.append(current)
     return out
 
 

@@ -104,6 +104,36 @@ def test_sandbox_probe_prints_profile(tmp_path: Path, capsys):
     assert out.startswith("kind: ")
 
 
+def test_every_step_of_the_interpreter_symlink_chain_is_made_readable(tmp_path: Path):
+    """uv links a venv through a version alias that is itself a symlink. The kernel starts the
+    interpreter by the venv's path, so the alias has to exist in the sandbox, not only the
+    directory it finally names (a run failed with "execvp ... No such file or directory")."""
+    store = tmp_path / "home" / ".local" / "share" / "uv" / "python"
+    real = store / "cpython-3.14.1-linux-x86_64-gnu"
+    (real / "bin").mkdir(parents=True)
+    (real / "bin" / "python3.14").write_text("")
+    alias = store / "cpython-3.14-linux-x86_64-gnu"
+    alias.symlink_to(real.name)  # a relative link, as uv writes it
+    venv = tmp_path / "repo" / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").symlink_to(alias / "bin" / "python3.14")
+    dirs = sandbox.interpreter_dirs(venv / "bin" / "python", tmp_path / "home")
+    assert dirs == [alias, real]
+    s = sandbox.SandboxSpec(
+        root=tmp_path / "repo", venv=venv, run_dir=tmp_path / "run", out_dir=tmp_path / "repo" / "out",
+        home=tmp_path / "home", python=venv / "bin" / "python",
+    )
+    argv = sandbox.bwrap_argv(s, ["/py"])
+    binds = [argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"]
+    assert str(alias) in binds and str(real) in binds
+    # A chain of links between files is followed too, and a loop ends instead of hanging.
+    (venv / "bin" / "python3").symlink_to("python")
+    assert sandbox.interpreter_dirs(venv / "bin" / "python3", tmp_path / "home") == [venv, alias, real]
+    (tmp_path / "a").symlink_to("b")
+    (tmp_path / "b").symlink_to("a")
+    assert len(sandbox._symlink_chain(tmp_path / "a")) == 16
+
+
 def test_pyvenv_cfg_home_is_used_when_python_is_not_a_symlink(tmp_path: Path):
     base = tmp_path / "base"
     (base / "bin").mkdir(parents=True)
@@ -208,7 +238,8 @@ def test_limits_preexec_applies_rlimits():
         preexec_fn=sandbox.limits_preexec(1 * 1024**3, min(256, hard)),
     ).stdout
     as_limit, nofile = json.loads(out)
-    assert as_limit == 1 * 1024**3
+    # macOS accepts the call and does not apply an address-space limit (ARCHITECTURE 5.6).
+    assert as_limit == (resource.getrlimit(resource.RLIMIT_AS)[0] if sys.platform == "darwin" else 1 * 1024**3)
     assert nofile == min(256, hard)
 
 
