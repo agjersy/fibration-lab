@@ -10,7 +10,8 @@ Standard keywords: ``type`` (object, array, string, number, integer, boolean), `
 
 Engine types (``type`` values that are not JSON Schema's):
 
-* ``handle``: a handle reference; ``kinds`` lists the accepted handle kinds.
+* ``handle``: a handle reference; ``kinds`` lists the accepted handle kinds. Where the kinds
+  include expr, relation or boolean, math text is accepted too.
 * ``scalar``: a finite number, math text such as ``"pi/2"``, or an ``expr`` handle.
 * ``interval``: two scalars ``[lo, hi]``.
 """
@@ -23,6 +24,8 @@ from typing import Any
 
 from .errors import CallError
 from .handles import is_ref
+
+TEXT_KINDS = {"expr", "relation", "boolean"}
 
 
 def handle(*kinds: str, description: str = "") -> dict[str, Any]:
@@ -49,7 +52,9 @@ def string(description: str = "", max_length: int = 4000, enum: list[str] | None
     return out
 
 
-def number(description: str = "", minimum: float | None = None, maximum: float | None = None) -> dict[str, Any]:
+def number(
+    description: str = "", minimum: float | None = None, maximum: float | None = None
+) -> dict[str, Any]:
     out: dict[str, Any] = {"type": "number"}
     if minimum is not None:
         out["minimum"] = minimum
@@ -153,8 +158,17 @@ def validate(schema: dict[str, Any], value: Any, path: str = "") -> None:
         if not isinstance(value, bool):
             raise _fail(path, "must be true or false")
     elif kind == "handle":
-        if not is_ref(value):
-            raise _fail(path, 'must be a handle reference {"$h": id}')
+        # Math text is accepted wherever an expression, equation or condition is expected; the
+        # engine reads it with the same restricted reader as sym.define.
+        text_ok = isinstance(value, str) and bool(TEXT_KINDS & set(schema.get("kinds", [])))
+        if not (is_ref(value) or text_ok):
+            raise _fail(
+                path,
+                'must be a handle reference {"$h": id}'
+                + (" or math text" if TEXT_KINDS & set(schema.get("kinds", [])) else ""),
+            )
+        if text_ok and len(value) > 4000:
+            raise _fail(path, "is longer than 4000 characters")
     elif kind == "scalar":
         ok = (_is_number(value) and math.isfinite(value)) or isinstance(value, str) or is_ref(value)
         if not ok:

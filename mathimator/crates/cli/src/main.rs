@@ -3,6 +3,12 @@
 //! * `mathimator run <scene.py> [--until <cell>] [--json]` replays a scene notebook from the
 //!   top and prints each cell's status and the final scene hash.
 //! * `mathimator api` prints the engine's operation manifest.
+//! * `mathimator chat <scene.py> [-m <message>]` runs agent turns on a scene (one per line of
+//!   standard input without `-m`), using the model configured in `<home>/config.toml`.
+//! * `mathimator chips <scene.py>` lists what can be done next; `chip <scene.py> <id>` fires a
+//!   direct chip; `set <scene.py> a=2.5` commits a parameter. Each becomes a cell.
+
+mod work;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -53,6 +59,41 @@ enum Command {
     },
     /// Print the engine's operation manifest.
     Api,
+    /// Run agent turns on a scene.
+    Chat {
+        scene: PathBuf,
+        /// The message for a single turn (default: one turn per line of standard input).
+        #[arg(short, long)]
+        message: Option<String>,
+        /// Plan mode: the agent can check facts but not change the scene.
+        #[arg(long)]
+        plan: bool,
+        /// `<provider>/<model id>` (default: default_model in <home>/config.toml).
+        #[arg(long)]
+        model: Option<String>,
+        /// Print each turn's full report as one JSON line.
+        #[arg(long)]
+        json: bool,
+        /// Append every event to this JSONL file.
+        #[arg(long)]
+        transcript: Option<PathBuf>,
+        #[arg(long)]
+        project_python: Option<PathBuf>,
+    },
+    /// List the chips for a scene: what can be done next, with no model involved.
+    Chips {
+        scene: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fire a direct chip; it becomes a cell.
+    Chip { scene: PathBuf, id: String },
+    /// Commit parameter values (`a=2.5`), as a slider release does; each becomes a cell.
+    Set {
+        scene: PathBuf,
+        #[arg(required = true)]
+        assignments: Vec<String>,
+    },
 }
 
 fn engine_config(python: Option<PathBuf>) -> EngineConfig {
@@ -76,6 +117,46 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&api)?);
             engine.shutdown().await.ok();
             Ok(())
+        }
+        Command::Chat {
+            scene,
+            message,
+            plan,
+            model,
+            json,
+            transcript,
+            project_python,
+        } => {
+            let mut opened =
+                work::open(&scene, engine_config(cli.engine_python), project_python).await?;
+            let args = work::ChatArgs {
+                message,
+                plan,
+                model,
+                json,
+                transcript,
+            };
+            let result = work::chat(&mut opened, args).await;
+            opened.session.close().await.ok();
+            result
+        }
+        Command::Chips { scene, json } => {
+            let opened = work::open(&scene, engine_config(cli.engine_python), None).await?;
+            let result = work::chips(&opened, json).await;
+            opened.session.close().await.ok();
+            result
+        }
+        Command::Chip { scene, id } => {
+            let mut opened = work::open(&scene, engine_config(cli.engine_python), None).await?;
+            let result = work::fire_chip(&mut opened, &id).await;
+            opened.session.close().await.ok();
+            result
+        }
+        Command::Set { scene, assignments } => {
+            let mut opened = work::open(&scene, engine_config(cli.engine_python), None).await?;
+            let result = work::set_params(&mut opened, &assignments).await;
+            opened.session.close().await.ok();
+            result
         }
         Command::Run {
             scene,
@@ -168,8 +249,11 @@ mod tests {
                 assert_eq!(until.as_deref(), Some("c2"));
                 assert!(json);
             }
-            Command::Api => panic!("expected run"),
+            _ => panic!("expected run"),
         }
         assert!(Cli::try_parse_from(["mathimator", "api"]).is_ok());
+        assert!(Cli::try_parse_from(["mathimator", "chat", "s.py", "-m", "hi", "--plan"]).is_ok());
+        assert!(Cli::try_parse_from(["mathimator", "set", "s.py"]).is_err());
+        assert!(Cli::try_parse_from(["mathimator", "chip", "s.py", "view:fit"]).is_ok());
     }
 }

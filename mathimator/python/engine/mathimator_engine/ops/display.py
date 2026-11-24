@@ -87,7 +87,7 @@ def to_srepr(engine, of):
     pure=True,
 )
 def info(engine, of):
-    entry = engine.handles.entry(of)
+    entry = engine.entry(of)
     obj = entry.obj
     if isinstance(obj, NumericFn):
         return {"kind": entry.kind, "head": "numeric_fn", "hash": entry.hash}

@@ -5,16 +5,21 @@
 //! router, which validates the framing, forwards the call, records it in the call log, and
 //! broadcasts the resulting state diff.
 
+pub mod agent;
+pub mod chips;
+pub mod config;
 pub mod engine;
 pub mod notebook;
 pub mod replay;
 pub mod router;
 pub mod sandbox;
+pub mod session;
 
 pub use engine::{EngineClient, EngineConfig, EngineError};
 pub use notebook::{Notebook, NotebookError};
 pub use replay::{replay, ReplayOptions};
 pub use router::{Router, RouterHandle};
+pub use session::{Applied, CellEdit, SceneSession, SessionConfig};
 
 use std::path::PathBuf;
 

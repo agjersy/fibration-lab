@@ -141,6 +141,9 @@ pub struct CellError {
     pub message: String,
     #[serde(default)]
     pub traceback: String,
+    /// The line of the cell where the error was raised, when known (1-based).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
     /// Present when the exception was an engine call error surfaced by the SDK.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_error: Option<CallError>,

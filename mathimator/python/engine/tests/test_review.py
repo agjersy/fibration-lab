@@ -137,3 +137,13 @@ def test_sampler_failures_are_reported_not_raised(s, monkeypatch):
     with pytest.raises(CallError) as info:
         sample_mod.sample(s.engine, "c", VIEW)
     assert info.value.kind == "math"
+
+
+def test_math_text_is_accepted_where_an_expression_is_expected(s):
+    out = s.val("limit", expr="sin(x)/x", var="x", at=0)
+    assert s.obj(out["value"]) == 1
+    assert s.val("info", of="x**2 + 1")["head"] == "sum"
+    assert s.val("expr.parts", relation="x = 1")["rel"] == "=="
+    assert s.err("expr.parts", relation="x + 1")["kind"] == "bad_handle"
+    assert s.err("set.is_empty", set="x")["kind"] == "bad_args"  # sets have no text form
+    assert s.err("diff", expr="__import__('os')", var="x")["kind"] == "parse"

@@ -155,5 +155,5 @@ def relation(engine, lhs, rel: str, rhs):
     pure=True,
 )
 def parts(engine, relation):
-    rel = engine.handles.get(relation, ("relation",))
+    rel = engine.entry(relation, ("relation",)).obj
     return {"lhs": Out(rel.lhs), "rhs": Out(rel.rhs), "rel": rel.rel_op}

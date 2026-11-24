@@ -60,6 +60,12 @@ class Engine:
             return mathparse.read_math(arg)
         raise CallError("bad_args", f"cannot read {arg!r} as a value")
 
+    def entry(self, arg: Any, kinds: tuple[str, ...] | None = None):
+        """The handle-table entry for a handle reference or for math text."""
+        if isinstance(arg, str):
+            arg = self.handles.put(mathparse.read_math(arg))
+        return self.handles.entry(arg, kinds)
+
     def expr(self, arg: Any, what: str = "expression") -> sp.Expr:
         obj = self.value(arg)
         if not isinstance(obj, sp.Expr):
