@@ -77,9 +77,10 @@ pub async fn replay(
     let engine = router.router().engine();
     engine.reset().await.context("resetting the engine")?;
 
-    let (mut cmd, isolation) = crate::sandbox::no_network_command(
+    let (mut cmd, isolation) = crate::sandbox::no_network_command_with_socket(
         opts.project_python.as_os_str(),
         ["-m", "mathimator.runner"],
+        router.path(),
     );
     tracing::debug!(%isolation, "starting the cell runner");
     cmd.env("MATHIMATOR_SOCKET", router.path())

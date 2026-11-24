@@ -4,49 +4,44 @@ A workbench for exploring, verifying, and animating mathematics. It ships as its
 
 | Path | Contents |
 |---|---|
-| `python/engine` | `mathimator_engine`: SymPy behind a per-function `call()` API with opaque handles, scene state, masking, memo, budgets, the certified sampler. Wire contract: [docs/ENGINE.md](docs/ENGINE.md) |
+| `python/engine` | `mathimator_engine`: SymPy behind a per-function `call()` API with opaque handles; scene state, masking, memo, budgets; the certified sampler; the Matplotlib exporter; GLSL generation. Wire contract: [docs/ENGINE.md](docs/ENGINE.md) |
 | `python/sdk` | `mathimator`: the stdlib-only scene SDK (proxies over handles), and the cell runner `python -m mathimator.runner` |
 | `crates/protocol` | `math-protocol`: wire types shared by the core and the CLI |
-| `crates/core` | `math-core`: the notebook format, the engine client, the call router behind the attach socket, replay, process isolation |
-| `crates/cli` | `mathimator`: `mathimator run <scene.py>` and `mathimator api` |
+| `crates/core` | `math-core`: notebook format, engine client, call router, replay, scene session (edits, undo, chips, slider commits), agent loop, evaluation harness, standalone config |
+| `crates/cli` | `mathimator`: `run`, `api`, `chat`, `chips`, `chip`, `set`, `eval` |
+| `evals` | Evaluation tasks and the scripted model server that drives them in CI |
+| `spike/render` | The WebGL2 rendering prototype and its measurement script ([docs/notes/render-spike.md](docs/notes/render-spike.md)) |
 
 ## Status
 
-Phase 0 (headless core) in progress. Built so far, on Linux:
+Phase 0 (headless core) is built except for the items listed below. The per-work-package status is in `docs/BUILD-SPEC.md` of `agjersy/mathimator`.
 
-- **Engine (WP-0.2 to 0.4).**
-  - About 60 operations.
-  - An AST-allowlist reader for math text and `srepr` (never `eval`).
-  - Three-valued truth, with the method behind each answer.
-  - Budgets enforced by an interval timer.
-  - Scene state with revisions, a content hash and diffs; masking; snapshots and restore.
-  - Rollback when a call fails.
-  - A memo that persists on disk and is read back through the restricted reader.
-- **Certified 2D sampler (WP-0.5).** For explicit curves, "certified" means every on-screen point of the true graph is within 0.5 px of the drawn polyline, checked with interval arithmetic.
-  - Poles, jumps (open or closed ends) and removable holes are found and marked; no segment crosses a pole.
-  - Spikes narrower than a pixel are found.
-  - Parametric, polar and region objects can be certified.
-  - Oscillation (`sin(1/x)`), functions interval arithmetic can't evaluate, and implicit curves come back `sampled`, with a reason.
-- **SDK and runner (WP-0.6).**
-  - Operators that issue engine calls.
-  - `Truth` raises `Undecided` instead of guessing.
-  - Socket and headless transports.
-  - A per-cell origin on every call.
-  - The runner contract.
-- **Core and CLI (parts of WP-0.7 and 0.10).**
-  - The percent-format notebook, with stable cell ids and an exact round trip.
-  - The router: only `call`, `state.get` and `describe_api`; a 0600 socket; a JSONL call log; diff broadcast.
-  - Replay from the top.
-  - Engine and runner without network, through `wb_sandbox::no_network` (`bwrap` here).
+- **Engine.** 58 operations.
+  - Math text and `srepr` are read by AST allowlists, never `eval`.
+  - Decimals are exact, symbols are real, and undefined values (`1/0`, a tangent at a pole) are refused.
+  - Every truth says how it was reached. Calls run under a time budget. A failed scene call rolls back.
+  - Replays are deterministic and memoized.
+- **Certified 2D sampler.** For explicit curves, "certified" means every on-screen point of the true graph is within 0.5 px of the drawn polyline, checked with interval arithmetic.
+  - Poles, jumps (with open and closed ends) and removable holes are found and marked; no segment crosses a pole or joins a jump.
+  - Anything that cannot be established comes back `sampled`, with a reason.
+- **Exporter.** SVG, PDF and PNG through Matplotlib, drawn only from the sampler's output, with a sidecar; a figure with an uncertified object says so in a footnote.
+- **SDK and runner.** Operators are engine calls; a `Truth` used in `if` raises `Undecided` instead of guessing.
+- **Session.** Every change to a scene is an edit to `scene.py`, replayed from the top and kept only if every cell runs. Undo, chips and slider commits go through the same path.
+- **Agent loop.** The model reads the scene, queries the engine, makes claims and proposes cells; it has no other tools. A claim's badge (proven, checked, unverified) is computed from the engine results it cites.
+- **Evaluation.** Four tasks with declarative checks, run in CI through the whole stack with a scripted model.
 
 **Not built yet:**
-- the agent loop and claims (WP-0.8);
-- the Matplotlib exporter (WP-0.9);
-- the evaluation tasks (WP-0.11);
-- the rendering spike (WP-0.12);
-- filesystem confinement of the runner, which comes with the Analyst run sandbox in phase 2.
+- the agent's `scene.snapshot` and `scene.export` tools, and context compaction;
+- `wb-policy` gating and `wb-transcript` (they come with the registration in Analyst's loop);
+- CLI `init`, `attach` and `export`;
+- caching of sampler results;
+- filesystem confinement of the cell runner (it has no network; the rest comes with Analyst's run sandbox);
+- everything in phases 1 and 2: the desktop UI and the Analyst pairing.
 
-**Not verified:** macOS (CI runs the suites there).
+**Not verified:**
+- **Real models.** Every agent run so far used a scripted model.
+- **The real webviews.** The rendering prototype was measured only in headless Chromium with a software rasterizer.
+- **The crates on macOS.** The Python projects pass there in CI.
 
 ## Development
 
@@ -57,9 +52,25 @@ cargo test -p math-protocol -p math-core -p mathimator-cli     # notebook, route
 
 cargo run -p mathimator-cli -- run path/to/scene.py            # replay a scene headless
 cargo run -p mathimator-cli -- api                             # the operation manifest
+cargo run -p mathimator-cli -- chips path/to/scene.py          # what can be done next (no model)
+cargo run -p mathimator-cli -- set path/to/scene.py a=2.5      # a slider release, as a cell
+cargo run -p mathimator-cli -- chat path/to/scene.py -m "..."  # an agent turn (needs a provider, below)
 ```
 
 A scene also runs as a plain script, `python scene.py`, with an interpreter that has `mathimator_engine` (or `MATHIMATOR_ENGINE_PYTHON` set); the SDK then starts a private engine. `MATHIMATOR_NO_SANDBOX=1` turns off the network isolation for debugging.
+
+Providers are configured in `~/.mathimator/config.toml` (`MATHIMATOR_HOME`), in the same format Personal Analyst uses; keys come from the environment or `<home>/.env`:
+
+```toml
+default_model = "anthropic/claude-opus-5-5"
+
+[[providers]]
+name = "anthropic"
+kind = "anthropic"
+key = "env:ANTHROPIC_API_KEY"
+```
+
+To run the evaluation tasks without a model: start `python3 mathimator/evals/fake_model_server.py`, add a provider `fake` (`kind = "openai-compatible"`, `base_url = "http://127.0.0.1:8767/v1"`), and run `mathimator eval --model fake/scripted`. With a real provider, `mathimator eval --model <provider>/<model>` grades that model on the same tasks.
 
 A scene file:
 
