@@ -1,0 +1,667 @@
+{
+  "measuredAt": "2026-11-24T02:15:34.168Z",
+  "softwareRasterizer": true,
+  "results": [
+    {
+      "config": {
+        "scene": "grid2d-linear",
+        "map": "square",
+        "segments": 64,
+        "n": 5,
+        "msaa": true,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 1
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": true,
+        "samples": 4,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 25.1,
+        "p95": 30.5,
+        "p99": 32.3,
+        "max": 33,
+        "mean": 25.4
+      },
+      "intervalMs": {
+        "median": 33.3,
+        "p95": 33.4,
+        "p99": 49.9,
+        "max": 50,
+        "mean": 28.7
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 141,
+      "frames": 200,
+      "drawCalls": 3,
+      "vertices": 18438,
+      "instances": 568,
+      "lines": 366,
+      "arrows": 202,
+      "faces": 1,
+      "compileMs": 2,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth mask off for translucent faces, sorted back to front per object",
+        "drawArraysInstanced",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "multisampled drawing buffer (context antialias)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": null,
+      "screenshot": "shot-grid2d-linear.png"
+    },
+    {
+      "config": {
+        "scene": "grid2d-nonlinear",
+        "map": "square",
+        "segments": 64,
+        "n": 5,
+        "msaa": true,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 64
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": true,
+        "samples": 4,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 52.9,
+        "p95": 66,
+        "p99": 84,
+        "max": 89.8,
+        "mean": 53.6
+      },
+      "intervalMs": {
+        "median": 50.1,
+        "p95": 66.7,
+        "p99": 83.3,
+        "max": 83.4,
+        "mean": 57.6
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 200,
+      "frames": 200,
+      "drawCalls": 3,
+      "vertices": 66084,
+      "instances": 568,
+      "lines": 366,
+      "arrows": 202,
+      "faces": 1,
+      "compileMs": 2,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth mask off for translucent faces, sorted back to front per object",
+        "drawArraysInstanced",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "multisampled drawing buffer (context antialias)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": {
+        "map": "square",
+        "u": "(x**2 - y**2)/square_c",
+        "v": "2*x*y/square_c",
+        "from": "engine code.glsl"
+      },
+      "screenshot": "shot-grid2d-nonlinear.png"
+    },
+    {
+      "config": {
+        "scene": "grid2d-nonlinear",
+        "map": "swirl",
+        "segments": 64,
+        "n": 5,
+        "msaa": true,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 64
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": true,
+        "samples": 4,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 56.7,
+        "p95": 68.8,
+        "p99": 80,
+        "max": 81,
+        "mean": 57.6
+      },
+      "intervalMs": {
+        "median": 66.6,
+        "p95": 83.3,
+        "p99": 83.4,
+        "max": 83.4,
+        "mean": 61.7
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 200,
+      "frames": 200,
+      "drawCalls": 3,
+      "vertices": 66084,
+      "instances": 568,
+      "lines": 366,
+      "arrows": 202,
+      "faces": 1,
+      "compileMs": 3.4,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth mask off for translucent faces, sorted back to front per object",
+        "drawArraysInstanced",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "multisampled drawing buffer (context antialias)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": {
+        "map": "swirl",
+        "u": "x*cos(swirl_k*exp(-(x**2 + y**2)/swirl_w)) - y*sin(swirl_k*exp(-(x**2 + y**2)/swirl_w))",
+        "v": "x*sin(swirl_k*exp(-(x**2 + y**2)/swirl_w)) + y*cos(swirl_k*exp(-(x**2 + y**2)/swirl_w))",
+        "from": "engine code.glsl"
+      },
+      "screenshot": null
+    },
+    {
+      "config": {
+        "scene": "grid2d-nonlinear",
+        "map": "square",
+        "segments": 16,
+        "n": 5,
+        "msaa": true,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 16
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": true,
+        "samples": 4,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 30.7,
+        "p95": 35.6,
+        "p99": 41.7,
+        "max": 44.6,
+        "mean": 30.6
+      },
+      "intervalMs": {
+        "median": 33.3,
+        "p95": 50,
+        "p99": 50,
+        "max": 50,
+        "mean": 34.2
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 191,
+      "frames": 200,
+      "drawCalls": 3,
+      "vertices": 30948,
+      "instances": 568,
+      "lines": 366,
+      "arrows": 202,
+      "faces": 1,
+      "compileMs": 8.9,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth mask off for translucent faces, sorted back to front per object",
+        "drawArraysInstanced",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "multisampled drawing buffer (context antialias)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": {
+        "map": "square",
+        "u": "(x**2 - y**2)/square_c",
+        "v": "2*x*y/square_c",
+        "from": "engine code.glsl"
+      },
+      "screenshot": null
+    },
+    {
+      "config": {
+        "scene": "grid2d-nonlinear",
+        "map": "square",
+        "segments": 256,
+        "n": 5,
+        "msaa": true,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 256
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": true,
+        "samples": 4,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 143,
+        "p95": 249.8,
+        "p99": 268.4,
+        "max": 268.9,
+        "mean": 161.4
+      },
+      "intervalMs": {
+        "median": 150,
+        "p95": 266.5,
+        "p99": 266.7,
+        "max": 266.7,
+        "mean": 165.7
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 200,
+      "frames": 200,
+      "drawCalls": 3,
+      "vertices": 206628,
+      "instances": 568,
+      "lines": 366,
+      "arrows": 202,
+      "faces": 1,
+      "compileMs": 8.4,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth mask off for translucent faces, sorted back to front per object",
+        "drawArraysInstanced",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "multisampled drawing buffer (context antialias)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": {
+        "map": "square",
+        "u": "(x**2 - y**2)/square_c",
+        "v": "2*x*y/square_c",
+        "from": "engine code.glsl"
+      },
+      "screenshot": null
+    },
+    {
+      "config": {
+        "scene": "grid3d-linear",
+        "map": "square",
+        "segments": 64,
+        "n": 5,
+        "msaa": true,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 1
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": true,
+        "samples": 4,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 37.6,
+        "p95": 58.4,
+        "p99": 65,
+        "max": 68.5,
+        "mean": 39.6
+      },
+      "intervalMs": {
+        "median": 33.4,
+        "p95": 66.7,
+        "p99": 66.8,
+        "max": 83.3,
+        "mean": 43
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 200,
+      "frames": 200,
+      "drawCalls": 9,
+      "vertices": 28158,
+      "instances": 969,
+      "lines": 666,
+      "arrows": 303,
+      "faces": 7,
+      "compileMs": 1.9,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth mask off for translucent faces, sorted back to front per object",
+        "depth test (lines and translucent faces tested, not written)",
+        "drawArraysInstanced",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "multisampled drawing buffer (context antialias)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": null,
+      "screenshot": "shot-grid3d-linear.png"
+    },
+    {
+      "config": {
+        "scene": "grid3d-linear",
+        "map": "square",
+        "segments": 64,
+        "n": 5,
+        "msaa": false,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 1
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": false,
+        "samples": 0,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 28.1,
+        "p95": 37.9,
+        "p99": 43.6,
+        "max": 46.5,
+        "mean": 29.8
+      },
+      "intervalMs": {
+        "median": 33.3,
+        "p95": 50,
+        "p99": 50.1,
+        "max": 50.1,
+        "mean": 33
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 170,
+      "frames": 200,
+      "drawCalls": 9,
+      "vertices": 28158,
+      "instances": 969,
+      "lines": 666,
+      "arrows": 303,
+      "faces": 7,
+      "compileMs": 7.7,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth mask off for translucent faces, sorted back to front per object",
+        "depth test (lines and translucent faces tested, not written)",
+        "drawArraysInstanced",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": null,
+      "screenshot": null
+    },
+    {
+      "config": {
+        "scene": "surface3d",
+        "map": "square",
+        "segments": 64,
+        "n": 5,
+        "msaa": true,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 1
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": true,
+        "samples": 4,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 33.3,
+        "p95": 62.6,
+        "p99": 76.6,
+        "max": 76.9,
+        "mean": 36.9
+      },
+      "intervalMs": {
+        "median": 33.4,
+        "p95": 66.7,
+        "p99": 83.3,
+        "max": 83.4,
+        "mean": 40.7
+      },
+      "framesOver16_7": 200,
+      "droppedFrames": 193,
+      "frames": 200,
+      "drawCalls": 3,
+      "vertices": 55696,
+      "instances": 40,
+      "lines": 37,
+      "arrows": 3,
+      "faces": 0,
+      "compileMs": 1.2,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth test (lines and translucent faces tested, not written)",
+        "drawArraysInstanced",
+        "drawElements (UNSIGNED_SHORT indices)",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "multisampled drawing buffer (context antialias)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": null,
+      "screenshot": "shot-surface3d.png"
+    },
+    {
+      "config": {
+        "scene": "surface3d",
+        "map": "square",
+        "segments": 64,
+        "n": 5,
+        "msaa": false,
+        "frames": 200,
+        "auto": true,
+        "width": 1280,
+        "height": 800,
+        "dpr": 1,
+        "lineSegments": 1
+      },
+      "gpu": {
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+        "vendor": "Google Inc. (Google)",
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "glsl": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+        "antialiasGranted": false,
+        "samples": 0,
+        "maxSamples": 4,
+        "extColorBufferFloat": true,
+        "extFloatBlend": true,
+        "lineWidthRange": [
+          1,
+          1
+        ]
+      },
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.8103.78 Safari/537.36",
+      "drawMs": {
+        "median": 13.4,
+        "p95": 17.7,
+        "p99": 19.1,
+        "max": 19.5,
+        "mean": 13.6
+      },
+      "intervalMs": {
+        "median": 16.7,
+        "p95": 16.8,
+        "p99": 33.4,
+        "max": 116.7,
+        "mean": 17.8
+      },
+      "framesOver16_7": 22,
+      "droppedFrames": 9,
+      "frames": 200,
+      "drawCalls": 3,
+      "vertices": 55696,
+      "instances": 40,
+      "lines": 37,
+      "arrows": 3,
+      "faces": 0,
+      "compileMs": 10.3,
+      "programs": 3,
+      "featuresUsed": [
+        "GLSL ES 3.00",
+        "blending (src-alpha)",
+        "depth test (lines and translucent faces tested, not written)",
+        "drawArraysInstanced",
+        "drawElements (UNSIGNED_SHORT indices)",
+        "gl_VertexID",
+        "highp float (vertex and fragment)",
+        "standard derivatives (fwidth, dFdx)",
+        "triangle strips",
+        "vertex array objects",
+        "vertexAttribDivisor"
+      ],
+      "mapSource": null,
+      "screenshot": null
+    }
+  ]
+}
