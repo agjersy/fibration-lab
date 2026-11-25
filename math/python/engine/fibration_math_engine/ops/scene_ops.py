@@ -7,6 +7,7 @@ declared parameter, so nothing on the canvas depends on an unbound name.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import sympy as sp
@@ -141,7 +142,7 @@ def set_params(engine, values):
                 f"{name} = {value} is outside its range [{p.min}, {p.max}]",
                 hint="widen the range with param.declare",
             )
-        p.value = float(value)
+        engine.scene.params[name] = dataclasses.replace(p, value=float(value))
     return None
 
 

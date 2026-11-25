@@ -21,6 +21,8 @@
 "state.get":       {} -> SceneState
 "state.snapshot":  {} -> { revision, hash }
 "state.restore":   { revision: number } -> { revision, hash, diff }
+"state.graph":     {} -> { revision, objects: { [id]: { kind, origin, params: string[], objects: string[] } },
+                             params: { [name]: string[] } }        // each parameter's dependents, in scene order
 "reset":           {} -> { revision: 0, hash }        // empties the scene; handles and memo are kept
 "sample":          see section 6
 "export.render":   see section 7
@@ -82,9 +84,10 @@ interface SceneObject {
   id: string; kind: string; origin?: string;
   exprs: { [name]: HandleRef & { hash, latex, text } };
   spec: object; style: { color?, width?, dash?, alpha?, label?, fill? };
+  deps: { params: string[], objects: string[] };   // in state.get only; derived, not part of the hash
 }
 type Exact = { text: string, value: number | null }   // exact scalar and its float
-type StateDiff = { objects?: {added, updated, removed}, notes?: {...}, params?: {changed, removed}, view? }
+type StateDiff = { objects?: {added, updated, removed}, notes?: {...}, params?: {changed, removed, affected: string[]}, view? }
 ```
 
 - **Object kinds:**
@@ -100,6 +103,9 @@ type StateDiff = { objects?: {added, updated, removed}, notes?: {...}, params?: 
 - **Note kinds:** `label`, `latex`, `arrow`.
 - Every free symbol of a plotted object is a plot variable or a declared parameter, so the engine never shows an unbound name. A name is one or the other, never both.
 - Interval ends (domains, ranges, areas, the view) are real numbers with no symbols; domains may be infinite, the rest are finite. Point and vector coordinates are finite reals and may depend on parameters.
+- **The scene is a dependency graph.** An object depends on the declared parameters its expressions mention and on the objects its spec names (`of`, `target`, `tangent_of`, `at.object`). The edges are computed from content, never stored. `affected` in a parameter diff lists the objects and notes that depend on a changed parameter, directly or through another object: those are the only ones to redraw.
+- **Objects hold parameters as symbols, never as values.** Setting a parameter therefore changes no object. No operation reads a parameter's value except `sample`, `export.render` and `code.glsl`. A cell can learn a value only by reading the scene state; the core records whether any cell did (`ReplayResult.reads_state`), and when none did, it commits a parameter with one `param.set` on the live scene instead of a replay (`Applied.replayed` is false). The result is the scene, revision and hash a replay gives; `crates/core/tests/session.rs` checks that.
+- Objects and parameters are replaced, never changed in place, so a snapshot is a copy of three dictionaries and the cost of a call does not grow with the size of the scene.
 - Object ids match `^[A-Za-z][A-Za-z0-9_.-]*$`, at most 64 characters.
 
 ## 5. Operations
@@ -171,6 +177,7 @@ Generated from the registry (`describe_api` is authoritative; this table is rege
 
 `sample` returns drawable geometry for one object in a viewport: `{object, viewport, pixels?, params?}` returns `{status: "certified" | "sampled", reason?, segments, markers, ...}`. `params` overrides parameter values for this call only. The full contract and what "certified" guarantees per object kind are in the docstring of `fibration_math_engine/sample.py`. In short:
 
+- **Results are cached by what they depend on:** the content of the object and of the objects it refers to, the values of the parameters those mention, and the view. Moving a parameter an object does not depend on returns its cached geometry (`stats.cached`). A result cut short by the time limit is not cached.
 - **Explicit curves** are certified when every on-screen point of the true graph is within 0.5 px of the polyline, except within 0.5 px of a marked breakpoint (`asymptote`, `hole`, `jump_end`, `point`).
 - **Anything that cannot be established** is `sampled`, with the reason. That covers oscillation without a limit, functions interval arithmetic can't evaluate, breakpoints that can't be determined, and every implicit curve.
 

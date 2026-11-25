@@ -6,7 +6,7 @@ serves one request at a time on its main thread. Scene state allows one call seq
 time anyway, and the main thread is where call budgets can interrupt SymPy.
 
 Methods: ``engine.hello``, ``engine.shutdown``, ``call``, ``describe_api``, ``state.get``,
-``state.snapshot``, ``state.restore``, ``reset``, ``sample``, ``export.render``, and ``code.glsl``.
+``state.snapshot``, ``state.restore``, ``state.graph``, ``reset``, ``sample``, ``export.render``, and ``code.glsl``.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ class Methods:
             "state.get": lambda p: engine.state(),
             "state.snapshot": lambda p: {"revision": engine.scene.revision, "hash": engine.scene.hash()},
             "state.restore": self.restore,
+            "state.graph": lambda p: engine.scene.graph(),
             "reset": lambda p: engine.reset(),
         }
 

@@ -42,6 +42,8 @@ class Engine:
         self.memo = Memo(memo_dir)
         self.scene = SceneState()
         self.snapshots: OrderedDict[int, SceneState] = OrderedDict()
+        # Sampled geometry by what it depends on (see sample._cache_key).
+        self.samples: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._snapshot()
 
     # ---- argument helpers used by operations -------------------------------------

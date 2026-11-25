@@ -72,9 +72,11 @@ class HandleTable:
         self._next = 1
         self._limit = limit
 
-    def put(self, obj: Any) -> dict[str, Any]:
-        """Store an object (or reuse the handle of an equal one) and return its reference."""
-        h = content_hash(obj)
+    def put(self, obj: Any, known_hash: str | None = None) -> dict[str, Any]:
+        """Store an object (or reuse the handle of an equal one) and return its reference.
+
+        ``known_hash`` is the object's content hash when the caller already has it."""
+        h = known_hash or content_hash(obj)
         existing = self._by_hash.get(h)
         if existing is not None:
             return self.ref(existing)

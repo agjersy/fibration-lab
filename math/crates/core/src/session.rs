@@ -15,14 +15,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use math_protocol::{CellStatus, ReplayResult};
+use math_protocol::{CellResult, CellStatus, Origin, ReplayResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::chips::{self, Chip, ChipKind};
 use crate::engine::{EngineClient, EngineConfig};
 use crate::notebook::Notebook;
-use crate::replay::{replay, ReplayOptions};
+use crate::replay::{replay, ReplayOptions, PREAMBLE_ID};
 use crate::router::{Router, RouterHandle};
 
 /// Undo steps kept per session.
@@ -71,6 +71,9 @@ pub struct Applied {
     pub cell: Option<String>,
     /// The replay of the candidate notebook: the new scene when `ok`, else the failure.
     pub replay: ReplayResult,
+    /// Whether cells were run to get there. False when the change was applied to the live
+    /// scene because nothing else depended on it; `replay` is then what a replay would give.
+    pub replayed: bool,
 }
 
 impl Applied {
@@ -216,6 +219,7 @@ impl SceneSession {
                 ok: false,
                 cell,
                 replay: result,
+                replayed: true,
             });
         }
         let before = self.notebook.print();
@@ -227,6 +231,7 @@ impl SceneSession {
             ok: true,
             cell,
             replay: result,
+            replayed: true,
         })
     }
 
@@ -330,6 +335,12 @@ impl SceneSession {
             .last()
             .filter(|c| chips::is_param_commit(&c.code, name))
             .map(|c| c.id.clone());
+        if let Some(applied) = self
+            .commit_param_directly(name, value, &code, &caption, previous.as_deref())
+            .await?
+        {
+            return Ok(applied);
+        }
         let edit = match previous {
             Some(id) => CellEdit::Replace {
                 id,
@@ -339,6 +350,111 @@ impl SceneSession {
             None => CellEdit::Append { code, caption },
         };
         self.apply(edit).await
+    }
+
+    /// Commit a parameter without running any cell (ARCHITECTURE 5.6).
+    ///
+    /// Scene objects hold parameters as symbols, so a new value changes no object: the only
+    /// way a cell can depend on a value is by reading the scene state, and the last replay
+    /// recorded whether any did. When none did, the commit cell's whole effect is one
+    /// `param.set`, applied here to the live engine; the notebook gains the same cell a
+    /// replay would run. The result is the scene, revision and hash a replay from the top
+    /// gives. Returns `None` when the conditions do not hold and a replay is needed.
+    async fn commit_param_directly(
+        &mut self,
+        name: &str,
+        value: f64,
+        code: &str,
+        caption: &str,
+        previous: Option<&str>,
+    ) -> Result<Option<Applied>> {
+        if self.last.reads_state || !self.last.ok() {
+            return Ok(None);
+        }
+        // An out-of-range value is refused by the engine; let the replay path report it.
+        let param = &self.state()["params"][name];
+        let in_range = match (param["min"].as_f64(), param["max"].as_f64()) {
+            (Some(min), Some(max)) => (min..=max).contains(&value),
+            _ => false,
+        };
+        if !in_range {
+            return Ok(None);
+        }
+        // Replacing the previous commit means starting from the scene before it: the revision
+        // after the nearest earlier cell that made a call (a cell that made none changed nothing).
+        let base = match previous {
+            None => self.last.revision,
+            Some(id) => {
+                let router = self.router.router();
+                let earlier = self
+                    .notebook
+                    .cells
+                    .iter()
+                    .rev()
+                    .skip_while(|c| c.id != id)
+                    .skip(1);
+                earlier
+                    .map(|c| c.id.as_str())
+                    .chain(std::iter::once(PREAMBLE_ID))
+                    .find_map(|cell| router.revision_after(cell))
+                    .unwrap_or(0)
+            }
+        };
+        let mut candidate = self.notebook.clone();
+        let cell = match previous {
+            Some(id) => {
+                candidate.replace(id, code, Some(caption))?;
+                id.to_string()
+            }
+            None => candidate.append(code, caption)?,
+        };
+
+        if previous.is_some() && self.engine.restore(base).await.is_err() {
+            // The revision is no longer kept. Nothing has changed yet.
+            return Ok(None);
+        }
+        let call = json!({
+            "fn": "param.set",
+            "args": { "values": { name: value } },
+            "origin": Origin::cell(cell.clone()),
+        });
+        let outcome = self.router.router().handle("call", call).await;
+        let set = matches!(&outcome, Ok(v) if v["status"] == "ok");
+        if !set {
+            // Unexpected: put the engine back to the kept notebook and let the replay path
+            // produce the report.
+            self.last = replay(&self.router, &self.notebook, &self.opts).await?;
+            return Ok(None);
+        }
+        let state = self.engine.state_get().await?;
+        let mut results = self.last.results.clone();
+        if previous.is_some() {
+            results.retain(|r| r.id != cell);
+        }
+        results.push(CellResult {
+            id: cell.clone(),
+            status: CellStatus::Ok,
+            error: None,
+            stdout: String::new(),
+        });
+        let result = ReplayResult {
+            results,
+            revision: state["revision"].as_u64().unwrap_or(0),
+            hash: state["hash"].as_str().unwrap_or_default().to_string(),
+            state,
+            reads_state: false,
+        };
+        let before = self.notebook.print();
+        write_atomic(&self.path, &candidate.print())?;
+        self.push_undo(before);
+        self.notebook = candidate;
+        self.last = result.clone();
+        Ok(Some(Applied {
+            ok: true,
+            cell: Some(cell),
+            replay: result,
+            replayed: false,
+        }))
     }
 
     /// Stop the engine. The router stops when the session is dropped.

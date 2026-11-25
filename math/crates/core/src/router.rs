@@ -19,6 +19,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::engine::{EngineClient, EngineError};
 
 const PARSE_ERROR: i64 = -32700;
@@ -34,6 +37,10 @@ pub struct Router {
     engine: Arc<EngineClient>,
     log: Option<Mutex<std::fs::File>>,
     diffs: broadcast::Sender<StateDiff>,
+    /// How many times a client has read the scene state.
+    state_reads: AtomicU64,
+    /// The scene revision after the latest call of each cell, since the last `begin_replay`.
+    cell_revisions: Mutex<HashMap<String, u64>>,
 }
 
 impl Router {
@@ -50,11 +57,35 @@ impl Router {
             None => None,
         };
         let (diffs, _) = broadcast::channel(256);
-        Ok(Self { engine, log, diffs })
+        Ok(Self {
+            engine,
+            log,
+            diffs,
+            state_reads: AtomicU64::new(0),
+            cell_revisions: Mutex::new(HashMap::new()),
+        })
     }
 
     pub fn engine(&self) -> &Arc<EngineClient> {
         &self.engine
+    }
+
+    /// Forget the per-cell revisions: a replay is starting from an empty scene.
+    pub fn begin_replay(&self) {
+        if let Ok(mut map) = self.cell_revisions.lock() {
+            map.clear();
+        }
+    }
+
+    /// The scene revision after the latest call made by `cell`, if it made any.
+    pub fn revision_after(&self, cell: &str) -> Option<u64> {
+        self.cell_revisions.lock().ok()?.get(cell).copied()
+    }
+
+    /// How many times a client has read the scene state through this router. A replay
+    /// compares the count before and after to learn whether any cell looked at the state.
+    pub fn state_reads(&self) -> u64 {
+        self.state_reads.load(Ordering::Relaxed)
     }
 
     /// State diffs of every call that changed the scene, whoever made it.
@@ -66,7 +97,10 @@ impl Router {
     pub async fn handle(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         match method {
             "call" => self.call(params).await,
-            "state.get" => self.engine.state_get().await.map_err(rpc_error),
+            "state.get" => {
+                self.state_reads.fetch_add(1, Ordering::Relaxed);
+                self.engine.state_get().await.map_err(rpc_error)
+            }
             "describe_api" => {
                 let with_state = params
                     .get("state")
@@ -87,6 +121,14 @@ impl Router {
         let raw = self.engine.call_raw(params).await.map_err(rpc_error)?;
         let parsed: Option<CallResult> = serde_json::from_value(raw.clone()).ok();
         self.record(&req, parsed.as_ref());
+        if let (Some(cell), Some(res)) = (
+            req.origin.as_ref().and_then(|o| o.cell.as_ref()),
+            parsed.as_ref(),
+        ) {
+            if let Ok(mut map) = self.cell_revisions.lock() {
+                map.insert(cell.clone(), res.revision);
+            }
+        }
         if let Some(res) = parsed {
             if let Some(diff) = res
                 .diff

@@ -77,7 +77,9 @@ What ``certified`` means
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import math
 import time
 from collections.abc import Callable
@@ -1402,6 +1404,11 @@ def sample(
     if obj is None:
         raise CallError("bad_args", f"there is no object {object_id!r}")
     subs = _substitution(engine, params)
+    cache_key = _cache_key(engine, object_id, subs, (xlo, xhi, ylo, yhi, float(w), float(h)))
+    hit = engine.samples.get(cache_key)
+    if hit is not None:
+        engine.samples.move_to_end(cache_key)
+        return {**hit, "stats": {**hit["stats"], "ms": round((time.perf_counter() - started) * 1000, 1), "cached": True}}
     work = Work(deadline=started + WALL_CLOCK_S)
     try:
         out = _geometry(engine, obj, view, subs, work)
@@ -1419,7 +1426,26 @@ def sample(
         "points": work.points,
         "ms": round((time.perf_counter() - started) * 1000, 1),
     }
+    if work.exhausted is None:
+        # A result cut short by the clock could come out better next time; keep only complete ones.
+        engine.samples[cache_key] = result
+        while len(engine.samples) > SAMPLE_CACHE_LIMIT:
+            engine.samples.popitem(last=False)
     return result
+
+
+SAMPLE_CACHE_LIMIT = 512
+
+
+def _cache_key(engine, object_id: str, subs: dict, view: tuple) -> str:
+    """What a sample depends on, and nothing else: the object and the objects it refers to (by
+    content), the values of the parameters those mention, and the view. A parameter the object
+    does not depend on is not in the key, so moving it leaves the cached geometry valid."""
+    params, objects = engine.scene.closure(object_id)
+    values = {str(sym): str(value) for sym, value in subs.items()}
+    content = [engine.scene.find(o).canonical() for o in objects]
+    key = {"object": object_id, "content": content, "params": {p: values[p] for p in params}, "view": view}
+    return hashlib.sha256(json.dumps(key, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
 def _bound(engine, obj, subs: dict, names: tuple[str, ...]) -> list:

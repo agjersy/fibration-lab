@@ -187,3 +187,111 @@ async fn chips_sliders_and_external_edits() {
     assert!(log.contains("\"kind\":\"agent\"") && log.contains("\"cell\":\"c1\""));
     s.close().await.unwrap();
 }
+
+/// A second session on a copy of the scene file: what a replay from the top gives.
+async fn replayed_from_the_top(s: &SceneSession, dir: &Path) -> (u64, String, serde_json::Value) {
+    let copy = dir.join("check");
+    std::fs::create_dir_all(copy.join("scenes/demo")).unwrap();
+    std::fs::copy(s.path(), copy.join("scenes/demo/scene.py")).unwrap();
+    let fresh = open(&copy).await.unwrap();
+    let out = (
+        fresh.last().revision,
+        fresh.last().hash.clone(),
+        fresh.state().clone(),
+    );
+    fresh.close().await.unwrap();
+    out
+}
+
+#[tokio::test]
+async fn a_parameter_commit_runs_no_cell_and_matches_a_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut s) = open(dir.path()).await else {
+        return;
+    };
+    assert!(s
+        .apply(CellEdit::Append {
+            code: format!("{DEFINE}b = param.declare(b=(1.0, 0, 5))\nplot.explicit(\"b*x\", x=(-1, 1), id=\"line\")\n"),
+            caption: "Two curves".into(),
+        })
+        .await
+        .unwrap()
+        .ok);
+    assert!(!s.last().reads_state);
+
+    // First release: appended, with no cell run.
+    let first = s.commit_param("a", 2.5).await.unwrap();
+    assert!(first.ok && !first.replayed);
+    assert_eq!(first.cell.as_deref(), Some("c2"));
+    assert_eq!(s.state()["params"]["a"]["value"], 2.5);
+    // Second release of the same parameter: the same cell, replaced.
+    let second = s.commit_param("a", -1.25).await.unwrap();
+    assert!(second.ok && !second.replayed);
+    assert_eq!(s.notebook().cells.len(), 2);
+    // Another parameter: another cell.
+    let third = s.commit_param("b", 4.0).await.unwrap();
+    assert!(third.ok && !third.replayed);
+    assert_eq!(s.notebook().cells.len(), 3);
+    // Back to the first parameter: its cell is no longer the last, so a new one.
+    assert!(!s.commit_param("a", 0.5).await.unwrap().replayed);
+    assert_eq!(s.notebook().cells.len(), 4);
+    assert_eq!(
+        s.last()
+            .results
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+        ["c1", "c2", "c3", "c4"]
+    );
+
+    // The file holds the cells a slider release always wrote, and replaying it from the top
+    // gives the same scene, revision and hash.
+    let (revision, hash, state) = replayed_from_the_top(&s, dir.path()).await;
+    assert_eq!((s.last().revision, &s.last().hash), (revision, &hash));
+    assert_eq!(s.state()["params"], state["params"]);
+    assert_eq!(s.state()["objects"], state["objects"]);
+
+    // A value outside the range is still refused, with the scene unchanged.
+    let refused = s.commit_param("a", 99.0).await.unwrap();
+    assert!(!refused.ok && refused.failure().is_some());
+    assert_eq!(s.state()["params"]["a"]["value"], 0.5);
+    assert_eq!(s.last().hash, hash);
+
+    // Undo steps back one release at a time.
+    s.undo().await.unwrap().unwrap();
+    assert_eq!(s.notebook().cells.len(), 3);
+    assert_eq!(s.state()["params"]["a"]["value"], -1.25);
+    // After an undo (a replay) the next release of `b` still replaces its cell directly.
+    assert!(!s.commit_param("b", 3.0).await.unwrap().replayed);
+    assert!(!s.commit_param("b", 2.0).await.unwrap().replayed);
+    assert_eq!(s.notebook().cells.len(), 3);
+    let (revision, hash, _) = replayed_from_the_top(&s, dir.path()).await;
+    assert_eq!((s.last().revision, &s.last().hash), (revision, &hash));
+    s.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_scene_that_reads_its_state_is_replayed_on_every_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut s) = open(dir.path()).await else {
+        return;
+    };
+    // The second curve exists only while a > 0: the cell depends on the value of `a`.
+    let code = format!(
+        "{DEFINE}from fibration_math import scene\nif scene.state()[\"params\"][\"a\"][\"value\"] > 0:\n    plot.explicit(\"x\", x=(-1, 1), id=\"extra\")\n"
+    );
+    assert!(
+        s.apply(CellEdit::Append {
+            code,
+            caption: "Conditional".into()
+        })
+        .await
+        .unwrap()
+        .ok
+    );
+    assert!(s.last().reads_state);
+    assert_eq!(object_ids(&s), ["curve", "extra"]);
+    let applied = s.commit_param("a", 2.0).await.unwrap();
+    assert!(applied.ok && applied.replayed);
+    s.close().await.unwrap();
+}

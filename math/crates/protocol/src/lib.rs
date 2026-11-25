@@ -173,6 +173,11 @@ pub struct ReplayResult {
     pub state: Value,
     pub revision: u64,
     pub hash: String,
+    /// Whether any cell read the scene state (`scene.state()`), and so may have depended on
+    /// a parameter's value. When false, the scene is a function of the parameters' symbols
+    /// only, and a parameter can change without running any cell again.
+    #[serde(default)]
+    pub reads_state: bool,
 }
 
 impl ReplayResult {

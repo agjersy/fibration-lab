@@ -76,6 +76,8 @@ pub async fn replay(
 
     let engine = router.router().engine();
     engine.reset().await.context("resetting the engine")?;
+    router.router().begin_replay();
+    let reads_before = router.router().state_reads();
 
     let (mut cmd, isolation) = crate::sandbox::no_network_command_with_socket(
         opts.project_python.as_os_str(),
@@ -171,6 +173,7 @@ pub async fn replay(
         state,
         revision,
         hash,
+        reads_state: router.router().state_reads() != reads_before,
     })
 }
 
