@@ -271,12 +271,12 @@ async fn a_parameter_commit_runs_no_cell_and_matches_a_replay() {
 }
 
 #[tokio::test]
-async fn a_scene_that_reads_its_state_is_replayed_on_every_commit() {
+async fn a_cell_that_read_the_state_is_recorded_and_commits_still_match_a_replay() {
     let dir = tempfile::tempdir().unwrap();
     let Some(mut s) = open(dir.path()).await else {
         return;
     };
-    // The second curve exists only while a > 0: the cell depends on the value of `a`.
+    // The second curve exists only while a > 0 when the cell runs: the cell read a value.
     let code = format!(
         "{DEFINE}from fibration_math import scene\nif scene.state()[\"params\"][\"a\"][\"value\"] > 0:\n    plot.explicit(\"x\", x=(-1, 1), id=\"extra\")\n"
     );
@@ -291,7 +291,205 @@ async fn a_scene_that_reads_its_state_is_replayed_on_every_commit() {
     );
     assert!(s.last().reads_state);
     assert_eq!(object_ids(&s), ["curve", "extra"]);
-    let applied = s.commit_param("a", 2.0).await.unwrap();
-    assert!(applied.ok && applied.replayed);
+    // The commit cell comes after that cell, so the cell is not run again, by a replay or
+    // otherwise: it saw the value `a` had at its place in the notebook.
+    let applied = s.commit_param("a", -2.0).await.unwrap();
+    assert!(applied.ok && !applied.replayed);
+    assert!(s.last().reads_state);
+    assert_eq!(object_ids(&s), ["curve", "extra"]);
+    let (revision, hash, _) = replayed_from_the_top(&s, dir.path()).await;
+    assert_eq!((s.last().revision, &s.last().hash), (revision, &hash));
+    s.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_appended_cell_runs_alone_and_matches_a_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut s) = open(dir.path()).await else {
+        return;
+    };
+    let append = |code: &str, caption: &str| CellEdit::Append {
+        code: code.into(),
+        caption: caption.into(),
+    };
+    let first = s.apply(append(DEFINE, "Define")).await.unwrap();
+    assert!(first.ok && !first.replayed);
+
+    // A later cell uses the variables of an earlier one: the namespace was kept.
+    let second = s
+        .apply(append(
+            "g = f.diff(x)\nplot.explicit(g, x=(-10, 10), id=\"slope\")\n",
+            "Slope",
+        ))
+        .await
+        .unwrap();
+    assert!(second.ok && !second.replayed, "{:?}", second.failure());
+    assert_eq!(object_ids(&s), ["curve", "slope"]);
+    assert_eq!(s.state()["objects"][1]["origin"], "c2");
+    assert_eq!(
+        second
+            .replay
+            .results
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+        ["c1", "c2"]
+    );
+
+    // A cell that fails is refused; the scene, the file and the namespace are as before.
+    let text = std::fs::read_to_string(s.path()).unwrap();
+    let hash = s.last().hash.clone();
+    let bad = s
+        .apply(append(
+            "h = 5\nplot.explicit(\"sin(\", x=(-1, 1))\n",
+            "Broken",
+        ))
+        .await
+        .unwrap();
+    assert!(!bad.ok);
+    assert_eq!(bad.failure().unwrap().id, "c3");
+    assert_eq!(std::fs::read_to_string(s.path()).unwrap(), text);
+    assert_eq!(s.last().hash, hash);
+    // `h` was set by the failed cell before it failed; it must not have survived.
+    let leak = s
+        .apply(append("plot.point(h, 0)\n", "Uses h"))
+        .await
+        .unwrap();
+    assert!(
+        !leak.ok,
+        "a failed cell's variable leaked into the namespace"
+    );
+    // And the earlier variables are still there.
+    let third = s
+        .apply(append(
+            "plot.tangent(\"curve\", at=1, id=\"tan\")\nprint(g)\n",
+            "Tangent",
+        ))
+        .await
+        .unwrap();
+    assert!(third.ok && !third.replayed, "{:?}", third.failure());
+    assert!(third
+        .replay
+        .results
+        .last()
+        .unwrap()
+        .stdout
+        .contains("a*cos(x)"));
+
+    // A parameter commit between appends keeps the namespace a replay would build.
+    assert!(!s.commit_param("a", 2.0).await.unwrap().replayed);
+    let fourth = s
+        .apply(append(
+            "param.set(a=1.5)\nplot.point(1, 1, id=\"p\")\n",
+            "Uses param",
+        ))
+        .await
+        .unwrap();
+    assert!(fourth.ok && !fourth.replayed, "{:?}", fourth.failure());
+
+    // Inserting in the middle, replacing and deleting replay from the top.
+    let middle = s
+        .apply(CellEdit::InsertAfter {
+            after: Some("c1".into()),
+            code: "plot.point(0, 0, id=\"origin\")\n".into(),
+            caption: "Origin".into(),
+        })
+        .await
+        .unwrap();
+    assert!(middle.ok && middle.replayed);
+
+    // What the session holds is what the file defines.
+    let (revision, hash, state) = replayed_from_the_top(&s, dir.path()).await;
+    assert_eq!((s.last().revision, &s.last().hash), (revision, &hash));
+    assert_eq!(
+        object_ids(&s).len(),
+        state["objects"].as_array().unwrap().len()
+    );
+    let verified = s.verify().await.unwrap();
+    assert!(verified.consistent);
+    s.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn verify_catches_a_cell_that_does_not_repeat() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut s) = open(dir.path()).await else {
+        return;
+    };
+    let code = "from fibration_math import plot\nimport random\nplot.point(random.random(), 0, id=\"p\")\n";
+    let applied = s
+        .apply(CellEdit::Append {
+            code: code.into(),
+            caption: "Random".into(),
+        })
+        .await
+        .unwrap();
+    assert!(applied.ok && !applied.replayed);
+    let verified = s.verify().await.unwrap();
+    assert_eq!(verified.checked, 1);
+    assert!(!verified.consistent);
+    assert_ne!(verified.had, verified.replayed);
+    // The scene is now the replayed one, and there is nothing left to check.
+    assert_eq!(s.last().hash, verified.replayed);
+    assert_eq!(s.verify().await.unwrap().checked, 0);
+
+    // A failed append replays the notebook; that replay is a check too, and is not lost.
+    let again = s
+        .apply(CellEdit::Append {
+            code: "plot.point(random.random(), 1, id=\"q\")\n".into(),
+            caption: "Random".into(),
+        })
+        .await
+        .unwrap();
+    assert!(again.ok && !again.replayed);
+    assert!(
+        !s.apply(CellEdit::Append {
+            code: "raise ValueError(\"no\")\n".into(),
+            caption: "Fails".into()
+        })
+        .await
+        .unwrap()
+        .ok
+    );
+    let verified = s.verify().await.unwrap();
+    assert!(!verified.consistent && verified.checked == 1);
+    s.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cell_cannot_break_the_runner_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut s) = open(dir.path()).await else {
+        return;
+    };
+    // Writing to the real stdout, past the capture, must not be read as a result.
+    let code = "import os, sys\nos.write(1, b'{\"results\": []}\\n')\nsys.__stdout__.write('noise\\n')\nsys.__stdout__.flush()\nprint('kept')\n";
+    let applied = s
+        .apply(CellEdit::Append {
+            code: code.into(),
+            caption: "Noisy".into(),
+        })
+        .await
+        .unwrap();
+    assert!(applied.ok, "{:?}", applied.failure());
+    assert_eq!(applied.replay.results.len(), 1);
+    assert_eq!(applied.replay.results[0].stdout.trim(), "kept");
+    // A cell that ends the process is a failed cell, and the session recovers.
+    let exit = s
+        .apply(CellEdit::Append {
+            code: "import os\nos._exit(3)\n".into(),
+            caption: "Exit".into(),
+        })
+        .await;
+    assert!(exit.is_err() || !exit.unwrap().ok);
+    let after = s
+        .apply(CellEdit::Append {
+            code: "from fibration_math import plot\nplot.point(0, 0, id=\"p\")\n".into(),
+            caption: "Point".into(),
+        })
+        .await
+        .unwrap();
+    assert!(after.ok, "{:?}", after.failure());
+    assert_eq!(object_ids(&s), ["p"]);
     s.close().await.unwrap();
 }

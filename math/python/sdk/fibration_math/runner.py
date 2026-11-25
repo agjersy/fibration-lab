@@ -19,6 +19,8 @@ Cells run in order in one namespace, so later cells see earlier variables. Each 
 a cell makes carries the origin ``{"kind": "cell", "cell": <id>}``. The first failing cell
 stops the run; the cells after it are not reported. Anything a cell prints is captured per
 cell; the runner's own stdout carries only the result line.
+
+With ``--serve`` the runner stays alive and answers one request per line (see ``serve``).
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 import traceback
 from typing import Any
@@ -56,10 +59,15 @@ def _error(exc: BaseException, cell_id: str) -> dict[str, Any]:
     return out
 
 
-def run_cells(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def new_namespace() -> dict[str, Any]:
+    return {"__name__": "__fibration_math_scene__", "__builtins__": __builtins__}
+
+
+def run_cells(cells: list[dict[str, Any]], namespace: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     from . import _client
 
-    namespace: dict[str, Any] = {"__name__": "__fibration_math_scene__", "__builtins__": __builtins__}
+    if namespace is None:
+        namespace = new_namespace()
     results = []
     for cell in cells:
         cell_id = str(cell.get("id", "?"))
@@ -80,7 +88,39 @@ def run_cells(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
+def serve() -> int:
+    """Run requests until stdin closes, keeping one namespace.
+
+    Each request is one line, ``{"cells": [...]}``; each answer is one line, as in the one-shot
+    contract. The cells of a later request see the variables of the earlier ones, which is what
+    lets the core run only an appended cell. After a cell fails the namespace may hold part of
+    its effects, so the core discards this process and starts again from the top.
+
+    The answers go to a private copy of stdout, and descriptor 1 is pointed at stderr, so a
+    cell that writes to the real stdout cannot break the line protocol.
+    """
+    out = os.fdopen(os.dup(1), "w", encoding="utf-8")
+    os.dup2(2, 1)
+    namespace = new_namespace()
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            cells = json.loads(line)["cells"]
+            if not isinstance(cells, list):
+                raise ValueError("cells must be a list")
+        except (ValueError, KeyError, TypeError) as exc:
+            out.write(json.dumps({"error": f"bad runner input: {exc}"}) + "\n")
+            out.flush()
+            return 2
+        out.write(json.dumps({"results": run_cells(cells, namespace)}, default=str) + "\n")
+        out.flush()
+    return 0
+
+
 def main() -> int:
+    if "--serve" in sys.argv[1:]:
+        return serve()
     out = sys.stdout
     try:
         doc = json.loads(sys.stdin.read())

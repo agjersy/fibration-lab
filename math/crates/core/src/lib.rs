@@ -20,7 +20,7 @@ pub use engine::{EngineClient, EngineConfig, EngineError};
 pub use notebook::{Notebook, NotebookError};
 pub use replay::{replay, ReplayOptions};
 pub use router::{Router, RouterHandle};
-pub use session::{Applied, CellEdit, SceneSession, SessionConfig};
+pub use session::{Applied, CellEdit, SceneSession, SessionConfig, Verified};
 
 use std::path::PathBuf;
 

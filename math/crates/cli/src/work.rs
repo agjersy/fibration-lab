@@ -195,6 +195,13 @@ fn print_turn(report: &TurnReport) {
         TurnEnd::StepLimit => println!("(stopped at the step limit)"),
         TurnEnd::ModelError(m) => println!("(model error: {m})"),
     }
+    if let Some(v) = report.verified.as_ref().filter(|v| !v.consistent) {
+        println!(
+            "warning: replaying the notebook from the top gave a different scene ({} cell(s) checked): \
+             a cell does not do the same thing each time it runs. The scene shown is the replayed one.",
+            v.checked
+        );
+    }
 }
 
 pub struct ChatArgs {

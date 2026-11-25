@@ -145,6 +145,11 @@ pub enum AgentEvent {
         ok: bool,
         error: Option<String>,
     },
+    /// The cells run alone in this turn were checked by a replay from the top.
+    Verified {
+        checked: usize,
+        consistent: bool,
+    },
     Stop {
         reason: String,
     },
@@ -175,6 +180,10 @@ pub struct TurnReport {
     pub events: Vec<AgentEvent>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// The check of the cells run alone in this turn against a replay from the top. `None`
+    /// when no cell was run alone. When it is not consistent, some cell does not do the same
+    /// thing each time it runs, and the scene is now the replayed one.
+    pub verified: Option<crate::Verified>,
 }
 
 pub struct Agent {
@@ -486,6 +495,7 @@ impl Agent {
             events: Vec::new(),
             input_tokens: 0,
             output_tokens: 0,
+            verified: None,
         };
         let mut failures_in_a_row = 0usize;
 
@@ -578,6 +588,17 @@ impl Agent {
                 role: Role::User,
                 content: results,
             });
+        }
+
+        // Cells appended in this turn ran alone; the notebook replayed from the top is the
+        // definition, so check them against it before the turn is reported.
+        let verified = session.verify().await?;
+        if verified.checked > 0 {
+            events.push(AgentEvent::Verified {
+                checked: verified.checked,
+                consistent: verified.consistent,
+            });
+            report.verified = Some(verified);
         }
 
         events.push(AgentEvent::Stop {

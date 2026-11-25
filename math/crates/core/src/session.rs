@@ -15,14 +15,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use math_protocol::{CellResult, CellStatus, Origin, ReplayResult};
+use math_protocol::{CellResult, CellStatus, ReplayResult, RunnerCell};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::chips::{self, Chip, ChipKind};
 use crate::engine::{EngineClient, EngineConfig};
 use crate::notebook::Notebook;
-use crate::replay::{replay, ReplayOptions, PREAMBLE_ID};
+use crate::replay::{finish, replay_keeping, KeptRunner, ReplayOptions, PREAMBLE_ID};
 use crate::router::{Router, RouterHandle};
 
 /// Undo steps kept per session.
@@ -96,6 +96,25 @@ pub struct SceneSession {
     last: ReplayResult,
     /// Operation name to purity, from the engine's manifest.
     pure_ops: HashMap<String, bool>,
+    /// The runner that holds the namespace of the kept notebook's cells, when every cell ran.
+    runner: Option<KeptRunner>,
+    /// Cells run alone since the last replay from the top (see `verify`).
+    unverified: usize,
+    /// A replay of the unchanged notebook that did not give the scene the session had,
+    /// waiting to be reported by `verify`.
+    mismatch: Option<Verified>,
+}
+
+/// The outcome of `verify`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Verified {
+    /// How many cells had been run alone since the last replay from the top.
+    pub checked: usize,
+    /// Whether the replay from the top gave the scene the session had.
+    pub consistent: bool,
+    /// The hash the session had, and the hash the replay gave.
+    pub had: String,
+    pub replayed: String,
 }
 
 impl SceneSession {
@@ -131,7 +150,7 @@ impl SceneSession {
         if opts.cwd.is_none() {
             opts.cwd = path.parent().map(Path::to_path_buf);
         }
-        let last = replay(&handle, &notebook, &opts).await?;
+        let (last, runner) = replay_keeping(&handle, &notebook, &opts).await?;
         Ok(Self {
             path: path.to_path_buf(),
             notebook,
@@ -141,6 +160,9 @@ impl SceneSession {
             undo: Vec::new(),
             last,
             pure_ops,
+            runner,
+            unverified: 0,
+            mismatch: None,
         })
     }
 
@@ -187,7 +209,7 @@ impl SceneSession {
             .with_context(|| format!("{} was changed and no longer parses", self.path.display()))?;
         self.push_undo(self.notebook.print());
         self.notebook = notebook;
-        self.last = replay(&self.router, &self.notebook, &self.opts).await?;
+        self.replay_kept().await?;
         Ok(true)
     }
 
@@ -211,10 +233,18 @@ impl SceneSession {
                 None
             }
         };
-        let result = replay(&self.router, &candidate, &self.opts).await?;
+        let appended = matches!(&cell, Some(id) if candidate.cells.last().map(|c| &c.id) == Some(id))
+            && candidate.cells.len() == self.notebook.cells.len() + 1;
+        if appended {
+            if let Some(applied) = self.append_directly(&candidate).await? {
+                return Ok(applied);
+            }
+        }
+        let (result, runner) = replay_keeping(&self.router, &candidate, &self.opts).await?;
+        self.unverified = 0;
         if !result.ok() {
             // Put the engine's scene back to the kept notebook's.
-            self.last = replay(&self.router, &self.notebook, &self.opts).await?;
+            self.replay_kept().await?;
             return Ok(Applied {
                 ok: false,
                 cell,
@@ -227,11 +257,147 @@ impl SceneSession {
         self.push_undo(before);
         self.notebook = candidate;
         self.last = result.clone();
+        self.runner = runner;
         Ok(Applied {
             ok: true,
             cell,
             replay: result,
             replayed: true,
+        })
+    }
+
+    /// Replay the kept notebook from the top: the scene, the runner and `last` are what the
+    /// file on disk defines.
+    async fn replay_kept(&mut self) -> Result<()> {
+        self.runner = None;
+        let (last, runner) = replay_keeping(&self.router, &self.notebook, &self.opts).await?;
+        self.last = last;
+        self.runner = runner;
+        self.unverified = 0;
+        Ok(())
+    }
+
+    /// Replay the kept notebook after a cell that was tried alone did not work out. The
+    /// notebook is the one the session's scene came from, so this replay is also the check
+    /// of the cells run alone before: a different scene is kept for `verify` to report.
+    async fn replay_kept_checked(&mut self) -> Result<()> {
+        let checked = self.unverified;
+        let had = self.last.hash.clone();
+        self.replay_kept().await?;
+        if checked > 0 && (self.last.hash != had || !self.last.ok()) {
+            self.mismatch = Some(Verified {
+                checked,
+                consistent: false,
+                had,
+                replayed: self.last.hash.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Run the cells of `candidate` that the kept notebook does not have, alone, in the kept
+    /// runner (ARCHITECTURE 5.6). `candidate` is the kept notebook with one cell added at
+    /// the end, or with its last cell replaced after the scene was put back to before it.
+    ///
+    /// Returns the result with the earlier cells' results in front, as a replay reports
+    /// them, or `None` when there is no usable runner. After a failed cell, or when the
+    /// runner breaks, the runner is gone: the caller must replay from the top.
+    async fn run_last_cell(&mut self, candidate: &Notebook) -> Result<Option<ReplayResult>> {
+        if !self.last.ok() {
+            return Ok(None);
+        }
+        let Some(mut runner) = self.runner.take() else {
+            return Ok(None);
+        };
+        let Some(cell) = candidate.cells.last() else {
+            return Ok(None);
+        };
+        let reads_before = self.router.router().state_reads();
+        let request = vec![RunnerCell {
+            id: cell.id.clone(),
+            code: cell.code.clone(),
+        }];
+        let output = match runner.run(request, self.opts.timeout).await {
+            Ok(output) => output,
+            Err(e) => {
+                tracing::warn!("the kept runner failed; replaying from the top: {e:#}");
+                return Ok(None);
+            }
+        };
+        let mut results: Vec<CellResult> = self
+            .last
+            .results
+            .iter()
+            .filter(|r| r.id != cell.id)
+            .cloned()
+            .collect();
+        results.extend(output.results);
+        let mut result = finish(&self.router, results, reads_before).await?;
+        result.reads_state |= self.last.reads_state;
+        if result.ok() {
+            self.runner = Some(runner);
+        }
+        Ok(Some(result))
+    }
+
+    /// Append a cell by running only that cell. `None` means it could not be tried and
+    /// nothing changed.
+    async fn append_directly(&mut self, candidate: &Notebook) -> Result<Option<Applied>> {
+        if self.runner.is_none() {
+            return Ok(None);
+        }
+        let cell = candidate.cells.last().map(|c| c.id.clone());
+        let Some(result) = self.run_last_cell(candidate).await? else {
+            // The runner broke part-way: the scene may hold part of the cell.
+            self.replay_kept_checked().await?;
+            return Ok(None);
+        };
+        if !result.ok() {
+            self.replay_kept_checked().await?;
+            return Ok(Some(Applied {
+                ok: false,
+                cell,
+                replay: result,
+                replayed: false,
+            }));
+        }
+        let before = self.notebook.print();
+        write_atomic(&self.path, &candidate.print())?;
+        self.push_undo(before);
+        self.notebook = candidate.clone();
+        self.last = result.clone();
+        self.unverified += 1;
+        Ok(Some(Applied {
+            ok: true,
+            cell,
+            replay: result,
+            replayed: false,
+        }))
+    }
+
+    /// Check the cells that were run alone against the definition: replay the notebook from
+    /// the top and compare. Afterwards the scene is the replayed one either way. A mismatch
+    /// means some cell does not do the same thing every time it runs.
+    pub async fn verify(&mut self) -> Result<Verified> {
+        if let Some(mismatch) = self.mismatch.take() {
+            return Ok(mismatch);
+        }
+        let checked = self.unverified;
+        let had = self.last.hash.clone();
+        if checked == 0 {
+            return Ok(Verified {
+                checked,
+                consistent: true,
+                replayed: had.clone(),
+                had,
+            });
+        }
+        self.replay_kept().await?;
+        Ok(Verified {
+            checked,
+            consistent: self.last.ok() && self.last.hash == had,
+            had,
+            replayed: self.last.hash.clone(),
         })
     }
 
@@ -244,7 +410,7 @@ impl SceneSession {
         let notebook = Notebook::parse(&text).context("the undo entry no longer parses")?;
         write_atomic(&self.path, &text)?;
         self.notebook = notebook;
-        self.last = replay(&self.router, &self.notebook, &self.opts).await?;
+        self.replay_kept().await?;
         Ok(Some(&self.last))
     }
 
@@ -352,14 +518,15 @@ impl SceneSession {
         self.apply(edit).await
     }
 
-    /// Commit a parameter without running any cell (ARCHITECTURE 5.6).
+    /// Commit a parameter by running only the commit cell (ARCHITECTURE 5.6).
     ///
-    /// Scene objects hold parameters as symbols, so a new value changes no object: the only
-    /// way a cell can depend on a value is by reading the scene state, and the last replay
-    /// recorded whether any did. When none did, the commit cell's whole effect is one
-    /// `param.set`, applied here to the live engine; the notebook gains the same cell a
-    /// replay would run. The result is the scene, revision and hash a replay from the top
-    /// gives. Returns `None` when the conditions do not hold and a replay is needed.
+    /// The commit cell is the last cell of the notebook, so no other cell can depend on it:
+    /// running it alone in the kept runner gives the scene, revision and hash a replay from
+    /// the top gives. Replacing the previous commit of the same parameter first puts the
+    /// scene back to the revision before that cell. Scene objects hold parameters as
+    /// symbols, so the new value changes no object; only the objects that depend on the
+    /// parameter are sampled again. Returns `None` when this cannot be done and a replay is
+    /// needed.
     async fn commit_param_directly(
         &mut self,
         name: &str,
@@ -368,7 +535,7 @@ impl SceneSession {
         caption: &str,
         previous: Option<&str>,
     ) -> Result<Option<Applied>> {
-        if self.last.reads_state || !self.last.ok() {
+        if !self.last.ok() {
             return Ok(None);
         }
         // An out-of-range value is refused by the engine; let the replay path report it.
@@ -408,41 +575,22 @@ impl SceneSession {
             }
             None => candidate.append(code, caption)?,
         };
-
+        if self.runner.is_none() {
+            return Ok(None);
+        }
         if previous.is_some() && self.engine.restore(base).await.is_err() {
             // The revision is no longer kept. Nothing has changed yet.
             return Ok(None);
         }
-        let call = json!({
-            "fn": "param.set",
-            "args": { "values": { name: value } },
-            "origin": Origin::cell(cell.clone()),
-        });
-        let outcome = self.router.router().handle("call", call).await;
-        let set = matches!(&outcome, Ok(v) if v["status"] == "ok");
-        if !set {
-            // Unexpected: put the engine back to the kept notebook and let the replay path
-            // produce the report.
-            self.last = replay(&self.router, &self.notebook, &self.opts).await?;
-            return Ok(None);
-        }
-        let state = self.engine.state_get().await?;
-        let mut results = self.last.results.clone();
-        if previous.is_some() {
-            results.retain(|r| r.id != cell);
-        }
-        results.push(CellResult {
-            id: cell.clone(),
-            status: CellStatus::Ok,
-            error: None,
-            stdout: String::new(),
-        });
-        let result = ReplayResult {
-            results,
-            revision: state["revision"].as_u64().unwrap_or(0),
-            hash: state["hash"].as_str().unwrap_or_default().to_string(),
-            state,
-            reads_state: false,
+        // The commit cell runs in the kept runner like any appended cell, so the namespace
+        // stays what a replay builds (the cell imports `param`).
+        let result = match self.run_last_cell(&candidate).await? {
+            Some(result) if result.ok() => result,
+            _ => {
+                // Unexpected: put everything back and let the replay path report it.
+                self.replay_kept().await?;
+                return Ok(None);
+            }
         };
         let before = self.notebook.print();
         write_atomic(&self.path, &candidate.print())?;

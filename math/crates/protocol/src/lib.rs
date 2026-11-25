@@ -173,9 +173,8 @@ pub struct ReplayResult {
     pub state: Value,
     pub revision: u64,
     pub hash: String,
-    /// Whether any cell read the scene state (`scene.state()`), and so may have depended on
-    /// a parameter's value. When false, the scene is a function of the parameters' symbols
-    /// only, and a parameter can change without running any cell again.
+    /// Whether any cell read the scene state (`scene.state()`), the only way cell code can
+    /// learn a parameter's value. Such a cell saw the values of its place in the notebook.
     #[serde(default)]
     pub reads_state: bool,
 }
