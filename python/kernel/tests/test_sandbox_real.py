@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 from conftest import Notes, wait_until
 
-from analyst_kernel import sandbox
-from analyst_kernel.kernel import Kernel
-from analyst_kernel.sandbox import SandboxSpec, interpreter_dirs, wrap
+from fibration_kernel import sandbox
+from fibration_kernel.kernel import Kernel
+from fibration_kernel.sandbox import SandboxSpec, interpreter_dirs, wrap
 
 
 def real_kind() -> str | None:
@@ -93,7 +93,7 @@ def test_trivial_command_runs_under_the_real_wrapper(tmp_path: Path):
     out_dir = root / "out" / "tool" / "r1"
     out_dir.mkdir(parents=True)
     home = sandbox._home()
-    secret = home / f".analyst-sandbox-test-{os.getpid()}"
+    secret = home / f".fibration-sandbox-test-{os.getpid()}"
     try:
         secret.write_text("secret in the home directory\n")
         have_secret = True
@@ -245,14 +245,14 @@ def test_bwrap_run_cannot_write_the_source_tree_or_reach_the_network(bwrap_kerne
     script = write_script(
         repo, "escape.py",
         "import os, socket, tempfile\n"
-        "root = os.environ['ANALYST_ROOT']\n"
+        "root = os.environ['FIBRATION_ROOT']\n"
         "for target in (os.path.join(root, 'analysis', 'models.py'), os.path.join(root, 'new.py')):\n"
         "    try:\n        open(target, 'a').close(); print('WROTE', target)\n"
         "    except OSError as exc:\n        print('denied', os.path.basename(target), exc.errno)\n"
-        "open(os.path.expanduser('~/analyst-bwrap-test-marker'), 'w').close()\n"  # lands in the throwaway tmpfs
+        "open(os.path.expanduser('~/fibration-bwrap-test-marker'), 'w').close()\n"  # lands in the throwaway tmpfs
         "print('home', sorted(os.listdir(os.path.expanduser('~'))))\n"
         "fd, p = tempfile.mkstemp(); os.close(fd); print('tmp', os.path.dirname(p) == os.environ['TMPDIR'])\n"
-        "open(os.path.join(os.environ['ANALYST_OUT_DIR'], 'fine.txt'), 'w').write('ok')\n"
+        "open(os.path.join(os.environ['FIBRATION_OUT_DIR'], 'fine.txt'), 'w').write('ok')\n"
         "try:\n    socket.create_connection(('1.1.1.1', 53), timeout=3); print('NET open')\n"
         "except OSError:\n    print('NET denied')\n",
     )
@@ -261,7 +261,7 @@ def test_bwrap_run_cannot_write_the_source_tree_or_reach_the_network(bwrap_kerne
     notes.wait_for("run.done", res["run_id"])
     out = "".join(p["chunk"] for p in notes.of("run.stdout", res["run_id"]))
     err = (tmp_path / "runs" / res["run_id"] / "stderr.log").read_text()
-    assert not (sandbox._home() / "analyst-bwrap-test-marker").exists(), "the real home directory was written"
+    assert not (sandbox._home() / "fibration-bwrap-test-marker").exists(), "the real home directory was written"
     # The home directory is a throwaway tmpfs holding the marker and, when a granted directory
     # lies under the real home (a CI checkout, the kernel's own venv), the first path component
     # leading to it. Nothing else of the real home may be visible.
@@ -271,8 +271,8 @@ def test_bwrap_run_cannot_write_the_source_tree_or_reach_the_network(bwrap_kerne
     listing = set(ast.literal_eval(next(line for line in out.splitlines() if line.startswith("home "))[5:]))
     granted = [Path(os.path.realpath(p)) for p in (sys.prefix, sandbox.__file__, repo, tmp_path)]
     leading = {p.relative_to(home).parts[0] for p in granted if home in p.parents}
-    assert "analyst-bwrap-test-marker" in listing, "the home directory is not hidden: " + out
-    assert listing - {"analyst-bwrap-test-marker"} <= leading, "the home directory is not hidden: " + out
+    assert "fibration-bwrap-test-marker" in listing, "the home directory is not hidden: " + out
+    assert listing - {"fibration-bwrap-test-marker"} <= leading, "the home directory is not hidden: " + out
     assert "WROTE" not in out and out.count("denied") == 3 and "NET denied" in out and "tmp True" in out, out + err
     assert (repo / "analysis" / "models.py").read_bytes() == before and not (repo / "new.py").exists()
     assert (repo / res["out_dir"] / "fine.txt").read_text() == "ok"
@@ -324,7 +324,7 @@ def test_bwrap_snippet_and_eq_check(bwrap_kernel: Kernel, repo: Path):
     assert r == {"ok": True, "stdout": "hi\nraw\n", "stderr": "", "value_repr": "42"}
     r = bwrap_kernel.call("exec.snippet", {"code": (
         "import os\n"
-        "try:\n    open(os.path.join(os.environ['ANALYST_ROOT'], 'analysis', 'models.py'), 'a').close(); res = 'WROTE'\n"
+        "try:\n    open(os.path.join(os.environ['FIBRATION_ROOT'], 'analysis', 'models.py'), 'a').close(); res = 'WROTE'\n"
         "except OSError:\n    res = 'denied'\n"
         "res"
     )})

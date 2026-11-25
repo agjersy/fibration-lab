@@ -4,7 +4,7 @@ import type { VerifyItem } from "./VerifyItem";
 import type { VerifyState } from "./VerifyState";
 
 /**
- * One line of `.analyst/verification.jsonl` (append-only).
+ * One line of `.fibration/verification.jsonl` (append-only).
  */
 export type LedgerEntry = { item: VerifyItem, 
 /**

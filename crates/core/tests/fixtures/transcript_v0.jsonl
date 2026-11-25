@@ -1,5 +1,5 @@
 {"ts": "2026-11-10T09:00:00Z", "type": "user", "text": "fit the decay data", "attachments": ["data/decay.csv"]}
-{"ts": "2026-11-10T09:00:01Z", "type": "checkpoint", "ref": "refs/analyst/checkpoints/s1-1"}
+{"ts": "2026-11-10T09:00:01Z", "type": "checkpoint", "ref": "refs/fibration/checkpoints/s1-1"}
 {"ts": "2026-11-10T09:00:02Z", "type": "assistant", "text": "Planning the fit."}
 {"ts": "2026-11-10T09:00:02Z", "type": "tool_call", "id": "c1", "name": "declare_scope", "arguments": {"files": ["scripts/fit.py"], "plan": "add a fit script"}}
 {"ts": "2026-11-10T09:00:02Z", "type": "tool_result", "id": "c1", "ok": true, "result": {"scope": ["scripts/fit.py"]}}

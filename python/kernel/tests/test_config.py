@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from analyst_kernel.config import ProjectConfig, config_from_dict, load_config
+from fibration_kernel.config import ProjectConfig, config_from_dict, load_config
 
 
 def test_defaults_when_missing(tmp_path: Path):
@@ -29,7 +29,7 @@ def test_fixture_config(repo: Path):
 
 
 def test_partial_and_invalid_values(tmp_path: Path):
-    d = tmp_path / ".analyst"
+    d = tmp_path / ".fibration"
     d.mkdir()
     (d / "project.toml").write_text(
         '[project]\nout_dir = "results/"\ntimeout_s = "soon"\n[contract]\nmax_helper_lines = 3\n'
@@ -44,7 +44,7 @@ def test_partial_and_invalid_values(tmp_path: Path):
 
 
 def test_broken_toml_means_defaults(tmp_path: Path):
-    d = tmp_path / ".analyst"
+    d = tmp_path / ".fibration"
     d.mkdir()
     (d / "project.toml").write_text("[project\n")
     assert load_config(tmp_path) == ProjectConfig()

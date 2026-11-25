@@ -1,6 +1,6 @@
 //! Deck files (PROTOCOL 4): the deck config `<deck>/.present/project.toml` (4.2) and
 //! `references/manifest.toml` (4.3). Providers, models, and policy presets are in the one
-//! app config (`~/.analyst/config.toml`), not here; undo is the repository's git checkpoints.
+//! app config (`~/.fibration/config.toml`), not here; undo is the repository's git checkpoints.
 //!
 //! Times are RFC 3339 UTC strings, kept as written.
 
@@ -279,7 +279,7 @@ pub enum RefSource {
     Analyst,
 }
 
-/// Provenance of a reference imported from Personal Analyst; all empty for `source = "file"`.
+/// Provenance of a reference imported from Fibration Lab; all empty for `source = "file"`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct AnalystOrigin {

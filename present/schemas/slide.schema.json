@@ -1174,7 +1174,7 @@
     },
     "ResultCite": {
       "additionalProperties": false,
-      "description": "A citation of a named result of an analysis run (`analyst_results.record`): the run, the result's name, and what produced it. When `tree_hash` no longer matches the project's working tree, the checker reports the text as stale.",
+      "description": "A citation of a named result of an analysis run (`fibration_results.record`): the run, the result's name, and what produced it. When `tree_hash` no longer matches the project's working tree, the checker reports the text as stale.",
       "properties": {
         "args": {
           "default": [],

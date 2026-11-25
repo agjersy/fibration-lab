@@ -1,5 +1,5 @@
 // End-to-end coverage for the defects of docs/REVIEW.md that only show in the
-// assembled app, against the real core through analyst-serve.
+// assembled app, against the real core through fibration-serve.
 import type { Page } from "@playwright/test";
 import { createSession, expect, expectNoErrors, gotoApp, test, trackErrors } from "./harness";
 import type { Bridge } from "./harness";

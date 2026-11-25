@@ -1,4 +1,4 @@
-//! analyst-protocol: serde types for every boundary fixed in docs/PROTOCOL.md.
+//! fibration-protocol: serde types for every boundary fixed in docs/PROTOCOL.md.
 //!
 //! - [`rpc`]: JSON-RPC 2.0 framing used between the core and the kernel (PROTOCOL 1.1, 1.2).
 //! - [`kernel`]: kernel request parameters, results, and notifications (PROTOCOL 1.3, 1.6).

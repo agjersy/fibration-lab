@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/tools/proposals.rs` (the `base_hash`
+// Ported from Fibration Lab `crates/core/src/tools/proposals.rs` (the `base_hash`
 // conflict check) and `crates/core/src/util.rs` (`sha256_hex`) at commit f229e4d.
 // Adapted: works on bytes the app supplies instead of reading files.
 //! Conflict detection by content hash: a proposal carries the hash of the content it was

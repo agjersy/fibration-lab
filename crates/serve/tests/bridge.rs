@@ -1,8 +1,8 @@
 //! The bridge end to end over a real socket: token required, loopback only, a command round
 //! trip through the one command table, and a session event delivered on the client's channel.
 
-use analyst_core::service::{Workbench, WorkbenchOptions};
-use analyst_serve::{Bridge, Dialogs};
+use fibration_core::service::{Workbench, WorkbenchOptions};
+use fibration_serve::{Bridge, Dialogs};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -23,18 +23,18 @@ async fn start() -> Served {
     let home = tempfile::tempdir().unwrap();
     let mut opts = WorkbenchOptions::new(home.path().to_path_buf());
     opts.autostart_kernel = false;
-    opts.init = analyst_core::init::InitOptions {
+    opts.init = fibration_core::init::InitOptions {
         run_uv: false,
         git: true,
     };
     let wb = Arc::new(Workbench::new(opts).unwrap());
-    let token = analyst_serve::random_token();
-    let listener = analyst_serve::bind("127.0.0.1:0".parse().unwrap())
+    let token = fibration_serve::random_token();
+    let listener = fibration_serve::bind("127.0.0.1:0".parse().unwrap())
         .await
         .unwrap();
     let url = format!("ws://{}/", listener.local_addr().unwrap());
     let bridge = Bridge::new(wb, token.clone(), Dialogs::default());
-    tokio::spawn(analyst_serve::serve(listener, bridge));
+    tokio::spawn(fibration_serve::serve(listener, bridge));
     Served {
         _home: home,
         url,
@@ -116,12 +116,12 @@ async fn a_foreign_browser_origin_is_refused_even_with_the_token() {
 #[tokio::test]
 async fn only_loopback_addresses_can_be_bound() {
     for addr in ["0.0.0.0:0", "[::]:0", "10.0.0.1:0"] {
-        let err = analyst_serve::bind(addr.parse().unwrap())
+        let err = fibration_serve::bind(addr.parse().unwrap())
             .await
             .unwrap_err();
         assert!(err.to_string().contains("loopback"), "{addr}: {err}");
     }
-    analyst_serve::bind("127.0.0.1:0".parse().unwrap())
+    fibration_serve::bind("127.0.0.1:0".parse().unwrap())
         .await
         .unwrap();
 }

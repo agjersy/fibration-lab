@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/protocol/src/model.rs` at commit f229e4d.
+// Ported from Fibration Lab `crates/protocol/src/model.rs` at commit f229e4d.
 // Adapted: owned by this crate (no protocol crate dependency); adds document parts, the
 // `Citation` event, an audit correlation tag, and the extended capability record
 // (Present PROTOCOL 6.1).

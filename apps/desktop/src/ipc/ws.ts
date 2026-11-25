@@ -6,7 +6,7 @@ type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 
 /**
  * The renderer in a plain browser, talking to the real core through the development bridge
- * (`analyst-serve`, docs/IPC.md section 11) over one WebSocket. The URL carries the bridge's
+ * (`fibration-serve`, docs/IPC.md section 11) over one WebSocket. The URL carries the bridge's
  * token: `ws://127.0.0.1:<port>/?token=<token>`. Requests are `{id, cmd, args}`; replies are
  * `{id, ok}` or `{id, error}`; events arrive as `{channel, event}` for the channel number this
  * side passed to `session_subscribe`, the stand-in for a Tauri channel.
@@ -92,11 +92,11 @@ function redact(url: string): string {
 
 /**
  * The bridge URL for browser mode: the `serve` query parameter of the page
- * (`?serve=ws%3A%2F%2F127.0.0.1%3A<port>%2F%3Ftoken%3D<token>`), else `VITE_ANALYST_SERVE`.
+ * (`?serve=ws%3A%2F%2F127.0.0.1%3A<port>%2F%3Ftoken%3D<token>`), else `VITE_FIBRATION_SERVE`.
  */
 export function serveUrl(): string | null {
   const fromPage = typeof location !== "undefined" ? new URLSearchParams(location.search).get("serve") : null;
-  const fromEnv = (import.meta.env.VITE_ANALYST_SERVE as string | undefined) ?? null;
+  const fromEnv = (import.meta.env.VITE_FIBRATION_SERVE as string | undefined) ?? null;
   const url = fromPage || fromEnv;
   return url && /^ws:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|\?|$)/.test(url) ? url : null;
 }

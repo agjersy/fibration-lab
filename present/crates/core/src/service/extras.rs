@@ -2,9 +2,9 @@
 //! and replacement, preview images from the renderer, chart data, and assets.
 
 use super::*;
-use analyst_deck_protocol::kernel::LayoutThumbnail;
-use analyst_deck_protocol::ui::AssetView;
 use base64::Engine;
+use fibration_deck_protocol::kernel::LayoutThumbnail;
+use fibration_deck_protocol::ui::AssetView;
 
 const ASSET_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "svg", "emf", "wmf"];
 

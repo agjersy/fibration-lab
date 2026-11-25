@@ -23,7 +23,7 @@ pub struct ApprovalRequest {
 pub struct DeckProposal {
     /// The deck's slug.
     pub deck: String,
-    pub kind: analyst_protocol::transcript::ProposalKind,
+    pub kind: fibration_protocol::transcript::ProposalKind,
     pub summary: String,
     /// A textual before/after.
     pub diff: String,

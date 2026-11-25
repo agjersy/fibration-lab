@@ -1,4 +1,4 @@
-//! `analyst-desktop`: the Personal Analyst workbench.
+//! `fibration-desktop`: the Fibration Lab workbench.
 
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -15,7 +15,7 @@ fn main() {
     // commands, so `tokio::spawn` works everywhere in the service layer.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_name("analyst")
+        .thread_name("fibration")
         .build()
     {
         Ok(r) => r,
@@ -27,15 +27,15 @@ fn main() {
     tauri::async_runtime::set(runtime.handle().clone());
     let _guard = runtime.enter();
 
-    let workbench = match analyst_desktop::workbench_from_env() {
+    let workbench = match fibration_desktop::workbench_from_env() {
         Ok(w) => w,
         Err(e) => {
             eprintln!("error: {e:#}");
             std::process::exit(2);
         }
     };
-    tracing::info!("analyst home: {}", workbench.home().display());
-    if let Err(e) = analyst_desktop::run(workbench) {
+    tracing::info!("fibration home: {}", workbench.home().display());
+    if let Err(e) = fibration_desktop::run(workbench) {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }

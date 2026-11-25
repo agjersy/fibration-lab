@@ -2,7 +2,7 @@
 //! policy classes and model-facing JSON schemas. Which mode offers which tool is decided by
 //! the policy's mode rules ([`crate::tools::gate::mode_rules`]), not here.
 
-use analyst_protocol::evals::Mode;
+use fibration_protocol::evals::Mode;
 use serde_json::{json, Value};
 use wb_providers::model::ToolDef;
 use wb_providers::names::to_model_name;
@@ -71,7 +71,7 @@ fn obj(props: Value, required: &[&str]) -> Value {
 /// The policy class of a deck tool: slide and script changes are edits; deck builds, skill
 /// scripts, and exports are runs of what exists.
 fn deck_tool_class(class: &str) -> ToolClass {
-    use analyst_deck::tools as deck;
+    use fibration_deck::tools as deck;
     match class {
         deck::CLASS_READ => ToolClass::Read,
         deck::CLASS_EDIT => ToolClass::Edit,
@@ -85,7 +85,7 @@ fn all() -> &'static [ToolSpec] {
     ALL.get_or_init(|| {
         let mut tools = analysis_tools();
         tools.extend(
-            analyst_deck::tools::registry()
+            fibration_deck::tools::registry()
                 .into_iter()
                 .map(|t| ToolSpec {
                     name: t.name,
@@ -120,7 +120,7 @@ fn all() -> &'static [ToolSpec] {
             deck: true,
             name: INSERT_RESULT,
             class: ToolClass::Edit,
-            description: "Propose adding a paragraph (or filling a table cell) with a number bound to a named result of an analysis run (recorded by the script with analyst_results.record; artifacts_list shows them on the run's `results` artifact). The number's text carries a citation of the run and the result, so the checker verifies the displayed number against the recorded value and warns when the code has changed since.",
+            description: "Propose adding a paragraph (or filling a table cell) with a number bound to a named result of an analysis run (recorded by the script with fibration_results.record; artifacts_list shows them on the run's `results` artifact). The number's text carries a citation of the run and the result, so the checker verifies the displayed number against the recorded value and warns when the code has changed since.",
             parameters: obj(
                 json!({"deck": {"type": "string", "description": "The deck's slug under decks/. May be omitted when the project has exactly one deck."}, "slide_id": {"type": "string"}, "placeholder": {"type": "string", "description": "The text placeholder key (default `body`), or the table placeholder holding the cell given by `row` and `column`."}, "row": {"type": "integer", "minimum": 0, "description": "Table row (from 0, the header row included); with `column`, the number replaces that cell's text."}, "column": {"type": "integer", "minimum": 0, "description": "Table column (from 0)."}, "run_id": {"type": "string"}, "result_name": {"type": "string"}, "decimals": {"type": "integer", "minimum": 0, "maximum": 12, "description": "Decimal places; by default four significant digits."}, "before": {"type": "string", "description": "Text before the number in the paragraph."}, "after": {"type": "string", "description": "Text after the number."}}),
                 &["slide_id", "run_id", "result_name"],
@@ -220,9 +220,9 @@ pub fn defs_for(mode: Mode, decks: DeckKinds) -> Vec<ToolDef> {
             if !t.deck {
                 return true;
             }
-            if analyst_deck::tools::CODE_MODE_TOOLS.contains(&t.name) {
+            if fibration_deck::tools::CODE_MODE_TOOLS.contains(&t.name) {
                 decks.code
-            } else if analyst_deck::tools::STRUCTURED_TOOLS.contains(&t.name)
+            } else if fibration_deck::tools::STRUCTURED_TOOLS.contains(&t.name)
                 || PLACE_TOOLS.contains(&t.name)
             {
                 decks.structured

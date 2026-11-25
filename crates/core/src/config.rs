@@ -1,25 +1,25 @@
-//! Configuration loading: global `$ANALYST_HOME/config.toml` (default `~/.analyst`), project
-//! `<repo>/.analyst/project.toml`, API keys from the environment or an untracked `.env`
+//! Configuration loading: global `$FIBRATION_HOME/config.toml` (default `~/.fibration`), project
+//! `<repo>/.fibration/project.toml`, API keys from the environment or an untracked `.env`
 //! file, model spec parsing, per-target overrides (PROTOCOL 2.1, 2.2), and registration of
 //! the configured network destinations with the gate.
 
 use crate::util::expand_tilde;
-use analyst_protocol::config::{
+use anyhow::{anyhow, Context, Result};
+use fibration_protocol::config::{
     GlobalConfig, ModelConfig, ProjectConfig, ProjectSection, ProviderConfig, TargetConfig,
 };
-use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 
-/// `$ANALYST_HOME`, else `~/.analyst`.
-pub fn analyst_home() -> PathBuf {
-    if let Ok(h) = std::env::var("ANALYST_HOME") {
+/// `$FIBRATION_HOME`, else `~/.fibration`.
+pub fn fibration_home() -> PathBuf {
+    if let Ok(h) = std::env::var("FIBRATION_HOME") {
         if !h.is_empty() {
             return expand_tilde(&h);
         }
     }
     match std::env::var("HOME") {
-        Ok(home) => Path::new(&home).join(".analyst"),
-        Err(_) => PathBuf::from(".analyst"),
+        Ok(home) => Path::new(&home).join(".fibration"),
+        Err(_) => PathBuf::from(".fibration"),
     }
 }
 
@@ -52,7 +52,7 @@ pub fn save_global(home: &Path, config: &GlobalConfig) -> Result<()> {
 
 /// Path of the project config inside a repo.
 pub fn project_config_path(repo: &Path) -> PathBuf {
-    repo.join(".analyst").join("project.toml")
+    repo.join(".fibration").join("project.toml")
 }
 
 /// Load the project config; a missing file means all defaults.
@@ -154,7 +154,7 @@ pub fn env_file_path(home: &Path) -> PathBuf {
 pub enum KeySource {
     /// The process environment.
     Env,
-    /// A `.env` file: `$ANALYST_HOME/.env`, or the repo's own untracked `.env`.
+    /// A `.env` file: `$FIBRATION_HOME/.env`, or the repo's own untracked `.env`.
     Stored,
 }
 
@@ -220,9 +220,9 @@ pub fn api_key_lookup(
     })
 }
 
-/// API key for a provider, using the default analyst home and no repo. See [`api_key_in`].
+/// API key for a provider, using the default fibration home and no repo. See [`api_key_in`].
 pub fn api_key(provider: &ProviderConfig) -> Result<Option<String>> {
-    api_key_in(&analyst_home(), None, provider)
+    api_key_in(&fibration_home(), None, provider)
 }
 
 /// API key for a provider (see [`api_key_lookup`] for the order). `Ok(None)` when the
@@ -239,7 +239,7 @@ pub fn api_key_in(
     match &provider.api_key_env {
         None => Ok(None),
         Some(var) => Err(anyhow!(
-            "provider `{}` needs an API key: set the environment variable {var}, put `{var}=...` in {}, or store one (`analyst key set {}`, or the app's settings)",
+            "provider `{}` needs an API key: set the environment variable {var}, put `{var}=...` in {}, or store one (`fibration key set {}`, or the app's settings)",
             provider.name,
             env_file_path(home).display(),
             provider.name
@@ -278,7 +278,7 @@ pub fn register_egress(global: &GlobalConfig) -> Result<()> {
     crate::egress::set_package_index(&global.packages.index_url)
         .map_err(|e| anyhow!("`[packages] index_url` in config.toml: {e}"))?;
     for t in &global.targets {
-        if t.kind != analyst_protocol::config::TargetKind::Ssh {
+        if t.kind != fibration_protocol::config::TargetKind::Ssh {
             continue;
         }
         if let Some(host) = &t.host {
@@ -295,7 +295,7 @@ pub fn find_target(global: &GlobalConfig, name: &str) -> Result<TargetConfig> {
     if name == "local" {
         return Ok(TargetConfig {
             name: "local".into(),
-            kind: analyst_protocol::config::TargetKind::Local,
+            kind: fibration_protocol::config::TargetKind::Local,
             host: None,
             remote_root: None,
             python: None,
@@ -332,7 +332,7 @@ pub fn effective_project(project: &ProjectConfig, target: &str) -> ProjectSectio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use analyst_protocol::config::{ProviderKind, TargetOverride};
+    use fibration_protocol::config::{ProviderKind, TargetOverride};
 
     #[test]
     fn model_spec_parsing() {
@@ -400,7 +400,7 @@ mod tests {
     fn stored_api_keys() {
         let home = tempfile::tempdir().unwrap();
         let var = format!(
-            "ANALYST_TEST_KEY_{}",
+            "FIBRATION_TEST_KEY_{}",
             crate::util::short_rand().to_uppercase()
         );
         let p = ProviderConfig {
@@ -417,7 +417,7 @@ mod tests {
         };
         let err = api_key_in(home.path(), None, &p).unwrap_err().to_string();
         assert!(
-            err.contains(&var) && err.contains("analyst key set") && err.contains(".env"),
+            err.contains(&var) && err.contains("fibration key set") && err.contains(".env"),
             "{err}"
         );
         set_api_key(home.path(), &p, "sk-stored\n").unwrap();
@@ -485,7 +485,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let repo = tempfile::tempdir().unwrap();
         let var = format!(
-            "ANALYST_TEST_REPO_KEY_{}",
+            "FIBRATION_TEST_REPO_KEY_{}",
             crate::util::short_rand().to_uppercase()
         );
         let p = ProviderConfig {

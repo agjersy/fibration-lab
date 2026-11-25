@@ -2,8 +2,8 @@
 //! runs found only through their `run.json`, plus artifacts pulled from remote targets into the
 //! session's `artifacts/<run_id>/` directory.
 
-use analyst_protocol::kernel::{ArtifactKind, FigureSidecar};
-use analyst_protocol::ui::{FigureFormat, FigureView};
+use fibration_protocol::kernel::{ArtifactKind, FigureSidecar};
+use fibration_protocol::ui::{FigureFormat, FigureView};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -123,7 +123,7 @@ pub fn figure_view(repo: &Path, file: &Path, run_id: &str, script: &str) -> Opti
 /// A `FigureView` built from a kernel artifact alone, for figures that are not on this
 /// machine yet (remote targets).
 pub fn figure_view_from_artifact(
-    artifact: &analyst_protocol::kernel::Artifact,
+    artifact: &fibration_protocol::kernel::Artifact,
     run_id: &str,
     script: &str,
 ) -> Option<FigureView> {

@@ -11,7 +11,7 @@ import { ErrorBoundary } from "./ui/common/ErrorBoundary";
 declare global {
   interface Window {
     /** Uncaught errors and unhandled rejections since load; the smoke test asserts this stays empty. */
-    __analystErrors: string[];
+    __fibrationErrors: string[];
   }
 }
 
@@ -21,21 +21,21 @@ function describe(reason: unknown): string {
   return String(reason);
 }
 
-window.__analystErrors = [];
+window.__fibrationErrors = [];
 window.addEventListener("error", (e) => {
   // ResizeObserver loop notifications are benign browser noise, not app errors.
   if (typeof e.message === "string" && e.message.startsWith("ResizeObserver loop")) return;
-  window.__analystErrors.push(e.error ? describe(e.error) : e.message);
+  window.__fibrationErrors.push(e.error ? describe(e.error) : e.message);
 });
 window.addEventListener("unhandledrejection", (e) => {
-  window.__analystErrors.push(`unhandled rejection: ${describe(e.reason)}`);
+  window.__fibrationErrors.push(`unhandled rejection: ${describe(e.reason)}`);
 });
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root missing");
 createRoot(root).render(
   <StrictMode>
-    <ErrorBoundary label="Personal Analyst">
+    <ErrorBoundary label="Fibration Lab">
       <App />
     </ErrorBoundary>
   </StrictMode>,

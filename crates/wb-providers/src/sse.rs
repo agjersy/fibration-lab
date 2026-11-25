@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/providers/sse.rs`, including the post-review fixes (REVIEW A2).
+// Ported from Fibration Lab `crates/core/src/providers/sse.rs`, including the post-review fixes (REVIEW A2).
 //! Incremental Server-Sent Events parser.
 
 /// One SSE event: the `event:` name (empty when absent) and the joined `data:` payload.

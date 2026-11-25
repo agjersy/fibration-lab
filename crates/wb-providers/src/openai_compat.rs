@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/providers/openai_compat.rs`, including the
+// Ported from Fibration Lab `crates/core/src/providers/openai_compat.rs`, including the
 // post-review fixes (REVIEW A1 to A4, B6).
 // Adapted (Present PROTOCOL 6.1): configurable auth and extra headers, the `stream_options`
 // downgrade, document parts as text notes, and the audit hook (the request pump now lives

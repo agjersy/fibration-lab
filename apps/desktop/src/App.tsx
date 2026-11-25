@@ -44,7 +44,7 @@ export function App() {
         {ready && active ? <Workbench key={active} session={active} /> : null}
         {ready && !active ? (
           <div className="welcome" data-testid="welcome">
-            <h1>Personal Analyst</h1>
+            <h1>Fibration Lab</h1>
             <p>{sessions.length ? "Pick a session above, or create a new one." : "Create a session to start."}</p>
             <button type="button" className="primary" onClick={() => useUi.getState().setNewSessionOpen(true)}>
               New session

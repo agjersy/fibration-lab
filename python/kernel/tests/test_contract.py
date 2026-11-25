@@ -3,8 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from analyst_kernel.contract import DEFAULT_SEVERITY, RULES
-from analyst_kernel.similarity import fingerprint, similarity, statement_count, token_stream
+from fibration_kernel.contract import DEFAULT_SEVERITY, RULES
+from fibration_kernel.similarity import fingerprint, similarity, statement_count, token_stream
 
 
 def diags(kernel, **params):

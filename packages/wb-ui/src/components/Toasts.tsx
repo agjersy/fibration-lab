@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/ui/Toasts.tsx at commit f229e4d.
+// Ported from Fibration Lab apps/desktop/src/ui/Toasts.tsx at commit f229e4d.
 import { useToasts } from "../toasts";
 
 export function Toasts() {

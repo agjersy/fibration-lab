@@ -13,7 +13,7 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample_repo"
 if str(KERNEL_DIR) not in sys.path:
     sys.path.insert(0, str(KERNEL_DIR))
 
-from analyst_kernel.kernel import Kernel  # noqa: E402
+from fibration_kernel.kernel import Kernel  # noqa: E402
 
 SESSION_PYTHON = sys.executable
 

@@ -15,12 +15,18 @@ import pytest
 from conftest import Notes, wait_until
 from test_e2e import KernelProc
 
-from analyst_kernel import __main__ as kernel_main
-from analyst_kernel.config import ConfigError, load_config, project_data_dirs, validate_out_dir
-from analyst_kernel.errors import INVALID_PARAMS, RpcError
-from analyst_kernel.kernel import Kernel
-from analyst_kernel.runs import CHUNK_BYTES, _ArtifactScanner, utf8_cut
-from analyst_kernel.runstate import proc_start_token, read_status_line, same_process, transition, write_atomic
+from fibration_kernel import __main__ as kernel_main
+from fibration_kernel.config import ConfigError, load_config, project_data_dirs, validate_out_dir
+from fibration_kernel.errors import INVALID_PARAMS, RpcError
+from fibration_kernel.kernel import Kernel
+from fibration_kernel.runs import CHUNK_BYTES, _ArtifactScanner, utf8_cut
+from fibration_kernel.runstate import (
+    proc_start_token,
+    read_status_line,
+    same_process,
+    transition,
+    write_atomic,
+)
 
 
 def write_script(repo: Path, name: str, body: str) -> str:
@@ -35,7 +41,7 @@ def _alive(pid: int) -> bool:
 # ---- G9: out_dir and data_dirs --------------------------------------------------------
 
 
-@pytest.mark.parametrize("bad", ["../x", "/abs/out", "~/out", ".", "out/../../x", ".git/out", ".analyst"])
+@pytest.mark.parametrize("bad", ["../x", "/abs/out", "~/out", ".", "out/../../x", ".git/out", ".fibration"])
 def test_g9_out_dir_must_stay_inside_the_root(repo: Path, tmp_path: Path, bad: str):
     with pytest.raises(ConfigError):
         validate_out_dir(repo, bad)
@@ -45,12 +51,12 @@ def test_g9_out_dir_must_stay_inside_the_root(repo: Path, tmp_path: Path, bad: s
 
 
 def test_g9_out_dir_from_project_toml_is_rejected_with_exit_code_2(repo: Path, tmp_path: Path):
-    (repo / ".analyst" / "project.toml").write_text('[project]\nout_dir = "../escaped"\n')
+    (repo / ".fibration" / "project.toml").write_text('[project]\nout_dir = "../escaped"\n')
     argv = ["--python", sys.executable, "--root", str(repo), "--runs-dir", str(tmp_path / "runs"), "--sandbox", "limits"]
     assert kernel_main.main(argv) == 2
     assert not (tmp_path / "escaped").exists() and not (tmp_path / "runs").exists()
     # a symlink that leaves the repo is refused too
-    (repo / ".analyst" / "project.toml").write_text('[project]\nout_dir = "results"\n')
+    (repo / ".fibration" / "project.toml").write_text('[project]\nout_dir = "results"\n')
     outside = tmp_path / "outside"
     outside.mkdir()
     (repo / "results").symlink_to(outside)
@@ -65,7 +71,7 @@ def test_g9_project_data_dirs_are_confined_and_data_dir_arg_is_honoured(repo: Pa
     external = tmp_path / "shared"
     external.mkdir()
     (repo / "link").symlink_to(external)
-    (repo / ".analyst" / "project.toml").write_text(
+    (repo / ".fibration" / "project.toml").write_text(
         '[project]\ndata_dirs = ["data", "~/.ssh", "/etc", "../shared", "link", "data/sub"]\n'
         '[targets.lab]\ndata_dirs = ["/data/shared", "data"]\n'
     )
@@ -96,12 +102,12 @@ def test_g9_project_data_dirs_are_confined_and_data_dir_arg_is_honoured(repo: Pa
 
 def test_b10_limits_config(tmp_path: Path):
     assert load_config(tmp_path).rlimit_as() is None and load_config(tmp_path).open_files == 4096
-    (tmp_path / ".analyst").mkdir()
-    (tmp_path / ".analyst" / "project.toml").write_text("[limits]\naddress_space_gb = 16\nopen_files = 1024\n")
+    (tmp_path / ".fibration").mkdir()
+    (tmp_path / ".fibration" / "project.toml").write_text("[limits]\naddress_space_gb = 16\nopen_files = 1024\n")
     cfg = load_config(tmp_path)
     assert cfg.rlimit_as() == 16 * 1024**3 and cfg.open_files == 1024
     assert cfg.to_json()["limits"] == {"address_space_gb": 16.0, "open_files": 1024}
-    (tmp_path / ".analyst" / "project.toml").write_text('[limits]\naddress_space_gb = 0\nopen_files = "many"\n')
+    (tmp_path / ".fibration" / "project.toml").write_text('[limits]\naddress_space_gb = 0\nopen_files = "many"\n')
     cfg = load_config(tmp_path)
     assert cfg.rlimit_as() is None and cfg.open_files == 4096
 
@@ -111,7 +117,7 @@ def test_b10_runs_have_no_address_space_limit_and_can_map_large_files(kernel: Ke
         repo, "memmap.py",
         "import mmap, os, resource\n"
         "print('as', resource.getrlimit(resource.RLIMIT_AS)[0] == resource.RLIM_INFINITY)\n"
-        "p = os.path.join(os.environ['ANALYST_OUT_DIR'], 'big.bin')\n"
+        "p = os.path.join(os.environ['FIBRATION_OUT_DIR'], 'big.bin')\n"
         "with open(p, 'wb') as fh:\n    fh.truncate(10 * 1024**3)\n"  # sparse: 10 GiB of address space, no disk
         "with open(p, 'rb') as fh:\n    m = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)\n    print('mapped', len(m))\n    m.close()\n"
         "os.remove(p)\n",
@@ -224,7 +230,7 @@ def test_k2_scanner_reannounces_changed_files_and_skips_empty_ones(tmp_path: Pat
 def test_k2_file_opened_early_and_written_late_has_its_final_size(kernel: Kernel, repo: Path, notes: Notes, tmp_path: Path):
     script = write_script(
         repo, "late.py",
-        "import os, time\nout = os.environ['ANALYST_OUT_DIR']\n"
+        "import os, time\nout = os.environ['FIBRATION_OUT_DIR']\n"
         "fh = open(os.path.join(out, 'late.txt'), 'w')\n"
         "with open(os.path.join(out, 'steps.txt'), 'w') as g:\n    g.write('x' * 10)\n"
         "time.sleep(1.5)\n"
@@ -359,7 +365,7 @@ def test_k10_timeout_kills_workers_that_ignore_sigterm(kernel: Kernel, repo: Pat
         "code = 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(\"up\", flush=True); time.sleep(120)'\n"
         "w = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE)\n"
         "w.stdout.readline()\n"
-        "open(os.path.join(os.environ['ANALYST_OUT_DIR'], 'worker.pid'), 'w').write(str(w.pid))\n"
+        "open(os.path.join(os.environ['FIBRATION_OUT_DIR'], 'worker.pid'), 'w').write(str(w.pid))\n"
         "print('go', flush=True)\ntime.sleep(120)\n",
     )
     res = kernel.call("run.start", {"script": script, "timeout_s": 2})

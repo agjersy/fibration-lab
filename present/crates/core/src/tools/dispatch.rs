@@ -5,9 +5,9 @@
 use crate::deck_store::Position;
 use crate::util::{new_id, sha256_hex};
 use crate::workspace::Workspace;
-use analyst_deck_protocol::deck::{DeckMode, Slide};
-use analyst_deck_protocol::ids::SlideId;
 use base64::Engine as _;
+use fibration_deck_protocol::deck::{DeckMode, Slide};
+use fibration_deck_protocol::ids::SlideId;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 

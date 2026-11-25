@@ -13,16 +13,16 @@ pub use transport::{
 /// Wait for a run to finish, collecting its notifications. `rx` must have been subscribed
 /// before the run started.
 pub async fn wait_for_run(
-    rx: &mut tokio::sync::broadcast::Receiver<analyst_protocol::kernel::KernelNotification>,
+    rx: &mut tokio::sync::broadcast::Receiver<fibration_protocol::kernel::KernelNotification>,
     run_id: &str,
     timeout: std::time::Duration,
 ) -> (
-    Option<analyst_protocol::kernel::RunDone>,
+    Option<fibration_protocol::kernel::RunDone>,
     String,
     String,
-    Vec<analyst_protocol::kernel::Artifact>,
+    Vec<fibration_protocol::kernel::Artifact>,
 ) {
-    use analyst_protocol::kernel::KernelNotification;
+    use fibration_protocol::kernel::KernelNotification;
     let deadline = tokio::time::Instant::now() + timeout;
     let mut stdout = String::new();
     let mut stderr = String::new();

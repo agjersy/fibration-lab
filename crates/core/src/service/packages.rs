@@ -121,9 +121,9 @@ pub fn local_line(
 pub fn remote_pip_command(op: Op, mirror: &str, packages: &[String], index_flag: &str) -> String {
     let pkgs: Vec<String> = packages.iter().map(|p| crate::util::sh_quote(p)).collect();
     let uv_call = if op == Op::Remove {
-        "UV_OFFLINE=1 ~/.analyst/bin/uv pip uninstall".to_string()
+        "UV_OFFLINE=1 ~/.fibration/bin/uv pip uninstall".to_string()
     } else {
-        format!("~/.analyst/bin/uv pip install {index_flag}")
+        format!("~/.fibration/bin/uv pip install {index_flag}")
     };
     format!(
         "cd {} && {uv_call} --python .venv/bin/python -- {}",
@@ -315,12 +315,12 @@ mod tests {
         assert!(local_line("uv", Op::Sync, false, false, &[], None).is_err());
         let flag = "--default-index 'https://pypi.org/simple'";
         assert_eq!(
-            remote_pip_command(Op::Add, "~/analyst/my repo-1a2b3c4d", &pk, flag),
-            "cd ~/'analyst/my repo-1a2b3c4d' && ~/.analyst/bin/uv pip install --default-index 'https://pypi.org/simple' --python .venv/bin/python -- 'numpy>=2' pandas"
+            remote_pip_command(Op::Add, "~/fibration/my repo-1a2b3c4d", &pk, flag),
+            "cd ~/'fibration/my repo-1a2b3c4d' && ~/.fibration/bin/uv pip install --default-index 'https://pypi.org/simple' --python .venv/bin/python -- 'numpy>=2' pandas"
         );
         assert_eq!(
-            remote_pip_command(Op::Remove, "~/analyst/r", &pk, flag),
-            "cd ~/analyst/r && UV_OFFLINE=1 ~/.analyst/bin/uv pip uninstall --python .venv/bin/python -- 'numpy>=2' pandas"
+            remote_pip_command(Op::Remove, "~/fibration/r", &pk, flag),
+            "cd ~/fibration/r && UV_OFFLINE=1 ~/.fibration/bin/uv pip uninstall --python .venv/bin/python -- 'numpy>=2' pandas"
         );
         assert_eq!(Op::parse("pkg.remove").unwrap(), Op::Remove);
         assert!(Op::parse("upgrade").is_err());

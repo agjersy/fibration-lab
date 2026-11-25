@@ -30,7 +30,7 @@ def main(args: argparse.Namespace) -> None:
     half_life = args.tau * np.log(2)
     summary = {"tau": args.tau, "amplitude": args.amplitude, "half_life": float(half_life)}
     print(json.dumps(summary))
-    out_dir = os.environ.get("ANALYST_OUT_DIR", "out")
+    out_dir = os.environ.get("FIBRATION_OUT_DIR", "out")
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "summary.json"), "w") as f:
         json.dump(summary, f)

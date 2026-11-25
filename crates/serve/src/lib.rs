@@ -1,4 +1,4 @@
-//! analyst-serve: the development bridge (docs/IPC.md section 11).
+//! fibration-serve: the development bridge (docs/IPC.md section 11).
 //!
 //! Hosts the same `Workbench` the desktop shell does and speaks the shell's commands and the
 //! per-session events over one WebSocket, so the renderer in a plain browser (the Vite dev
@@ -15,9 +15,9 @@
 //! - event `{"channel": c, "event": SessionEvent}` for the `channel` number the client passed
 //!   to `session_subscribe { session, channel }` (the WebSocket's stand-in for a Tauri channel).
 
-use analyst_core::commands::{dispatch, DialogFilter, Host};
-use analyst_core::service::Workbench;
-use analyst_protocol::ui::{IpcError, SessionEvent};
+use fibration_core::commands::{dispatch, DialogFilter, Host};
+use fibration_core::service::Workbench;
+use fibration_protocol::ui::{IpcError, SessionEvent};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -43,7 +43,7 @@ pub fn check_bind(addr: SocketAddr) -> anyhow::Result<()> {
     if addr.ip().is_loopback() {
         Ok(())
     } else {
-        anyhow::bail!("analyst-serve binds loopback addresses only, not {addr}")
+        anyhow::bail!("fibration-serve binds loopback addresses only, not {addr}")
     }
 }
 
@@ -122,7 +122,7 @@ impl Bridge {
         let rt = self.workbench.session(&session).map_err(IpcError::from)?;
         let mut rx = rt.subscribe();
         drop(rt);
-        let id = format!("sub-{}", analyst_core::util::stamped_id());
+        let id = format!("sub-{}", fibration_core::util::stamped_id());
         let handle = tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
                 if matches!(event, SessionEvent::Resync) {

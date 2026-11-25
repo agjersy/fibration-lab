@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/commands.ts at commit f229e4d. The shortcut lookup moved
+// Ported from Fibration Lab apps/desktop/src/commands.ts at commit f229e4d. The shortcut lookup moved
 // to the keymap object (keymap.ts) so the registry does not depend on an app keymap.
 // Command registry: every user action has an id so the palette, keymap and
 // menus share one table.

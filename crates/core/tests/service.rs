@@ -3,18 +3,18 @@
 //! and collect the run events and a captured figure, list figures, extract equations.
 //!
 //! Skips (with a message) when no tooling interpreter is available:
-//! `ANALYST_TOOLING_PYTHON`, else `<workspace>/python/kernel/.venv/bin/python`.
+//! `FIBRATION_TOOLING_PYTHON`, else `<workspace>/python/kernel/.venv/bin/python`.
 
-use analyst_core::service::{Subscription, Workbench, WorkbenchOptions};
-use analyst_protocol::kernel::{ArtifactKind, RunStatus, Severity};
-use analyst_protocol::ui::*;
+use fibration_core::service::{Subscription, Workbench, WorkbenchOptions};
+use fibration_protocol::kernel::{ArtifactKind, RunStatus, Severity};
+use fibration_protocol::ui::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
 fn tooling_python() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("ANALYST_TOOLING_PYTHON") {
+    if let Ok(p) = std::env::var("FIBRATION_TOOLING_PYTHON") {
         let p = PathBuf::from(p);
         if p.is_file() {
             return Some(p);
@@ -95,7 +95,7 @@ where
 async fn real_kernel_session_index_check_run_figures_equations() {
     let Some(py) = tooling_python() else {
         eprintln!(
-            "SKIP: no tooling interpreter (set ANALYST_TOOLING_PYTHON or run `uv sync` in python/kernel)"
+            "SKIP: no tooling interpreter (set FIBRATION_TOOLING_PYTHON or run `uv sync` in python/kernel)"
         );
         return;
     };
@@ -107,11 +107,11 @@ async fn real_kernel_session_index_check_run_figures_equations() {
     opts.kernel_launcher = Some(vec![
         py.to_string_lossy().to_string(),
         "-m".into(),
-        "analyst_kernel".into(),
+        "fibration_kernel".into(),
     ]);
     opts.sandbox = Some("none".into());
     opts.autostart_kernel = true;
-    opts.init = analyst_core::init::InitOptions {
+    opts.init = fibration_core::init::InitOptions {
         run_uv: false,
         git: true,
     };
@@ -281,7 +281,7 @@ async fn real_kernel_session_index_check_run_figures_equations() {
         .unwrap();
     assert_ne!(
         check.status,
-        analyst_protocol::kernel::EqCheckStatus::Mismatch,
+        fibration_protocol::kernel::EqCheckStatus::Mismatch,
         "{check:?}"
     );
 

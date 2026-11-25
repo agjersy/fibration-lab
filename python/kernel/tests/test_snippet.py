@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from analyst_kernel.errors import TIMEOUT, RpcError
-from analyst_kernel.kernel import Kernel
+from fibration_kernel.errors import TIMEOUT, RpcError
+from fibration_kernel.kernel import Kernel
 
 
 def test_snippet_persistent_state(kernel):
@@ -30,7 +30,7 @@ def test_snippet_error(kernel):
 def test_snippet_runs_in_session_python_with_env(kernel, repo):
     r = kernel.call("exec.snippet", {"code": "import os, sys; (os.getcwd(), os.environ['MPLBACKEND'], sys.executable)"})
     assert r["ok"]
-    assert str(repo.resolve()) in r["value_repr"] and "module://analyst_mpl" in r["value_repr"]
+    assert str(repo.resolve()) in r["value_repr"] and "module://fibration_mpl" in r["value_repr"]
     assert kernel.python in r["value_repr"]
     assert kernel.call("exec.snippet", {"code": "from analysis.models import double_exp; double_exp(0, 1, 1, 2, 1)"})["value_repr"].endswith("3.0)")
 
@@ -53,7 +53,7 @@ def test_snippet_has_no_address_space_limit_by_default(kernel):
 
 
 def test_snippet_limits_from_project_config(repo, tmp_path):
-    with (repo / ".analyst" / "project.toml").open("a") as fh:
+    with (repo / ".fibration" / "project.toml").open("a") as fh:
         fh.write("\n[limits]\naddress_space_gb = 3\nopen_files = 512\n")
     k = Kernel(sys.executable, repo, tmp_path / "runs", sandbox="limits")
     try:

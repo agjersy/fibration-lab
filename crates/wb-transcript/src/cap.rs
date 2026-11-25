@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/tools/dispatch.rs` (`cap_result`) and
+// Ported from Fibration Lab `crates/core/src/tools/dispatch.rs` (`cap_result`) and
 // `crates/core/src/session.rs` (`spill_artifact`) at commit f229e4d.
 // Adapted: independent of the tool context; the capped value is guaranteed to fit the cap
 // after JSON escaping; artifact names are sanitized.

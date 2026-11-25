@@ -257,7 +257,7 @@ pub enum ArtifactKind {
     Text,
     File,
     /// `results.json` at the top of a run's output directory: the run's named results
-    /// (`analyst_results.record`, PROTOCOL 1.7).
+    /// (`fibration_results.record`, PROTOCOL 1.7).
     Results,
 }
 
@@ -284,7 +284,7 @@ impl ArtifactKind {
     }
 }
 
-/// One named numeric result of a run (`analyst_results.record`).
+/// One named numeric result of a run (`fibration_results.record`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct NamedResult {
     pub name: String,
@@ -297,7 +297,7 @@ pub struct NamedResult {
     pub uncertainty: Option<f64>,
 }
 
-/// `results.json` as `analyst_results` writes it.
+/// `results.json` as `fibration_results` writes it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ResultsFile {
     #[serde(default)]

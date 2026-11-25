@@ -42,10 +42,10 @@ The architecture holds up: the kernel protocol, the local-canonical mirror, the 
 
 | ID | Finding | Evidence | Where |
 |---|---|---|---|
-| G1 | **A `Math:` docstring executes code in the kernel process, outside the sandbox.** The declared expression goes to SymPy's `parse_expr`, which is `eval`-based. The character filter allows `eval`, `chr`, parentheses, `+`, so any string can be built and evaluated. Opening a file whose equations are extracted is enough. The returned equation looks benign. | R (twice, independently) | `python/kernel/analyst_kernel/equations.py:239-253`, filter at `:56` |
+| G1 | **A `Math:` docstring executes code in the kernel process, outside the sandbox.** The declared expression goes to SymPy's `parse_expr`, which is `eval`-based. The character filter allows `eval`, `chr`, parentheses, `+`, so any string can be built and evaluated. Opening a file whose equations are extracted is enough. The returned equation looks benign. | R (twice, independently) | `python/kernel/fibration_kernel/equations.py:239-253`, filter at `:56` |
 | G2 | **Edit gating depends entirely on the OS sandbox, and the policy engine does not know which sandbox is active.** With the `limits` fallback, `exec.snippet` (policy class "run", auto by default, also available in Run mode) rewrote a protected source file and wrote to the home directory with no proposal. Network denial is likewise unenforced under `limits`. | R | `crates/core/src/policy.rs` (no sandbox input), `tools/registry.rs:68` |
 | G3 | **`limits` is likely the default on Ubuntu.** Ubuntu 23.10 and later restrict unprivileged user namespaces through AppArmor, so the `bwrap` probe fails and the kernel silently falls back. Combined with G2, the default remote target runs agent code unsandboxed with auto-run. | I (platform knowledge; not tested on Ubuntu 24.04) | `sandbox.py:143-177` |
-| G4 | **Edit tools can write `.git/config`, `.git/hooks/*`, and `.analyst/project.toml`.** Under `edits = "auto"` the agent declared scope `.git/config`, added a `diff.external` command, and the read-class `git.diff` executed it on the host. Writing `project.toml` escalates policy at the next open. The renderer's `fs_write`, `fs_rename`, and `fs_delete` also accept `.git`. | R | `crates/core/src/util.rs:33-55`, `tools/proposals.rs:34`, `tools/dispatch.rs:213-222`, `service/fs.rs:167-268` |
+| G4 | **Edit tools can write `.git/config`, `.git/hooks/*`, and `.fibration/project.toml`.** Under `edits = "auto"` the agent declared scope `.git/config`, added a `diff.external` command, and the read-class `git.diff` executed it on the host. Writing `project.toml` escalates policy at the next open. The renderer's `fs_write`, `fs_rename`, and `fs_delete` also accept `.git`. | R | `crates/core/src/util.rs:33-55`, `tools/proposals.rs:34`, `tools/dispatch.rs:213-222`, `service/fs.rs:167-268` |
 | G5 | **Scope declaration is self-granted.** `declare_scope` can be called repeatedly, replaces the scope silently, needs no approval, and is never reset between turns. The "out-of-scope edits still pause" guarantee is void. | R | `agent/mod.rs:509-530`, `policy.rs:77-84` |
 | G6 | **Protected regions can be rewritten with a two-edit proposal.** The lock check tests each `old` string against the original file, but edits apply sequentially, so a second edit whose `old` only exists after the first is never checked. | R | `policy.rs:284-310` with `tools/proposals.rs:95-123` |
 | G7 | **Symlinks escape the repo for read, list, and write**, in both the agent tools and the renderer's file commands. Path confinement is lexical only. Chat file attachments are not normalised at all, so an absolute or `..` path is read and sent to the model provider. | R (symlinks), S (attachments) | `tools/dispatch.rs:301-359`, `tools/proposals.rs:128,147`, `service/fs.rs:167-231`, `service/agent_runner.rs:302,320` |
@@ -93,12 +93,12 @@ None of these could be executed here (no SSH), except where marked.
 |---|---|---|---|
 | K1 | Constant powers are evaluated eagerly with no budget (`9 ** 9 ** 9` froze the whole kernel), and the simplify "budget" abandons a thread that keeps burning CPU. | R | `equations.py:180-181,211-227` |
 | K2 | Artifacts are recorded at their first stable size and never re-examined; a file opened early and written late is recorded as 0 bytes. | R | `runs.py:518-527` |
-| K3 | The figure sidecar overwrites a user data file with the same stem (`results.json` next to `results.png`). | R | `analyst_mpl/__init__.py:147-154` |
+| K3 | The figure sidecar overwrites a user data file with the same stem (`results.json` next to `results.png`). | R | `fibration_mpl/__init__.py:147-154` |
 | K4 | Run liveness is a bare pid. Runs whose supervisor died stay "running" after a restart, and cancel signals whatever process group now owns that pid. | R (reuse emulated) | `runs.py:337-347` |
 | K5 | The REPL protocol shares fd 1 with the snippet. Any subprocess or C-level stdout write kills the REPL and silently wipes its state. | R | `snippet.py:25-26,65,161-165` |
 | K6 | `eq.check` uses a fixed 1e-9 absolute floor, so any quantity below that scale "agrees" with anything (Planck-scale example reported agree with relative error 95). | R | `equations.py:545` |
 | K7 | A malformed `Math:` section is dropped when derivation succeeds, and the check then compares the code with itself and reports agreement. | R | `equations.py:456` |
-| K8 | `plt.pause()` and `show(block=False)` destroy the figure, so live-update loops save only the first frame. | R | `analyst_mpl/__init__.py:178-184` |
+| K8 | `plt.pause()` and `show(block=False)` destroy the figure, so live-update loops save only the first frame. | R | `fibration_mpl/__init__.py:178-184` |
 | K9 | Shutdown and unrelated calls block behind a running snippet; nine queued snippets starve the request pool. | R | `kernel.py:160-164`, `snippet.py:131` |
 | K10 | On timeout only the direct child is killed; a worker that ignores SIGTERM survives. Attach after restart can deliver output twice. Invalid UTF-8 at end of output is never flushed. | R | `_supervise.py:111-128`, `runs.py:355-361,613-622` |
 
@@ -163,9 +163,9 @@ Two specification-level problems rather than code bugs: the `eq.check` tolerance
 
 ## Tests that pass for the wrong reason
 
-- The evaluation graders can pass with no agent work: the grader's own `run_succeeds` run satisfies `runs_at_least` and `artifact_exists`; `no_edits` inspects proposals, not the tree, so snippet writes are invisible; `edits_within_scope` ignores ordering; `unwanted_edits` counts in-scope accepts. Each task also writes into the real `~/.analyst`.
+- The evaluation graders can pass with no agent work: the grader's own `run_succeeds` run satisfies `runs_at_least` and `artifact_exists`; `no_edits` inspects proposals, not the tree, so snippet writes are invisible; `edits_within_scope` ignores ordering; `unwanted_edits` counts in-scope accepts. Each task also writes into the real `~/.fibration`.
 - The mock backend is more forgiving than the real one (B2), and no test opens an existing session.
-- The desktop smoke script reads `window.__analystErrors`, which nothing defines, so "page errors: 0" is vacuous.
+- The desktop smoke script reads `window.__fibrationErrors`, which nothing defines, so "page errors: 0" is vacuous.
 - The merge-result helper is tested but unused; the real accept path has no test.
 - The macOS `sandbox-exec` profile has never been executed by any test, and its second fix is still unconfirmed on a Mac.
 
@@ -175,7 +175,7 @@ Kernel path traversal checks for outputs and equations; argv-only subprocess cal
 
 ## Suggested order of work
 
-1. **Close the guarantee gaps (G1 to G9).** Replace `parse_expr` with the existing whitelisting AST walker, run in a subprocess. Make the policy engine sandbox-aware: under `limits` or `none`, runs and snippets ask, and the UI says why. Hard-deny `.git/**` and `.analyst/**` for edits. Require approval to widen scope and reset it per turn. Check locks against the post-edit text. Canonicalise paths. Pull only rendered artifacts. Confine `out_dir` and `data_dirs`.
+1. **Close the guarantee gaps (G1 to G9).** Replace `parse_expr` with the existing whitelisting AST walker, run in a subprocess. Make the policy engine sandbox-aware: under `limits` or `none`, runs and snippets ask, and the UI says why. Hard-deny `.git/**` and `.fibration/**` for edits. Require approval to widen scope and reset it per turn. Check locks against the post-edit text. Canonicalise paths. Pull only rendered artifacts. Confine `out_dir` and `data_dirs`.
 2. **Decide the Ubuntu sandbox story (G3).** Options: document an AppArmor profile for `bwrap`, add a Landlock backend that needs no user namespaces, or accept ask-by-default on such hosts.
 3. **Unblock daily use (B1 to B13).** The sync deadlock, session reopen, compaction, probe cache, `max_tokens`, output handling, editor undo, run form, memory cap, checkpoint ids, packaging, and key handling.
 4. **Remote targets (R1 to R8)** before the first run against a real host.

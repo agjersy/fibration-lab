@@ -1,10 +1,10 @@
 //! Reference files in the project: always copied, content-addressed, versioned (PROTOCOL 4.3).
 
 use crate::util::{now_iso, sha256_hex, write_atomic};
-use analyst_deck_protocol::cite::RefKind;
-use analyst_deck_protocol::config::{RefEntry, RefSource, RefsManifest};
-use analyst_deck_protocol::ids::RefId;
 use anyhow::{anyhow, Context};
+use fibration_deck_protocol::cite::RefKind;
+use fibration_deck_protocol::config::{RefEntry, RefSource, RefsManifest};
+use fibration_deck_protocol::ids::RefId;
 use std::path::{Path, PathBuf};
 
 pub fn manifest_path(project: &Path) -> PathBuf {

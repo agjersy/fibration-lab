@@ -1,6 +1,6 @@
 //! Shared HTTP machinery for both wire adapters: auth and extra headers, the unknown-field
 //! downgrade, the SSE pump, and the audit hook (Present PROTOCOL 6.1, 10).
-//! The pump is factored out of the two `stream` implementations in Personal Analyst
+//! The pump is factored out of the two `stream` implementations in Fibration Lab
 //! `crates/core/src/providers/{anthropic,openai_compat}.rs` at commit f229e4d, which were
 //! identical apart from the decoder.
 

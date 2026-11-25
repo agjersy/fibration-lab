@@ -1,6 +1,6 @@
 //! Evaluation task definitions and scorecards (PROTOCOL 12).
 //!
-//! Same layout as Personal Analyst's `task.toml` (its PROTOCOL 8; base shape ported from
+//! Same layout as Fibration Lab's `task.toml` (its PROTOCOL 8; base shape ported from
 //! its `crates/protocol/src/evals.rs`), with Present's agent modes and check kinds.
 
 use crate::deck::DeckMode;

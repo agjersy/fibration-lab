@@ -33,7 +33,7 @@ def main(argv=None):
     t = np.asarray(ts)
     y = np.asarray(ys) + rng.normal(size=len(ts)) * 0
     model = double_exp(t, y[0] * 0.5, args.tau1, y[0] * 0.5, args.tau2)
-    out_dir = Path(os.environ.get("ANALYST_OUT_DIR", args.out))
+    out_dir = Path(os.environ.get("FIBRATION_OUT_DIR", args.out))
     out_dir.mkdir(parents=True, exist_ok=True)
     with (out_dir / "fit.json").open("w") as fh:
         json.dump({"tau1": args.tau1, "tau2": args.tau2, "n": len(ts)}, fh)

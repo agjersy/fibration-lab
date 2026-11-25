@@ -1,6 +1,6 @@
 //! Checkpoints (ARCHITECTURE 5.9): the working tree (tracked and untracked, not ignored) is
 //! written to a tree object through a temporary index (`GIT_INDEX_FILE`) and stored under
-//! `refs/analyst/checkpoints/<id>`. The user's index, branches, and history are untouched.
+//! `refs/fibration/checkpoints/<id>`. The user's index, branches, and history are untouched.
 //!
 //! The temporary index is seeded from the user's index so unchanged files are not re-hashed,
 //! and files above [`MAX_CHECKPOINT_FILE_BYTES`] or under a data directory are left out (they
@@ -12,7 +12,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 
-pub const REF_PREFIX: &str = "refs/analyst/checkpoints/";
+pub const REF_PREFIX: &str = "refs/fibration/checkpoints/";
 
 /// Files larger than this are not copied into the object store by checkpoints.
 pub const MAX_CHECKPOINT_FILE_BYTES: u64 = 5 * 1024 * 1024;
@@ -45,14 +45,14 @@ pub fn hardened_args(args: &[&str]) -> Vec<String> {
     v
 }
 
-/// A `git` command in `repo` with the hardening overrides and the analyst identity applied.
+/// A `git` command in `repo` with the hardening overrides and the fibration identity applied.
 pub fn git_command(repo: &Path, args: &[&str]) -> std::process::Command {
     let mut cmd = std::process::Command::new(crate::util::resolve_tool("git"));
     cmd.args(hardened_args(args)).current_dir(repo);
-    cmd.env("GIT_AUTHOR_NAME", "analyst")
-        .env("GIT_AUTHOR_EMAIL", "analyst@localhost")
-        .env("GIT_COMMITTER_NAME", "analyst")
-        .env("GIT_COMMITTER_EMAIL", "analyst@localhost")
+    cmd.env("GIT_AUTHOR_NAME", "fibration")
+        .env("GIT_AUTHOR_EMAIL", "fibration@localhost")
+        .env("GIT_COMMITTER_NAME", "fibration")
+        .env("GIT_COMMITTER_EMAIL", "fibration@localhost")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(std::process::Stdio::null());
@@ -98,7 +98,7 @@ struct TempIndex {
 impl TempIndex {
     fn new(repo: &Path) -> Result<Self> {
         let dir = git_dir(repo)?;
-        let path = dir.join(format!("analyst-index-{}", crate::util::short_rand()));
+        let path = dir.join(format!("fibration-index-{}", crate::util::short_rand()));
         let user_index = dir.join("index");
         if user_index.is_file() {
             // Seeding keeps the stat cache, so only files that changed are hashed again.
@@ -321,7 +321,7 @@ pub fn new_id(conversation: &str) -> String {
     format!("{safe}-{}", crate::util::stamped_id())
 }
 
-/// Create a checkpoint `refs/analyst/checkpoints/<id>`; returns the ref name. Fails when the
+/// Create a checkpoint `refs/fibration/checkpoints/<id>`; returns the ref name. Fails when the
 /// ref already exists: an undo point is never overwritten.
 pub fn create(repo: &Path, id: &str) -> Result<String> {
     let tree = worktree_tree(repo)?;
@@ -346,8 +346,8 @@ fn commit_checkpoint(repo: &Path, id: &str, tree: &str, label: Option<&str>) -> 
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let msg = match label.map(str::trim).filter(|l| !l.is_empty()) {
-        Some(l) => format!("analyst checkpoint {id}\n\n{}", l.replace('\n', " ")),
-        None => format!("analyst checkpoint {id}"),
+        Some(l) => format!("fibration checkpoint {id}\n\n{}", l.replace('\n', " ")),
+        None => format!("fibration checkpoint {id}"),
     };
     let mut args = vec!["commit-tree", tree, "-m", msg.as_str()];
     if let Some(h) = head.as_deref() {
@@ -631,7 +631,7 @@ mod tests {
         let index_before = std::fs::read(r.join(".git/index")).unwrap();
 
         let cp = create(r, "t1").unwrap();
-        assert_eq!(cp, "refs/analyst/checkpoints/t1");
+        assert_eq!(cp, "refs/fibration/checkpoints/t1");
         assert_eq!(
             std::fs::read(r.join(".git/index")).unwrap(),
             index_before,
@@ -645,7 +645,7 @@ mod tests {
                 e.unwrap()
                     .file_name()
                     .to_string_lossy()
-                    .starts_with("analyst-index-")
+                    .starts_with("fibration-index-")
             }),
             "temp index removed"
         );

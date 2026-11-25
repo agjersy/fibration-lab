@@ -10,7 +10,7 @@
 //! (the oldest output is dropped and a notice is inserted). `terminal_exit` travels on the same
 //! path so it can never overtake the output before it.
 
-use analyst_protocol::ui::{SessionEvent, TerminalId};
+use fibration_protocol::ui::{SessionEvent, TerminalId};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::broadcast;

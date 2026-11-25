@@ -9,9 +9,9 @@ use crate::kernel::{resolve_runtime_python, KernelClient, KernelError, KernelLau
 use crate::project::Project;
 use crate::refs::{self, Added};
 use crate::util::now_iso;
-use analyst_deck_protocol::config::{RefEntry, RefSource};
-use analyst_deck_protocol::ids::RefId;
 use anyhow::{anyhow, Context};
+use fibration_deck_protocol::config::{RefEntry, RefSource};
+use fibration_deck_protocol::ids::RefId;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -19,7 +19,7 @@ use std::sync::Mutex;
 /// Options for opening a workspace.
 #[derive(Debug, Clone)]
 pub struct OpenOptions {
-    /// The app home (`~/.analyst`): the kernel looks for its runtime, rendering engine, and
+    /// The app home (`~/.fibration`): the kernel looks for its runtime, rendering engine, and
     /// embedding model under it.
     pub home: PathBuf,
     /// The reference index (SQLite), kept with the session that owns the deck.
@@ -525,14 +525,14 @@ impl Workspace {
             .read_deck()
             .map_err(|e| KernelError::Other(e.to_string()))?;
         match deck.mode {
-            analyst_deck_protocol::deck::DeckMode::Structured => {
+            fibration_deck_protocol::deck::DeckMode::Structured => {
                 let mut params = json!({"out": out, "snapshot_id": snapshot_id});
                 if let Some(s) = slides {
                     params["slides"] = json!(s);
                 }
                 self.kernel.call_value("deck.render", params).await
             }
-            analyst_deck_protocol::deck::DeckMode::Code => {
+            fibration_deck_protocol::deck::DeckMode::Code => {
                 let timeout = self
                     .project
                     .config()

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from analyst_kernel import lint
-from analyst_kernel.errors import TOOL_MISSING, RpcError
+from fibration_kernel import lint
+from fibration_kernel.errors import TOOL_MISSING, RpcError
 
 
 def test_lint_run_maps_ruff(kernel, repo: Path):

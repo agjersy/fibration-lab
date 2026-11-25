@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/providers/mod.rs` at commit f229e4d.
+// Ported from Fibration Lab `crates/core/src/providers/mod.rs` at commit f229e4d.
 // Adapted: a self-contained crate (owns its request, event, and config types); `client_for`
 // takes the provider entry plus key store, audit sink, and capability cache;
 // `ModelClient` gains optional capability hooks; `collect` gathers citations.

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Build a small sample deck to check fidelity in real PowerPoint, through the real `analyst`
-# CLI and the real deck kernel (no model): a project made by `analyst init`, a run of the
+# Build a small sample deck to check fidelity in real PowerPoint, through the real `fibration`
+# CLI and the real deck kernel (no model): a project made by `fibration init`, a run of the
 # parameter-sweep fixture script, and a deck on the corp test template with every element
 # type a PowerPoint user will open (bullets, a native chart with embedded data, a native table,
 # process and timeline diagrams, a free image with alt text, notes, sections, two native
 # equations, and the run's figure with its citation).
 #
 # Usage: tools/make_sample_deck.sh [output folder (default ./sample-deck)]
-# Environment: ANALYST_BIN (default target/debug/analyst), ANALYST_HOME (default: a temporary
+# Environment: FIBRATION_BIN (default target/debug/fibration), FIBRATION_HOME (default: a temporary
 # home removed at exit).
 # Output: <folder>/sample.pptx and, with LibreOffice installed, <folder>/sample.pdf; the folder
 # is an ordinary project (decks/sample/) that the desktop app can open. Running the script
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="${ANALYST_BIN:-$ROOT/target/debug/analyst}"
+BIN="${FIBRATION_BIN:-$ROOT/target/debug/fibration}"
 OUT="${1:-./sample-deck}"
 TEMPLATE="$ROOT/present/evals/templates/corp/corp.potx"
 WORKBOOK="$ROOT/present/evals/tasks/spreadsheet-to-charts/fixture/sources/sales-2026.xlsx"
@@ -24,15 +24,15 @@ FIXTURE="$ROOT/evals/tasks/parameter-sweep/fixture"
 step() { printf '\n== %s\n' "$*"; }
 fail() { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 
-[ -x "$BIN" ] || fail "no analyst binary at $BIN; run tools/dev_setup.sh (or: cargo build -p analyst-cli -p wb-sandbox)"
+[ -x "$BIN" ] || fail "no fibration binary at $BIN; run tools/dev_setup.sh (or: cargo build -p fibration-cli -p wb-sandbox)"
 [ -x "$ROOT/present/python/kernel/.venv/bin/python" ] || [ -n "${PRESENT_RUNTIME_PYTHON:-}" ] ||
   fail "the deck kernel environment is missing; run tools/dev_setup.sh (or: cd present/python/kernel && uv sync)"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-export ANALYST_HOME="${ANALYST_HOME:-$WORK/home}"
+export FIBRATION_HOME="${FIBRATION_HOME:-$WORK/home}"
 export PRESENT_FONT_DIRS="${PRESENT_FONT_DIRS:-$ROOT/present/vendor/fonts}"
-mkdir -p "$ANALYST_HOME"
+mkdir -p "$FIBRATION_HOME"
 
 # A folder this script made before is replaced; anything else is left alone.
 if [ -e "$OUT" ]; then
@@ -51,7 +51,7 @@ git_commit() {
   git -C "$OUT" -c user.name=sample-deck -c user.email=sample-deck@example.invalid commit -qm "$1"
 }
 
-step "analyst init (project, venv, git)"
+step "fibration init (project, venv, git)"
 "$BIN" init "$OUT"
 touch "$OUT/.git/sample-deck"
 PY="$OUT/.venv/bin/python"
@@ -81,7 +81,7 @@ EOF
 git_commit "Add the decay models and the simulation script"
 "${A[@]}" eq analysis/models.py
 
-step "analyst run scripts/decay_sim.py (sandboxed run with figure capture)"
+step "fibration run scripts/decay_sim.py (sandboxed run with figure capture)"
 "${A[@]}" run scripts/decay_sim.py -- --tau 2.0 --noise 0.02 | tee "$WORK/run.txt"
 RUN_ID="$(sed -n 's/^run \([^ ]*\) done exit=0.*/\1/p' "$WORK/run.txt")"
 FIGURE="$(sed -n 's/^  figure  *\([^ ]*\) (.*/\1/p' "$WORK/run.txt" | head -1)"

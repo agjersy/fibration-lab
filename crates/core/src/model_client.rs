@@ -1,5 +1,5 @@
 //! The analysis side of the shared provider layer (`wb-providers`): maps the
-//! `~/.analyst/config.toml` provider and model entries onto the shared crate's
+//! `~/.fibration/config.toml` provider and model entries onto the shared crate's
 //! configuration, resolves keys, and builds clients and capability records.
 //!
 //! Key lookup order (unchanged): the process environment, then `<home>/.env`, then the
@@ -7,8 +7,8 @@
 //! `<PROVIDER>_API_KEY` default.
 
 use crate::config::ResolvedModel;
-use analyst_protocol::config::{ModelConfig, ProviderConfig, ProviderKind, ToolSupport};
 use anyhow::{anyhow, Result};
+use fibration_protocol::config::{ModelConfig, ProviderConfig, ProviderKind, ToolSupport};
 use std::path::Path;
 use std::sync::Arc;
 use wb_providers::config as wb;
@@ -44,7 +44,7 @@ pub fn shared_provider(
     if !found {
         if provider.api_key_env.is_some() {
             return Err(anyhow!(
-                "provider `{}` needs an API key: set the environment variable {var}, put `{var}=...` in {}, or store one (`analyst key set {}`, or the app's settings)",
+                "provider `{}` needs an API key: set the environment variable {var}, put `{var}=...` in {}, or store one (`fibration key set {}`, or the app's settings)",
                 provider.name,
                 crate::config::env_file_path(home).display(),
                 provider.name
@@ -159,7 +159,7 @@ pub async fn ensure_capabilities(
 mod tests {
     use super::*;
     use crate::config::{resolve_model, ModelSpec};
-    use analyst_protocol::config::GlobalConfig;
+    use fibration_protocol::config::GlobalConfig;
 
     fn provider(text: &str) -> ProviderConfig {
         let g: GlobalConfig = toml::from_str(text).unwrap();

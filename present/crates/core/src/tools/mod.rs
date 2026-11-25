@@ -1,6 +1,6 @@
 //! The deck tools (PROTOCOL 6.3): names, classes, and JSON schemas, and in [`dispatch`] their
 //! implementation over a deck [`crate::workspace::Workspace`]. The one agent loop in
-//! `analyst-core` registers them next to the analysis tools; which mode offers which tool is
+//! `fibration-core` registers them next to the analysis tools; which mode offers which tool is
 //! a policy rule there, not a property of the tool.
 
 pub mod dispatch;

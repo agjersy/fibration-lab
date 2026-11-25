@@ -3,8 +3,8 @@
 //! `[policy]` table onto its policy. All decisions are taken by `wb_policy::Session`.
 
 use crate::tools::registry::{tool_class, ToolClass};
-use analyst_protocol::config::{PolicyConfig, ProjectConfig, UnsandboxedRuns};
-use analyst_protocol::evals::Mode;
+use fibration_protocol::config::{PolicyConfig, ProjectConfig, UnsandboxedRuns};
+use fibration_protocol::evals::Mode;
 use serde_json::Value;
 use std::path::Path;
 use wb_policy::config::analyst_class as class;
@@ -13,7 +13,7 @@ use wb_policy::{Action, ModeRules, PathRules, Session, CLASS_EDIT, CLASS_READ};
 pub use wb_policy::ScopeChange;
 
 /// Top-level directories no edit may touch (besides `.git/` at any depth).
-pub const RESERVED_DIRS: &[&str] = &[".analyst"];
+pub const RESERVED_DIRS: &[&str] = &[".fibration"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
@@ -32,7 +32,7 @@ pub struct Evaluation {
 /// over the one loop: these rules decide which tools the model is offered and they are
 /// enforced again when a tool is called, so nothing here depends on the prompt.
 pub fn mode_rules(mode: Mode) -> ModeRules {
-    use analyst_deck::tools::dispatch::{FLAG_NEW_CITATION, FLAG_NEW_ELEMENT};
+    use fibration_deck::tools::dispatch::{FLAG_NEW_CITATION, FLAG_NEW_ELEMENT};
     let name = mode.to_string();
     let read_only = || ModeRules::with_classes(mode.to_string(), [CLASS_READ, class::META]);
     match mode {
@@ -48,7 +48,7 @@ pub fn mode_rules(mode: Mode) -> ModeRules {
         // Every deck tool; no code edits, script runs, packages, shell, or git.
         Mode::Slides => {
             let mut rules = read_only();
-            for t in analyst_deck::tools::registry() {
+            for t in fibration_deck::tools::registry() {
                 rules = rules.allow_tool(t.name);
             }
             rules
@@ -229,7 +229,7 @@ impl Policy {
 
     /// Whether the policy applies no edit at all (the `read-only` preset).
     pub fn edits_denied(&self) -> bool {
-        self.config.edits == analyst_protocol::config::EditPolicy::Deny
+        self.config.edits == fibration_protocol::config::EditPolicy::Deny
     }
 
     /// Evaluate an action built by the caller: a deck change with its real targets (the
@@ -261,7 +261,7 @@ impl Policy {
         let mut s = self.session.summary();
         if matches!(self.mode, Mode::Build | Mode::Slides | Mode::Polish)
             && self.scope().is_none_or(|f| f.is_empty())
-            && self.config.edits != analyst_protocol::config::EditPolicy::Deny
+            && self.config.edits != fibration_protocol::config::EditPolicy::Deny
         {
             s.push_str(
                 " Call declare_scope once with every file and slide you intend to touch before changing anything.",
@@ -293,7 +293,7 @@ impl Policy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use analyst_protocol::config::{EditPolicy, PolicyPreset};
+    use fibration_protocol::config::{EditPolicy, PolicyPreset};
     use serde_json::json;
 
     /// The tool mapping: every registered tool has an action, edits carry their path, runs
@@ -325,8 +325,11 @@ mod tests {
         assert_eq!(ev.decision, Decision::Deny);
         assert!(ev.reason.contains("never have network"));
         assert_eq!(
-            p.evaluate("fs.propose_edit", &json!({"path": ".analyst/project.toml"}))
-                .decision,
+            p.evaluate(
+                "fs.propose_edit",
+                &json!({"path": ".fibration/project.toml"})
+            )
+            .decision,
             Decision::Deny
         );
         // The tool schema offers no way to ask for network, and rejects unknown parameters.
@@ -337,7 +340,7 @@ mod tests {
         assert!(spec.parameters["properties"].get("network").is_none());
         assert_eq!(spec.parameters["additionalProperties"], json!(false));
         // The kernel request has no such field either: one sent from elsewhere is dropped.
-        let params: analyst_protocol::kernel::RunStartParams =
+        let params: fibration_protocol::kernel::RunStartParams =
             serde_json::from_value(json!({"script": "s.py", "network": true})).unwrap();
         assert!(!serde_json::to_string(&params).unwrap().contains("network"));
         // Modes.

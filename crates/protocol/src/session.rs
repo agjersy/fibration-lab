@@ -1,4 +1,4 @@
-//! Session store records under `~/.analyst/sessions/<id>/` (PROTOCOL 2.3).
+//! Session store records under `~/.fibration/sessions/<id>/` (PROTOCOL 2.3).
 
 use crate::kernel::RunMeta;
 use serde::{Deserialize, Serialize};

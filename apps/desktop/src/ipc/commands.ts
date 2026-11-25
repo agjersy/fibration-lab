@@ -1,5 +1,5 @@
 // Generated from the command table in crates/core/src/commands.rs by
-// `cargo test -p analyst-core --lib commands` (do not edit; a test fails when it is stale).
+// `cargo test -p fibration-core --lib commands` (do not edit; a test fails when it is stale).
 // Argument names are exact (snake_case); see docs/IPC.md sections 4, 7, 9 and 10.
 import type {
   AppInfo,

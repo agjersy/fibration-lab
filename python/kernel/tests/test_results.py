@@ -1,4 +1,4 @@
-"""Named results (``analyst_results.record``, PROTOCOL.md 1.7): written by the script, listed by the kernel."""
+"""Named results (``fibration_results.record``, PROTOCOL.md 1.7): written by the script, listed by the kernel."""
 
 from __future__ import annotations
 
@@ -10,12 +10,12 @@ import pytest
 from conftest import Notes
 from test_runs import write_script
 
-from analyst_kernel.kernel import Kernel
-from analyst_results import load, record
+from fibration_kernel.kernel import Kernel
+from fibration_results import load, record
 
 
 def test_record_writes_and_replaces(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("ANALYST_OUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("FIBRATION_OUT_DIR", str(tmp_path / "out"))
     assert record("tau", 1.82, unit="s", uncertainty=0.04) == {"name": "tau", "value": 1.82, "unit": "s", "uncertainty": 0.04}
     record("n", 50)
     record("tau", 1.9, unit="s")
@@ -30,14 +30,14 @@ def test_record_writes_and_replaces(tmp_path: Path, monkeypatch):
     (("x", math.nan), ValueError), (("x", math.inf), ValueError), (("x", 1.0, None, -1.0), ValueError),
 ])
 def test_record_refuses_what_cannot_be_checked(tmp_path: Path, monkeypatch, args, exc):
-    monkeypatch.setenv("ANALYST_OUT_DIR", str(tmp_path / "out"))
+    monkeypatch.setenv("FIBRATION_OUT_DIR", str(tmp_path / "out"))
     with pytest.raises(exc):
         record(*args)
 
 
 def test_the_kernel_lists_results_as_an_artifact(kernel: Kernel, repo: Path, notes: Notes):
     script = write_script(repo, "named.py", """
-from analyst_results import record
+from fibration_results import record
 record("tau", 1.8234, unit="s", uncertainty=0.05)
 record("margin", 0.183)
 print("ok")

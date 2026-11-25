@@ -1,4 +1,4 @@
-/* Ported from Personal Analyst apps/desktop/src/styles/theme.css at commit f229e4d. Tokens unchanged. */
+/* Ported from Fibration Lab apps/desktop/src/styles/theme.css at commit f229e4d. Tokens unchanged. */
 /* Zed-like neutral palette. Light by default, dark via prefers-color-scheme,
    manual override through data-theme on <html>. */
 :root {

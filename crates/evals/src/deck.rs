@@ -9,18 +9,18 @@
 //! finished deck, its build and checker report, and the turn's summary.
 
 use super::EvalEnv;
-use analyst_core::agent::{Agent, AgentConfig, AutoApprover};
-use analyst_core::service::decks::{self, DeckOptions};
-use analyst_core::session::Session;
-use analyst_core::tools::gate::Policy;
-use analyst_core::tools::ToolContext;
-use analyst_deck::tools::dispatch::{slide_text, title_of};
-use analyst_deck::workspace::Workspace;
-use analyst_deck_protocol::deck::{DeckMode, Slide};
-use analyst_deck_protocol::evals::{Check, NativeKind, TaskFile};
-use analyst_protocol::config::{EditPolicy, ProjectConfig, RunPolicy};
-use analyst_protocol::evals::{CheckResult, Mode, TaskResult};
 use anyhow::{anyhow, Context, Result};
+use fibration_core::agent::{Agent, AgentConfig, AutoApprover};
+use fibration_core::service::decks::{self, DeckOptions};
+use fibration_core::session::Session;
+use fibration_core::tools::gate::Policy;
+use fibration_core::tools::ToolContext;
+use fibration_deck::tools::dispatch::{slide_text, title_of};
+use fibration_deck::workspace::Workspace;
+use fibration_deck_protocol::deck::{DeckMode, Slide};
+use fibration_deck_protocol::evals::{Check, NativeKind, TaskFile};
+use fibration_protocol::config::{EditPolicy, ProjectConfig, RunPolicy};
+use fibration_protocol::evals::{CheckResult, Mode, TaskResult};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -104,7 +104,7 @@ fn slug_of(task: &DeckTask) -> String {
     }
 }
 
-/// Build the project from a task's fixture: a git repository with the analyst project files
+/// Build the project from a task's fixture: a git repository with the fibration project files
 /// and the deck under `decks/<slug>/`. Returns the locked slides of the starting deck (for
 /// `locked_untouched`). References are added once the deck is open.
 pub fn prepare(
@@ -117,9 +117,9 @@ pub fn prepare(
         .with_context(|| format!("{} needs a TEMPLATE file", fixture.display()))?;
     let template = templates_dir.join(template_name.trim());
     std::fs::create_dir_all(repo)?;
-    analyst_core::init::init_repo(
+    fibration_core::init::init_repo(
         repo,
-        &analyst_core::init::InitOptions {
+        &fibration_core::init::InitOptions {
             run_uv: false,
             git: false,
         },
@@ -134,7 +134,7 @@ pub fn prepare(
     )
     .map_err(|e| anyhow!("creating the deck: {}", e.message))?;
     let root = decks::deck_root(repo, &slug);
-    let store = analyst_deck::deck_store::DeckStore::new(&root);
+    let store = fibration_deck::deck_store::DeckStore::new(&root);
     if fixture.join("project.toml").is_file() {
         std::fs::copy(
             fixture.join("project.toml"),
@@ -482,7 +482,7 @@ pub async fn run_task(
     let started = std::time::Instant::now();
     let name = task.file.task.name.clone();
     let work = match tempfile::Builder::new()
-        .prefix(&format!("analyst-eval-{name}-"))
+        .prefix(&format!("fibration-eval-{name}-"))
         .tempdir()
     {
         Ok(w) => w,
@@ -509,7 +509,7 @@ async fn run_in(
     let task_home = work.join("home");
     std::fs::create_dir_all(&task_home)?;
 
-    let mut project: ProjectConfig = analyst_core::config::load_project(&repo)?;
+    let mut project: ProjectConfig = fibration_core::config::load_project(&repo)?;
     // Deck evaluations run unattended: edits apply inside the declared scope.
     project.policy.edits = EditPolicy::Auto;
     project.policy.runs = RunPolicy::Auto;
@@ -548,9 +548,9 @@ async fn run_in(
         }
     }
     // The prepared project is the baseline the turn's checkpoint and scope start from.
-    analyst_core::checkpoint::git(&repo, &["init", "-q"], None)?;
-    analyst_core::checkpoint::git(&repo, &["add", "-A"], None)?;
-    analyst_core::checkpoint::git(
+    fibration_core::checkpoint::git(&repo, &["init", "-q"], None)?;
+    fibration_core::checkpoint::git(&repo, &["add", "-A"], None)?;
+    fibration_core::checkpoint::git(
         &repo,
         &["commit", "-q", "--allow-empty", "-m", "fixture"],
         None,

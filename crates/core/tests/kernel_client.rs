@@ -1,9 +1,9 @@
 //! Integration tests for `KernelClient` against the stdlib-only fake kernel
 //! (`tests/fake_kernel.py`), launched through an injected command line the way
-//! `ANALYST_TOOLING_PYTHON` would select the interpreter.
+//! `FIBRATION_TOOLING_PYTHON` would select the interpreter.
 
-use analyst_core::kernel::{KernelArgs, KernelClient, LocalStdio};
-use analyst_protocol::kernel::*;
+use fibration_core::kernel::{KernelArgs, KernelClient, LocalStdio};
+use fibration_protocol::kernel::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -12,8 +12,8 @@ fn fake_kernel() -> PathBuf {
 }
 
 fn launcher() -> Vec<String> {
-    // Mirrors `ANALYST_TOOLING_PYTHON`-style injection: the first element is the interpreter.
-    let py = std::env::var("ANALYST_TOOLING_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    // Mirrors `FIBRATION_TOOLING_PYTHON`-style injection: the first element is the interpreter.
+    let py = std::env::var("FIBRATION_TOOLING_PYTHON").unwrap_or_else(|_| "python3".to_string());
     vec![py, fake_kernel().to_string_lossy().to_string()]
 }
 
@@ -50,7 +50,7 @@ const FAST_SCRIPT: &str = r#"
 import os, sys
 print("hello from the script")
 print("second line", flush=True)
-out = os.environ["ANALYST_OUT_DIR"]
+out = os.environ["FIBRATION_OUT_DIR"]
 os.makedirs(os.path.join(out, "figures"), exist_ok=True)
 with open(os.path.join(out, "figures", "fig-1.png"), "wb") as f:
     f.write(b"\x89PNG not really")
@@ -101,7 +101,8 @@ async fn hello_info_index_run_and_shutdown() {
     assert!(started.out_dir.starts_with("out/hello/"));
 
     let (done, stdout, _stderr, artifacts) =
-        analyst_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20)).await;
+        fibration_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20))
+            .await;
     let done = done.expect("run.done");
     assert_eq!(done.status, RunStatus::Done);
     assert_eq!(done.exit_code, Some(0));
@@ -166,7 +167,8 @@ async fn reconnect_reattaches_running_runs() {
     // After reconnect, run.attach replays from the recorded offsets: the remaining ticks and
     // run.done arrive on the same subscription.
     let (done, after, _, _) =
-        analyst_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20)).await;
+        fibration_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(20))
+            .await;
     let done = done.expect("run.done after reconnect");
     assert_eq!(done.status, RunStatus::Done);
     let all = format!("{before}{after}");
@@ -207,7 +209,7 @@ async fn calls_time_out_when_the_kernel_stops_answering() {
     );
     assert!(matches!(
         err,
-        analyst_core::kernel::KernelError::Timeout { .. }
+        fibration_core::kernel::KernelError::Timeout { .. }
     ));
     // The default limit is configurable.
     client.set_call_timeout(Duration::from_millis(200));
@@ -381,7 +383,8 @@ async fn cancel_guard_cancels_the_run_when_dropped() {
     assert_eq!(guard.run_id(), started.run_id);
     drop(guard);
     let (done, _, _, _) =
-        analyst_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(15)).await;
+        fibration_core::kernel::wait_for_run(&mut rx, &started.run_id, Duration::from_secs(15))
+            .await;
     assert_eq!(done.expect("run.done").status, RunStatus::Cancelled);
 
     // A disarmed guard leaves the run alone.
@@ -400,15 +403,15 @@ async fn cancel_guard_cancels_the_run_when_dropped() {
 /// stops the script instead of leaving it running on the target.
 #[tokio::test]
 async fn dropping_a_run_script_call_cancels_the_run() {
-    use analyst_core::session::Session;
-    use analyst_core::tools::ToolContext;
-    use analyst_protocol::config::ProjectConfig;
+    use fibration_core::session::Session;
+    use fibration_core::tools::ToolContext;
+    use fibration_protocol::config::ProjectConfig;
 
     let fx = fixture(
         "import time\nfor i in range(200):\n    print('tick', i, flush=True)\n    time.sleep(0.2)\n",
     );
     let home = tempfile::tempdir().unwrap();
-    analyst_core::checkpoint::git(&fx.root, &["init", "-q"], None).unwrap();
+    fibration_core::checkpoint::git(&fx.root, &["init", "-q"], None).unwrap();
     let client = KernelClient::connect(Box::new(fx.transport.clone()), "test")
         .await
         .expect("connect");
@@ -439,7 +442,7 @@ async fn dropping_a_run_script_call_cancels_the_run() {
         .map(|r| r.run_id.clone())
         .expect("a run was started");
     let (done, _, _, _) =
-        analyst_core::kernel::wait_for_run(&mut rx, &run_id, Duration::from_secs(15)).await;
+        fibration_core::kernel::wait_for_run(&mut rx, &run_id, Duration::from_secs(15)).await;
     let status = match done {
         Some(d) => d.status,
         None => client.run_status(&run_id).await.unwrap().status,

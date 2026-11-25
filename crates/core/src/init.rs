@@ -1,4 +1,4 @@
-//! Repository template (`analyst init`, `session_create { init: true }`): `.analyst/project.toml`,
+//! Repository template (`fibration init`, `session_create { init: true }`): `.fibration/project.toml`,
 //! `analysis/`, `scripts/`, `data/`, `out/`, `notes.md`, `pyproject.toml`, `.gitignore`, then
 //! optionally `uv venv` + `uv sync` and `git init` with an initial commit.
 
@@ -58,7 +58,7 @@ pub struct InitReport {
 /// The template files: `(relative path, content)`.
 pub fn template_files(name: &str) -> Vec<(&'static str, String)> {
     vec![
-        (".analyst/project.toml", TEMPLATE_PROJECT_TOML.into()),
+        (".fibration/project.toml", TEMPLATE_PROJECT_TOML.into()),
         (
             "analysis/__init__.py",
             "\"\"\"Shared analysis library: documented, reusable functions.\"\"\"\n".into(),
@@ -72,7 +72,7 @@ pub fn template_files(name: &str) -> Vec<(&'static str, String)> {
             // `data/*` (not `data/`) so the `.gitkeep` exception can apply: data files are
             // never committed, checkpointed, or synced by default. Deck exports and the
             // deck kernel's caches are derived files.
-            "out/*\n!out/.gitkeep\ndata/*\n!data/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.analyst/env.sh\n.ruff_cache/\n.env\ndecks/*/exports/\ndecks/*/.present/cache/\n"
+            "out/*\n!out/.gitkeep\ndata/*\n!data/.gitkeep\n.venv/\n__pycache__/\n*.pyc\n.fibration/env.sh\n.ruff_cache/\n.env\ndecks/*/exports/\ndecks/*/.present/cache/\n"
                 .into(),
         ),
         (
@@ -155,7 +155,7 @@ pub fn init_repo(root: &Path, opts: &InitOptions) -> Result<InitReport> {
     if opts.git && !root.join(".git").exists() {
         crate::checkpoint::git(&root, &["init", "-q"], None)?;
         crate::checkpoint::git(&root, &["add", "-A"], None)?;
-        crate::checkpoint::git(&root, &["commit", "-q", "-m", "analyst init"], None)?;
+        crate::checkpoint::git(&root, &["commit", "-q", "-m", "fibration init"], None)?;
         report.log.push("git init + initial commit".into());
     }
     Ok(report)
@@ -177,7 +177,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(r.created.iter().any(|c| c == ".analyst/project.toml"));
+        assert!(r.created.iter().any(|c| c == ".fibration/project.toml"));
         assert!(root.join("analysis/__init__.py").is_file());
         assert!(root.join(".git").is_dir());
         let py = std::fs::read_to_string(root.join("pyproject.toml")).unwrap();
@@ -193,7 +193,7 @@ mod tests {
         assert!(again.created.is_empty());
         assert_eq!(again.kept.len(), template_files("x").len());
         let cfg = crate::config::load_project(&root).unwrap();
-        assert_eq!(cfg, analyst_protocol::config::ProjectConfig::default());
+        assert_eq!(cfg, fibration_protocol::config::ProjectConfig::default());
         // A project `.env` (API keys) is ignored from the start.
         std::fs::write(root.join(".env"), "SOME_API_KEY=sk-test\n").unwrap();
         // A8: data files are ignored, the placeholders are tracked.

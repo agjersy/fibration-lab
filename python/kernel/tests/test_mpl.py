@@ -1,4 +1,4 @@
-"""analyst_mpl backend: naming, de-duplication, sidecars, savefig wrapping, fallback."""
+"""fibration_mpl backend: naming, de-duplication, sidecars, savefig wrapping, fallback."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ SCRIPT = """
 import sys
 import matplotlib
 import matplotlib.pyplot as plt
-assert matplotlib.get_backend().lower() == "module://analyst_mpl", matplotlib.get_backend()
-import analyst_mpl
+assert matplotlib.get_backend().lower() == "module://fibration_mpl", matplotlib.get_backend()
+import fibration_mpl
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-assert issubclass(analyst_mpl.FigureCanvas, FigureCanvasAgg)
-assert all(hasattr(analyst_mpl, n) for n in ("FigureCanvas", "FigureManager", "show"))
+assert issubclass(fibration_mpl.FigureCanvas, FigureCanvasAgg)
+assert all(hasattr(fibration_mpl, n) for n in ("FigureCanvas", "FigureManager", "show"))
 
 fig1, ax = plt.subplots()
 ax.plot([0, 1], [1, 0])
@@ -46,13 +46,13 @@ def run_backend(tmp_path: Path, env_extra: dict[str, str], cwd: Path | None = No
     env = dict(os.environ)
     env.update(
         {
-            "MPLBACKEND": "module://analyst_mpl",
+            "MPLBACKEND": "module://fibration_mpl",
             "PYTHONPATH": str(KERNEL_DIR),
             "MPLCONFIGDIR": str(tmp_path / "mplcfg"),
         }
     )
-    env.pop("ANALYST_OUT_DIR", None)
-    env.pop("ANALYST_FIGURE_FORMATS", None)
+    env.pop("FIBRATION_OUT_DIR", None)
+    env.pop("FIBRATION_FIGURE_FORMATS", None)
     env.update(env_extra)
     script = tmp_path / "plot_script.py"
     script.write_text(SCRIPT)
@@ -74,7 +74,7 @@ def run_backend(tmp_path: Path, env_extra: dict[str, str], cwd: Path | None = No
 )
 def test_show_formats_come_from_the_environment(tmp_path: Path, formats: str, exts: tuple[str, ...]):
     out = tmp_path / "outdir"
-    proc = run_backend(tmp_path, {"ANALYST_OUT_DIR": str(out), "ANALYST_FIGURE_FORMATS": formats})
+    proc = run_backend(tmp_path, {"FIBRATION_OUT_DIR": str(out), "FIBRATION_FIGURE_FORMATS": formats})
     assert proc.returncode == 0, proc.stderr
     figs = out / "figures"
     stems = ("fig-1", "residuals", "residuals-2", "decay-fit-run-1")
@@ -93,13 +93,13 @@ def test_show_formats_come_from_the_environment(tmp_path: Path, formats: str, ex
 
 def test_show_naming_sidecars_and_savefig(tmp_path: Path):
     out = tmp_path / "outdir"
-    proc = run_backend(tmp_path, {"ANALYST_OUT_DIR": str(out), "ANALYST_RUN_ID": "20260101-000000-abcdef",
-                                  "ANALYST_ROOT": str(tmp_path)})
+    proc = run_backend(tmp_path, {"FIBRATION_OUT_DIR": str(out), "FIBRATION_RUN_ID": "20260101-000000-abcdef",
+                                  "FIBRATION_ROOT": str(tmp_path)})
     assert proc.returncode == 0, proc.stderr
     figs = out / "figures"
     names = sorted(p.name for p in figs.iterdir())
     stems = ("fig-1", "residuals", "residuals-2", "decay-fit-run-1")
-    # one file per figure: PNG only unless ANALYST_FIGURE_FORMATS asks for more
+    # one file per figure: PNG only unless FIBRATION_FIGURE_FORMATS asks for more
     assert names == sorted(f"{stem}.png{meta}" for stem in stems for meta in ("", ".meta.json"))
     assert (figs / "fig-1.png").read_bytes()[:4] == b"\x89PNG"
 
@@ -140,7 +140,7 @@ def test_fallback_without_out_dir(tmp_path: Path):
 def test_module_imports_only_stdlib_and_matplotlib():
     import ast
 
-    src = (KERNEL_DIR / "analyst_mpl" / "__init__.py").read_text()
+    src = (KERNEL_DIR / "fibration_mpl" / "__init__.py").read_text()
     tops = set()
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.Import):

@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/keymap.test.ts at commit f229e4d (matching and
+// Ported from Fibration Lab apps/desktop/src/keymap.test.ts at commit f229e4d (matching and
 // formatting cases), against a local binding table.
 import { describe, expect, it } from "vitest";
 import { createKeymap, formatKey, matchesKey, parseKey } from "./keymap";

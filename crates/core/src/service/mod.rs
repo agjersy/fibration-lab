@@ -32,8 +32,8 @@ pub use terminal::{CaptureEnv, Terminal, TerminalManager, TerminalSpec};
 use crate::config;
 use crate::session::Session;
 use crate::target::Target;
-use analyst_protocol::config::{GlobalConfig, ProviderKind, TargetKind};
-use analyst_protocol::ui::*;
+use fibration_protocol::config::{GlobalConfig, ProviderKind, TargetKind};
+use fibration_protocol::ui::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +43,7 @@ use wb_providers::capabilities;
 /// Options for the whole app.
 #[derive(Debug, Clone)]
 pub struct WorkbenchOptions {
-    /// `$ANALYST_HOME` (default `~/.analyst`).
+    /// `$FIBRATION_HOME` (default `~/.fibration`).
     pub home: PathBuf,
     /// Override of the local kernel launcher (tests inject a fake kernel).
     pub kernel_launcher: Option<Vec<String>>,
@@ -58,7 +58,7 @@ pub struct WorkbenchOptions {
     /// How `session_create { init: true }` applies the template.
     pub init: crate::init::InitOptions,
     /// The kernel source bundled with a packaged app (a directory with `pyproject.toml`,
-    /// `analyst_kernel/`, and `analyst_mpl/`). See [`Workbench::prepare_tooling`].
+    /// `fibration_kernel/`, and `fibration_mpl/`). See [`Workbench::prepare_tooling`].
     pub kernel_source: Option<PathBuf>,
     /// How deck kernels are started (engine, sandbox, interpreter).
     pub deck: DeckOptions,
@@ -165,7 +165,7 @@ impl Workbench {
         runtime::tooling_python(&self.global(), &self.opts.home)
     }
 
-    /// The directory holding `analyst_mpl`. Only a successful lookup is cached: the tooling
+    /// The directory holding `fibration_mpl`. Only a successful lookup is cached: the tooling
     /// environment may not exist yet when the first session opens.
     fn mpl_dir(&self) -> Option<PathBuf> {
         if let Some(d) = self.mpl_dir.lock().ok().and_then(|m| m.clone()) {
@@ -215,13 +215,13 @@ impl Workbench {
     }
 
     /// Whether the local kernel needs the bootstrapped tooling environment
-    /// (`$ANALYST_HOME/tooling`): no launcher override, no `ANALYST_TOOLING_PYTHON`, no
+    /// (`$FIBRATION_HOME/tooling`): no launcher override, no `FIBRATION_TOOLING_PYTHON`, no
     /// `tooling_python` in the config, and no development checkout with a kernel venv.
     fn needs_local_tooling(&self) -> bool {
         if self.opts.kernel_launcher.is_some() {
             return false;
         }
-        if std::env::var("ANALYST_TOOLING_PYTHON")
+        if std::env::var("FIBRATION_TOOLING_PYTHON")
             .map(|v| !v.is_empty())
             .unwrap_or(false)
         {
@@ -244,7 +244,7 @@ impl Workbench {
 
     /// Prepare the local tooling environment in the background when the app does not run
     /// from a development checkout (B12): `uv venv` + `uv pip install <kernel source>` under
-    /// `$ANALYST_HOME/tooling`, version-checked, so later starts do nothing. Kernels wait for
+    /// `$FIBRATION_HOME/tooling`, version-checked, so later starts do nothing. Kernels wait for
     /// it; a failure (for example a missing `uv`) becomes the kernel's error state with a
     /// message that names what is missing and where it was looked for. Progress is reported
     /// as `task_log` / `task_done` to every open session. Returns the task id when work was
@@ -262,7 +262,7 @@ impl Workbench {
             .or_else(crate::target::bootstrap::find_dev_kernel_source);
         let id = self.tasks.alloc("tooling");
         let Some(source) = source else {
-            let msg = "The Python tooling environment cannot be set up: the kernel source bundled with the app was not found. Reinstall the app, or set ANALYST_TOOLING_PYTHON to an interpreter that has analyst_kernel installed.".to_string();
+            let msg = "The Python tooling environment cannot be set up: the kernel source bundled with the app was not found. Reinstall the app, or set FIBRATION_TOOLING_PYTHON to an interpreter that has fibration_kernel installed.".to_string();
             tracing::error!("{msg}");
             self.tooling.set(ToolingState::Failed(msg));
             return None;
@@ -511,7 +511,7 @@ impl Workbench {
 
     // ---- models and targets ----
 
-    fn is_local_provider(p: &analyst_protocol::config::ProviderConfig) -> bool {
+    fn is_local_provider(p: &fibration_protocol::config::ProviderConfig) -> bool {
         let url = p.effective_base_url();
         url.contains("localhost")
             || url.contains("127.0.0.1")
@@ -540,7 +540,7 @@ impl Workbench {
                         .unwrap_or(capabilities::DEFAULT_CONTEXT_WINDOW),
                     tools: o
                         .tools
-                        .unwrap_or(analyst_protocol::config::ToolSupport::Native),
+                        .unwrap_or(fibration_protocol::config::ToolSupport::Native),
                     vision: o.vision.unwrap_or(false),
                 })
             }
@@ -615,7 +615,7 @@ impl Workbench {
     }
 
     /// One row per configured provider: whether a key is available and where it comes from
-    /// (`"env"`: the process environment; `"stored"`: `$ANALYST_HOME/.env`; or null). A
+    /// (`"env"`: the process environment; `"stored"`: `$FIBRATION_HOME/.env`; or null). A
     /// key that only a repo's own `.env` provides is not listed here: it belongs to that
     /// session. Key values never leave the backend.
     pub fn provider_keys_status(&self) -> Vec<ProviderKeyStatus> {
@@ -639,7 +639,7 @@ impl Workbench {
             .collect()
     }
 
-    /// Store a provider's key in `$ANALYST_HOME/.env` (mode 0600) under the provider's
+    /// Store a provider's key in `$FIBRATION_HOME/.env` (mode 0600) under the provider's
     /// `api_key_env` name, or the derived `<PROVIDER NAME>_API_KEY` when none is configured;
     /// an empty key removes it. Conversations pick the change up on their next turn.
     pub fn provider_key_set(&self, provider: &str, key: &str) -> ServiceResult<()> {
@@ -684,7 +684,11 @@ impl Workbench {
                 name: t.name.clone(),
                 kind: t.kind,
                 host: t.host.clone(),
-                remote_root: Some(t.remote_root.clone().unwrap_or_else(|| "~/analyst".into())),
+                remote_root: Some(
+                    t.remote_root
+                        .clone()
+                        .unwrap_or_else(|| "~/fibration".into()),
+                ),
                 sandbox: t.sandbox.clone().unwrap_or_else(|| "auto".into()),
                 data_dirs: t.data_dirs.clone(),
                 bootstrapped: None,

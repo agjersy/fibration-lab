@@ -4,8 +4,8 @@
 //! user edits can detect that the slide changed underneath them (ARCHITECTURE 13).
 
 use crate::util::{new_id, sha256_hex, to_json_pretty, write_atomic};
-use analyst_deck_protocol::deck::{Deck, DeckMode, Section, Slide};
-use analyst_deck_protocol::ids::SlideId;
+use fibration_deck_protocol::deck::{Deck, DeckMode, Section, Slide};
+use fibration_deck_protocol::ids::SlideId;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]

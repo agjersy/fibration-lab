@@ -1,11 +1,11 @@
 //! The deck service the UI's deck commands call, against the real deck kernel. The agent
-//! side (proposals, modes, scope) is tested with the one loop in `analyst-core`.
+//! side (proposals, modes, scope) is tested with the one loop in `fibration-core`.
 
-use analyst_deck::project::Project;
-use analyst_deck::service::{DeckHost, DeckService};
-use analyst_deck::workspace::{OpenOptions, Workspace};
-use analyst_deck_protocol::deck::DeckMode;
-use analyst_deck_protocol::ui::{DeckEvent, IpcErrorCode};
+use fibration_deck::project::Project;
+use fibration_deck::service::{DeckHost, DeckService};
+use fibration_deck::workspace::{OpenOptions, Workspace};
+use fibration_deck_protocol::deck::DeckMode;
+use fibration_deck_protocol::ui::{DeckEvent, IpcErrorCode};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -112,7 +112,7 @@ async fn manual_editing_and_reopening() {
     // A stale hash is a conflict; the current one applies.
     let mut doc = serde_json::to_value(&created.slide).unwrap();
     doc["notes"] = json!({"paragraphs": [{"runs": [{"t": "Speaker note"}]}]});
-    let edited: analyst_deck_protocol::deck::Slide = serde_json::from_value(doc).unwrap();
+    let edited: fibration_deck_protocol::deck::Slide = serde_json::from_value(doc).unwrap();
     let stale = rt
         .slide_update(edited.clone(), Some("sha256:0000"))
         .unwrap_err();
@@ -260,8 +260,8 @@ const PIXEL: &[u8] = &[
 
 #[tokio::test]
 async fn assets_previews_and_template_replacement() {
-    use analyst_deck_protocol::ui::ThumbKind;
     use base64::Engine;
+    use fibration_deck_protocol::ui::ThumbKind;
     let Some(rig) = rig().await else { return };
     let rt = &rig.rt;
     let mut rx = rt.subscribe();

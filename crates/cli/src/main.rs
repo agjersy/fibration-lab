@@ -1,23 +1,23 @@
-//! `analyst`: the command line of Personal Analyst: analysis (scripts, runs, checks), decks
-//! (`analyst deck ...`), the one agent loop (`analyst chat`), and evaluations of both.
+//! `fibration`: the command line of Fibration Lab: analysis (scripts, runs, checks), decks
+//! (`fibration deck ...`), the one agent loop (`fibration chat`), and evaluations of both.
 
 mod deck;
 
-use analyst_core::agent::{Agent, AgentConfig, ApprovalRequest, Approver, AutoApprover};
-use analyst_core::app::{App as CoreApp, StartOptions};
-use analyst_core::config;
-use analyst_core::kernel::{resolve_tooling_python_in, KernelClient};
-use analyst_core::session::Session;
-use analyst_core::target::{self, Target};
-use analyst_core::tools::gate::Policy;
-use analyst_core::tools::ToolContext;
-use analyst_protocol::config::{EditPolicy, ProjectConfig, RunPolicy, TargetKind};
-use analyst_protocol::evals::Mode;
-use analyst_protocol::kernel::*;
-use analyst_protocol::transcript::Event;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand};
+use fibration_core::agent::{Agent, AgentConfig, ApprovalRequest, Approver, AutoApprover};
+use fibration_core::app::{App as CoreApp, StartOptions};
+use fibration_core::config;
+use fibration_core::kernel::{resolve_tooling_python_in, KernelClient};
+use fibration_core::session::Session;
+use fibration_core::target::{self, Target};
+use fibration_core::tools::gate::Policy;
+use fibration_core::tools::ToolContext;
+use fibration_protocol::config::{EditPolicy, ProjectConfig, RunPolicy, TargetKind};
+use fibration_protocol::evals::Mode;
+use fibration_protocol::kernel::*;
+use fibration_protocol::transcript::Event;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,12 +27,12 @@ use wb_providers::ModelClient;
 
 #[derive(Parser)]
 #[command(
-    name = "analyst",
+    name = "fibration",
     version,
-    about = "Personal Analyst: agent-driven, reusable Python analysis tools"
+    about = "Fibration Lab: agent-driven, reusable Python analysis tools"
 )]
 struct Cli {
-    /// Analyst home (default: $ANALYST_HOME or ~/.analyst).
+    /// Analyst home (default: $FIBRATION_HOME or ~/.fibration).
     #[arg(long, global = true)]
     home: Option<PathBuf>,
     /// Repository root (default: current directory).
@@ -56,7 +56,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a template repo (.analyst/project.toml, scripts/, analysis/, data/, out/, pyproject.toml, uv venv, git init).
+    /// Create a template repo (.fibration/project.toml, scripts/, analysis/, data/, out/, pyproject.toml, uv venv, git init).
     Init { path: Option<PathBuf> },
     /// Manage the project environment with uv.
     Env {
@@ -114,7 +114,7 @@ enum Command {
         #[arg(long)]
         target: Option<String>,
     },
-    /// Stored provider API keys ($ANALYST_HOME/.env, mode 0600).
+    /// Stored provider API keys ($FIBRATION_HOME/.env, mode 0600).
     Key {
         #[command(subcommand)]
         cmd: KeyCmd,
@@ -238,7 +238,7 @@ fn start_core(home: PathBuf, sandbox: Option<String>) -> Result<CoreApp> {
     Ok(core)
 }
 
-/// The CLI's view of the started app ([`analyst_core::app::App`]) for one repository.
+/// The CLI's view of the started app ([`fibration_core::app::App`]) for one repository.
 struct App {
     core: CoreApp,
     repo: PathBuf,
@@ -248,7 +248,7 @@ struct App {
 impl App {
     fn new(cli: &Cli) -> Result<App> {
         let core = start_core(
-            cli.home.clone().unwrap_or_else(config::analyst_home),
+            cli.home.clone().unwrap_or_else(config::fibration_home),
             cli.sandbox.clone(),
         )?;
         let repo = cli.repo.clone().unwrap_or(std::env::current_dir()?);
@@ -270,7 +270,7 @@ impl App {
     }
 
     fn session_python(&self) -> String {
-        analyst_core::app::session_python(&self.repo, None)
+        fibration_core::app::session_python(&self.repo, None)
     }
 
     async fn connect(&self, target: &Target) -> Result<KernelClient> {
@@ -352,8 +352,9 @@ fn print_diagnostics(diags: &[Diagnostic]) -> usize {
 fn cmd_init(home: Option<PathBuf>, path: Option<PathBuf>) -> Result<()> {
     let root = path.unwrap_or(std::env::current_dir()?);
     // `uv venv` and `uv sync` install from the configured package index, through the gate.
-    start_core(home.unwrap_or_else(config::analyst_home), None)?;
-    let report = analyst_core::init::init_repo(&root, &analyst_core::init::InitOptions::default())?;
+    start_core(home.unwrap_or_else(config::fibration_home), None)?;
+    let report =
+        fibration_core::init::init_repo(&root, &fibration_core::init::InitOptions::default())?;
     for rel in &report.kept {
         println!("keep   {rel}");
     }
@@ -387,8 +388,8 @@ async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
                 Target::Ssh { host, .. } => {
                     let mirror = target.mirror_dir(&app.repo).unwrap_or_default();
                     let remote = format!(
-                        "cd {} && UV_OFFLINE=1 ~/.analyst/bin/uv pip list",
-                        analyst_core::util::sh_quote_path(&mirror)
+                        "cd {} && UV_OFFLINE=1 ~/.fibration/bin/uv pip list",
+                        fibration_core::util::sh_quote_path(&mirror)
                     );
                     print!(
                         "{}",
@@ -431,7 +432,7 @@ async fn cmd_env(app: &App, cmd: EnvCmd, target: Option<String>) -> Result<()> {
 }
 
 fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
-    let known = |provider: &str| -> Result<&analyst_protocol::config::ProviderConfig> {
+    let known = |provider: &str| -> Result<&fibration_protocol::config::ProviderConfig> {
         if let Some(p) = app
             .core
             .global
@@ -466,7 +467,7 @@ fn cmd_key(app: &App, cmd: KeyCmd) -> Result<()> {
             let key = key.trim();
             if key.is_empty() {
                 return Err(anyhow!(
-                    "no key given on stdin (use `analyst key remove {provider}` to delete one)"
+                    "no key given on stdin (use `fibration key remove {provider}` to delete one)"
                 ));
             }
             config::set_api_key(&app.core.home, p, key)?;
@@ -521,7 +522,7 @@ async fn cmd_target(app: &App, cmd: TargetCmd) -> Result<()> {
                     "{}  kind={kind} host={} remote_root={} python={} sandbox={} data_dirs={:?}{}",
                     t.name,
                     t.host.as_deref().unwrap_or("-"),
-                    t.remote_root.as_deref().unwrap_or("~/analyst"),
+                    t.remote_root.as_deref().unwrap_or("~/fibration"),
                     t.python.as_deref().unwrap_or("3.12"),
                     t.sandbox.as_deref().unwrap_or("auto"),
                     t.data_dirs,
@@ -548,7 +549,7 @@ async fn cmd_target(app: &App, cmd: TargetCmd) -> Result<()> {
             }
             if let Target::Ssh { host, .. } = &target {
                 let mirror = target.mirror_dir(&app.repo).unwrap_or_default();
-                let index_flag = analyst_core::egress::remote_index_flag("uv sync (remote)")?;
+                let index_flag = fibration_core::egress::remote_index_flag("uv sync (remote)")?;
                 let command = target::bootstrap::session_env_command(&mirror, &index_flag);
                 println!("session env: {command}");
                 target::run_ssh(host, app.control_dir().as_deref(), &command).await?;
@@ -809,13 +810,16 @@ async fn cmd_index(app: &App, target: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn event_printer() -> analyst_core::agent::EventSink {
+fn event_printer() -> fibration_core::agent::EventSink {
     Arc::new(|e: &Event| match e {
         Event::ToolCall {
             name, arguments, ..
         } => {
             let a = serde_json::to_string(arguments).unwrap_or_default();
-            println!("\n» {name} {}", analyst_core::util::truncate_bytes(&a, 160));
+            println!(
+                "\n» {name} {}",
+                fibration_core::util::truncate_bytes(&a, 160)
+            );
         }
         Event::ToolResult {
             ok,
@@ -827,7 +831,7 @@ fn event_printer() -> analyst_core::agent::EventSink {
             println!(
                 "  {} {}{}",
                 if *ok { "ok" } else { "ERR" },
-                analyst_core::util::truncate_bytes(&r, 160),
+                fibration_core::util::truncate_bytes(&r, 160),
                 if truncated.unwrap_or(false) {
                     " (truncated)"
                 } else {
@@ -870,7 +874,7 @@ async fn cmd_chat(app: &App, args: ChatArgs) -> Result<()> {
         }
     };
     let session = app.session(&target, &model_name)?;
-    let conv_id = analyst_core::util::stamped_id();
+    let conv_id = fibration_core::util::stamped_id();
     println!("session {} conversation {}", session.id(), conv_id);
     let mut project = app.project.clone();
     if args.auto {
@@ -1028,9 +1032,9 @@ async fn run_one(agent: &mut Agent, text: &str, turn: &str) -> bool {
 }
 
 async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
-    use analyst_evals::deck as deck_evals;
+    use fibration_evals::deck as deck_evals;
     // Analysis tasks and deck tasks can share a folder; a filter must match one of them.
-    let analysis = match analyst_evals::load_tasks(&o.tasks, o.task.as_deref()) {
+    let analysis = match fibration_evals::load_tasks(&o.tasks, o.task.as_deref()) {
         Ok(t) => t,
         Err(_) if o.task.is_some() => vec![],
         Err(e) => return Err(e),
@@ -1052,7 +1056,7 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
     }
     let (client, caps, model_name) = app.model(o.model.as_deref(), false).await?;
     let mut out = Vec::new();
-    let report = |r: &analyst_protocol::evals::TaskResult| {
+    let report = |r: &fibration_protocol::evals::TaskResult| {
         println!(
             "  {} ({}/{} checks, {} steps, {:.0}s)",
             if r.passed { "PASS" } else { "FAIL" },
@@ -1073,9 +1077,9 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
     let launcher = vec![
         resolve_tooling_python_in(&app.core.global, &app.core.home),
         "-m".into(),
-        "analyst_kernel".into(),
+        "fibration_kernel".into(),
     ];
-    let env = analyst_evals::EvalEnv {
+    let env = fibration_evals::EvalEnv {
         home: app.core.home.clone(),
         model: client,
         model_name: model_name.clone(),
@@ -1086,7 +1090,7 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
     };
     for t in &analysis {
         println!("task {} ...", t.file.task.name);
-        let r = analyst_evals::run_task(&env, t).await?;
+        let r = fibration_evals::run_task(&env, t).await?;
         report(&r);
         out.push(r);
     }
@@ -1100,10 +1104,10 @@ async fn cmd_eval(app: &App, o: EvalOpts) -> Result<i32> {
         report(&r);
         out.push(r);
     }
-    let sc = analyst_evals::scorecard(&model_name, out);
-    let path = analyst_evals::write_scorecard(&o.results, &sc)?;
+    let sc = fibration_evals::scorecard(&model_name, out);
+    let path = fibration_evals::write_scorecard(&o.results, &sc)?;
     println!();
-    print!("{}", analyst_evals::markdown_table(&sc));
+    print!("{}", fibration_evals::markdown_table(&sc));
     println!("scorecard: {}", path.display());
     Ok(if sc.tasks.iter().all(|t| t.passed) {
         0
@@ -1238,11 +1242,11 @@ mod tests {
     fn sandbox_values_are_validated() {
         for ok in ["auto", "bwrap", "sandbox-exec", "limits", "none"] {
             assert!(
-                Cli::try_parse_from(["analyst", "--sandbox", ok, "index"]).is_ok(),
+                Cli::try_parse_from(["fibration", "--sandbox", ok, "index"]).is_ok(),
                 "{ok}"
             );
         }
-        let err = Cli::try_parse_from(["analyst", "--sandbox", "nonee", "index"])
+        let err = Cli::try_parse_from(["fibration", "--sandbox", "nonee", "index"])
             .err()
             .expect("typo must be rejected");
         assert!(err.to_string().contains("possible values"), "{err}");
@@ -1250,21 +1254,21 @@ mod tests {
 
     #[test]
     fn key_set_takes_the_provider_only() {
-        let cli = Cli::try_parse_from(["analyst", "key", "set", "anthropic"]).unwrap();
+        let cli = Cli::try_parse_from(["fibration", "key", "set", "anthropic"]).unwrap();
         assert!(matches!(
             cli.command,
             Command::Key { cmd: KeyCmd::Set { ref provider } } if provider == "anthropic"
         ));
         // The key itself is never accepted as an argument.
-        assert!(Cli::try_parse_from(["analyst", "key", "set", "anthropic", "sk-123"]).is_err());
+        assert!(Cli::try_parse_from(["fibration", "key", "set", "anthropic", "sk-123"]).is_err());
     }
 
     #[test]
     fn deck_commands_parse() {
         for argv in [
-            vec!["analyst", "deck", "list"],
+            vec!["fibration", "deck", "list"],
             vec![
-                "analyst",
+                "fibration",
                 "deck",
                 "init",
                 "q3",
@@ -1274,7 +1278,7 @@ mod tests {
                 "Q3",
             ],
             vec![
-                "analyst",
+                "fibration",
                 "deck",
                 "template",
                 "inspect",
@@ -1282,21 +1286,36 @@ mod tests {
                 "--catalog",
             ],
             vec![
-                "analyst", "deck", "--deck", "q3", "refs", "add", "a.xlsx", "b.pdf",
+                "fibration",
+                "deck",
+                "--deck",
+                "q3",
+                "refs",
+                "add",
+                "a.xlsx",
+                "b.pdf",
             ],
             vec![
-                "analyst", "deck", "refs", "search", "revenue", "--k", "3", "--deck", "q3",
+                "fibration",
+                "deck",
+                "refs",
+                "search",
+                "revenue",
+                "--k",
+                "3",
+                "--deck",
+                "q3",
             ],
-            vec!["analyst", "deck", "render", "--out", "exports/x.pptx"],
-            vec!["analyst", "deck", "check", "--engine-check", "--json"],
-            vec!["analyst", "deck", "--engine", "none", "build"],
-            vec!["analyst", "deck", "eject"],
-            vec!["analyst", "deck", "export", "--format", "pdf"],
-            vec!["analyst", "deck", "history", "list", "--limit", "5"],
-            vec!["analyst", "deck", "history", "restore", "abc"],
-            vec!["analyst", "deck", "history", "revert-turn", "c-1"],
+            vec!["fibration", "deck", "render", "--out", "exports/x.pptx"],
+            vec!["fibration", "deck", "check", "--engine-check", "--json"],
+            vec!["fibration", "deck", "--engine", "none", "build"],
+            vec!["fibration", "deck", "eject"],
+            vec!["fibration", "deck", "export", "--format", "pdf"],
+            vec!["fibration", "deck", "history", "list", "--limit", "5"],
+            vec!["fibration", "deck", "history", "restore", "abc"],
+            vec!["fibration", "deck", "history", "revert-turn", "c-1"],
             vec![
-                "analyst",
+                "fibration",
                 "deck",
                 "place-figure",
                 "--run",
@@ -1309,7 +1328,7 @@ mod tests {
                 "Decay curve",
             ],
             vec![
-                "analyst",
+                "fibration",
                 "deck",
                 "--deck",
                 "q3",
@@ -1323,16 +1342,18 @@ mod tests {
                 "--placeholder",
                 "body",
             ],
-            vec!["analyst", "eval", "run", "--tasks", "present/evals/tasks"],
-            vec!["analyst", "chat", "--mode", "slides", "hello"],
+            vec!["fibration", "eval", "run", "--tasks", "present/evals/tasks"],
+            vec!["fibration", "chat", "--mode", "slides", "hello"],
         ] {
             assert!(Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
         }
-        assert!(Cli::try_parse_from(["analyst", "deck", "--engine", "keynote", "build"]).is_err());
+        assert!(
+            Cli::try_parse_from(["fibration", "deck", "--engine", "keynote", "build"]).is_err()
+        );
         // The placement commands need their run, artifact or function, and the slide.
         for argv in [
             vec![
-                "analyst",
+                "fibration",
                 "deck",
                 "place-figure",
                 "--run",
@@ -1341,7 +1362,7 @@ mod tests {
                 "s-1",
             ],
             vec![
-                "analyst",
+                "fibration",
                 "deck",
                 "place-equation",
                 "--path",
@@ -1350,7 +1371,7 @@ mod tests {
                 "s-1",
             ],
             vec![
-                "analyst",
+                "fibration",
                 "deck",
                 "place-equation",
                 "--path",

@@ -27,12 +27,12 @@ use crate::tools::proposals::Proposal;
 use crate::tools::registry::{self, DeckKinds, ToolClass};
 use crate::tools::ToolContext;
 use crate::util::{estimate_tokens, now_rfc3339, truncate_bytes};
-use analyst_deck::tools::dispatch::{Change, Prepared};
-use analyst_protocol::config::DEFAULT_MAX_OUTPUT_TOKENS;
-use analyst_protocol::evals::Mode;
-use analyst_protocol::kernel::{Diagnostic, Severity};
-use analyst_protocol::transcript::{DecidedBy, Decision, Event, ProposalKind};
 use anyhow::{anyhow, Result};
+use fibration_deck::tools::dispatch::{Change, Prepared};
+use fibration_protocol::config::DEFAULT_MAX_OUTPUT_TOKENS;
+use fibration_protocol::evals::Mode;
+use fibration_protocol::kernel::{Diagnostic, Severity};
+use fibration_protocol::transcript::{DecidedBy, Decision, Event, ProposalKind};
 use futures::StreamExt;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
@@ -1258,7 +1258,7 @@ impl Agent {
                     | Change::SlideCreate { slide: after, .. } = &change
                     {
                         result["slide_as_accepted"] =
-                            json!(analyst_deck::tools::dispatch::slide_text(after));
+                            json!(fibration_deck::tools::dispatch::slide_text(after));
                     }
                 }
                 if user_modified {
@@ -1307,7 +1307,7 @@ impl Agent {
                 .ws
                 .deck()
                 .read_deck()
-                .map(|d| d.mode == analyst_deck_protocol::deck::DeckMode::Code)
+                .map(|d| d.mode == fibration_deck_protocol::deck::DeckMode::Code)
                 .unwrap_or(false);
             let existing: Vec<String> = slides
                 .into_iter()
@@ -1508,8 +1508,8 @@ fn deck_proposal_kind(tool: &str) -> ProposalKind {
 /// document (JSON) for slide proposals, the script text for a build script edit. Returns
 /// whether anything changed.
 fn apply_user_edit(change: &mut Change, text: &str) -> std::result::Result<bool, String> {
-    use analyst_deck_protocol::deck::Slide;
-    let parse = |id: &analyst_deck_protocol::ids::SlideId| -> std::result::Result<Slide, String> {
+    use fibration_deck_protocol::deck::Slide;
+    let parse = |id: &fibration_deck_protocol::ids::SlideId| -> std::result::Result<Slide, String> {
         let mut v: Value =
             serde_json::from_str(text).map_err(|e| format!("not a slide document: {e}"))?;
         v["id"] = json!(id);
@@ -1534,7 +1534,7 @@ fn apply_user_edit(change: &mut Change, text: &str) -> std::result::Result<bool,
             Ok(changed)
         }
         Change::Outline { rows } => {
-            let edited: Vec<analyst_deck::tools::dispatch::OutlineRow> =
+            let edited: Vec<fibration_deck::tools::dispatch::OutlineRow> =
                 serde_json::from_str(text).map_err(|e| format!("not an outline: {e}"))?;
             let changed = &edited != rows;
             *rows = edited;
@@ -1552,7 +1552,7 @@ fn compact_args(args: &Value) -> String {
 mod tests {
     use super::*;
     use crate::session::Session;
-    use analyst_protocol::config::{EditPolicy, PolicyConfig, ProjectConfig};
+    use fibration_protocol::config::{EditPolicy, PolicyConfig, ProjectConfig};
     use wb_providers::ScriptedModelClient;
     use wb_transcript::compact::message_tokens;
     use wb_transcript::staged::{choose_split, is_safe_boundary};
@@ -2525,7 +2525,7 @@ mod tests {
     #[tokio::test]
     async fn skills_are_listed_matched_and_loaded_on_demand() {
         let (_home, repo, mut ctx, policy) = setup(EditPolicy::Review, Mode::Plan);
-        let skills = repo.path().join(".analyst/skills");
+        let skills = repo.path().join(".fibration/skills");
         for (name, text) in [
             (
                 "house-style",

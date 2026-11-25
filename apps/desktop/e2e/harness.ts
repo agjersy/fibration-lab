@@ -1,6 +1,6 @@
-// The browser tests run the built renderer against the real core: one `analyst-serve` per
-// Playwright worker over a temporary ANALYST_HOME, the scripted model server
-// (`evals/fake_model_server.py`) for chat, and fixture projects made the way `analyst init`
+// The browser tests run the built renderer against the real core: one `fibration-serve` per
+// Playwright worker over a temporary FIBRATION_HOME, the scripted model server
+// (`evals/fake_model_server.py`) for chat, and fixture projects made the way `fibration init`
 // makes them (the parameter-sweep eval fixture plus the scripts in `e2e/fixture/`). Before each
 // test every open session is closed, the session records are removed, and each project is
 // reset to its first commit (its `.venv` is kept), so every test starts from the same state.
@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 export { expect };
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
-const BIN = process.env.ANALYST_BIN_DIR ?? join(ROOT, "target", "debug");
+const BIN = process.env.FIBRATION_BIN_DIR ?? join(ROOT, "target", "debug");
 const FIXTURE = fileURLToPath(new URL("./fixture/", import.meta.url));
 const SWEEP = join(ROOT, "evals", "tasks", "parameter-sweep", "fixture");
 
@@ -76,9 +76,9 @@ function git(repo: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd: repo, env: { ...process.env, ...GIT_ENV }, encoding: "utf8" });
 }
 
-/** A project made like `analyst init` makes one, with the sweep fixture and the e2e scripts, committed once. */
+/** A project made like `fibration init` makes one, with the sweep fixture and the e2e scripts, committed once. */
 function makeProject(home: string, repo: string): void {
-  execFileSync(join(BIN, "analyst"), ["init", repo], { env: { ...process.env, ANALYST_HOME: home }, stdio: "pipe" });
+  execFileSync(join(BIN, "fibration"), ["init", repo], { env: { ...process.env, FIBRATION_HOME: home }, stdio: "pipe" });
   cpSync(join(SWEEP, "scripts", "decay_sim.py"), join(repo, "scripts", "decay_sim.py"));
   cpSync(join(SWEEP, "analysis", "models.py"), join(repo, "analysis", "models.py"));
   cpSync(join(FIXTURE, "scripts"), join(repo, "scripts"), { recursive: true });
@@ -91,7 +91,7 @@ function makeProject(home: string, repo: string): void {
 function resetProject(repo: string): void {
   git(repo, "reset", "-q", "--hard", "e2e-base");
   git(repo, "clean", "-fdxq", "-e", ".venv");
-  const refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/analyst").split("\n").filter(Boolean);
+  const refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/fibration").split("\n").filter(Boolean);
   for (const r of refs) git(repo, "update-ref", "-d", r);
   cpSync(join(FIXTURE, "data"), join(repo, "data"), { recursive: true });
 }
@@ -99,7 +99,7 @@ function resetProject(repo: string): void {
 function readUrl(child: ChildProcess): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "";
-    const timer = setTimeout(() => reject(new Error(`analyst-serve did not start: ${out}`)), 30_000);
+    const timer = setTimeout(() => reject(new Error(`fibration-serve did not start: ${out}`)), 30_000);
     child.stdout?.on("data", (chunk: Buffer) => {
       out += chunk.toString();
       const m = /listening on (ws:\/\/\S+)/.exec(out);
@@ -110,7 +110,7 @@ function readUrl(child: ChildProcess): Promise<string> {
     });
     child.once("exit", (code) => {
       clearTimeout(timer);
-      reject(new Error(`analyst-serve exited (${code}): ${out}`));
+      reject(new Error(`fibration-serve exited (${code}): ${out}`));
     });
   });
 }
@@ -125,7 +125,7 @@ class BridgeClient {
     this.ws = new Promise((resolve, reject) => {
       const ws = new WebSocket(url);
       ws.onopen = () => resolve(ws);
-      ws.onerror = () => reject(new Error("cannot connect to analyst-serve"));
+      ws.onerror = () => reject(new Error("cannot connect to fibration-serve"));
       ws.onmessage = (m) => {
         const msg = JSON.parse(String(m.data)) as { id?: number; ok?: unknown; error?: { message: string; code: string } };
         if (typeof msg.id !== "number") return;
@@ -162,8 +162,8 @@ async function stop(child: ChildProcess): Promise<void> {
 }
 
 async function startServe(home: string, projects: string, template: string, env: Record<string, string>): Promise<{ bridge: Bridge; stop: () => Promise<void> }> {
-  const serve = spawn(join(BIN, "analyst-serve"), [], {
-    env: { ...process.env, ANALYST_HOME: home, OPENAI_API_KEY: "sk-e2e-from-env", ANTHROPIC_API_KEY: "", RUST_LOG: process.env.RUST_LOG ?? "warn", ...env },
+  const serve = spawn(join(BIN, "fibration-serve"), [], {
+    env: { ...process.env, FIBRATION_HOME: home, OPENAI_API_KEY: "sk-e2e-from-env", ANTHROPIC_API_KEY: "", RUST_LOG: process.env.RUST_LOG ?? "warn", ...env },
     stdio: ["ignore", "pipe", "inherit"],
   });
   const url = await readUrl(serve);
@@ -184,7 +184,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
   bridge: [
     // eslint-disable-next-line no-empty-pattern
     async ({}, use) => {
-      const root = mkdtempSync(join(tmpdir(), "analyst-e2e-"));
+      const root = mkdtempSync(join(tmpdir(), "fibration-e2e-"));
       const home = join(root, "home");
       const projects = join(root, "projects");
       mkdirSync(home, { recursive: true });
@@ -236,7 +236,7 @@ export const test = base.extend<Fixtures, WorkerFixtures>({
       const home = `${bridge.home}-unsandboxed`;
       mkdirSync(home, { recursive: true });
       cpSync(join(bridge.home, "config.toml"), join(home, "config.toml"));
-      const served = await startServe(home, dirname(bridge.repo("beam-sim")), bridge.template, { ANALYST_SANDBOX: "limits" });
+      const served = await startServe(home, dirname(bridge.repo("beam-sim")), bridge.template, { FIBRATION_SANDBOX: "limits" });
       await use(served.bridge);
       await served.stop();
       rmSync(home, { recursive: true, force: true });
@@ -293,7 +293,7 @@ export function trackErrors(page: Page): void {
 export async function expectNoErrors(page: Page): Promise<void> {
   expect((page as Tracked).__errors ?? [], "no console errors or page errors").toEqual([]);
   // The app's own collector (main.tsx) must agree: no uncaught error, no unhandled rejection.
-  expect(await page.evaluate(() => (globalThis as unknown as { __analystErrors?: string[] }).__analystErrors), "window.__analystErrors").toEqual([]);
+  expect(await page.evaluate(() => (globalThis as unknown as { __fibrationErrors?: string[] }).__fibrationErrors), "window.__fibrationErrors").toEqual([]);
 }
 
 /** Runs a command from the command palette. */

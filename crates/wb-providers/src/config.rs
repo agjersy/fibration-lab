@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/protocol/src/config.rs` (provider and model sections)
+// Ported from Fibration Lab `crates/protocol/src/config.rs` (provider and model sections)
 // and `crates/core/src/config.rs` (`api_key`) at commit f229e4d.
 // Adapted: `api_key_env` is replaced by `auth` + `key`; adds `headers` and `location`
 // (Present PROTOCOL 4.1).

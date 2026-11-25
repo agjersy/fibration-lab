@@ -1,4 +1,4 @@
-// Ported from the toast part of Personal Analyst apps/desktop/src/state/ui.ts at commit f229e4d.
+// Ported from the toast part of Fibration Lab apps/desktop/src/state/ui.ts at commit f229e4d.
 import { create } from "zustand";
 
 export interface Toast {

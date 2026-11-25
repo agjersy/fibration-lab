@@ -1,10 +1,10 @@
-//! Personal Analyst desktop backend (Tauri 2). The commands in [`commands`] are thin wrappers over
-//! `analyst_core::service::Workbench`; session events reach the renderer through
+//! Fibration Lab desktop backend (Tauri 2). The commands in [`commands`] are thin wrappers over
+//! `fibration_core::service::Workbench`; session events reach the renderer through
 //! `tauri::ipc::Channel<SessionEvent>` subscriptions opened with `session_subscribe`.
 
 pub mod commands;
 
-use analyst_core::service::Workbench;
+use fibration_core::service::Workbench;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -53,11 +53,11 @@ impl AppState {
     }
 }
 
-/// Build the workbench from `$ANALYST_HOME` (default `~/.analyst`) and the environment
-/// (`ANALYST_SANDBOX` overrides the kernel sandbox kind), through the start-up shared with the
-/// CLI and the development bridge (`analyst_core::app::App::start`).
+/// Build the workbench from `$FIBRATION_HOME` (default `~/.fibration`) and the environment
+/// (`FIBRATION_SANDBOX` overrides the kernel sandbox kind), through the start-up shared with the
+/// CLI and the development bridge (`fibration_core::app::App::start`).
 pub fn workbench_from_env() -> anyhow::Result<Arc<Workbench>> {
-    analyst_core::app::App::start_from_env()?.workbench()
+    fibration_core::app::App::start_from_env()?.workbench()
 }
 
 /// Where the kernel source bundled with the app lives: `<resource dir>/kernel` (see
@@ -77,7 +77,7 @@ pub fn build_app_menu<R: tauri::Runtime>(
     use tauri::menu::{Menu, PredefinedMenuItem, Submenu};
     let app_menu = Submenu::with_items(
         app,
-        "Personal Analyst",
+        "Fibration Lab",
         true,
         &[
             &PredefinedMenuItem::about(app, None, None)?,
@@ -122,9 +122,9 @@ pub fn build_app_menu<R: tauri::Runtime>(
 
 /// The invoke handler: the two subscription commands are the shell's own (a channel per
 /// window); every other command is a row of the one command table,
-/// `analyst_core::commands::dispatch`, which the development bridge (`analyst-serve`) calls too.
+/// `fibration_core::commands::dispatch`, which the development bridge (`fibration-serve`) calls too.
 fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
-    use analyst_core::commands::{dispatch, COMMANDS, TRANSPORT_COMMANDS};
+    use fibration_core::commands::{dispatch, COMMANDS, TRANSPORT_COMMANDS};
     let transport: Box<dyn Fn(tauri::ipc::Invoke) -> bool + Send + Sync> =
         Box::new(tauri::generate_handler![
             commands::session_subscribe,
@@ -165,7 +165,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
                 app.set_menu(menu)?;
             }
             // Packaging (B12): outside a development checkout the kernel is installed from
-            // the bundled source into `$ANALYST_HOME/tooling`, in the background. Kernels
+            // the bundled source into `$FIBRATION_HOME/tooling`, in the background. Kernels
             // wait for it; a missing `uv` becomes a clear kernel error state.
             match bundled_kernel_source(app.handle()) {
                 Some(dir) => {
@@ -201,7 +201,7 @@ pub fn run(workbench: Arc<Workbench>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use analyst_core::commands::COMMANDS;
+    use fibration_core::commands::COMMANDS;
 
     /// Copied from docs/IPC.md sections 4, 7, and 9 (the `command` columns).
     const IPC_MD_COMMANDS: &[&str] = &[

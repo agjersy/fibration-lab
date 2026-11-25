@@ -162,5 +162,5 @@ def test_a_thousand_chunks_through_the_pipeline(tmp_path):
     assert vectors.shape == (1000, 32) and time.perf_counter() - started < 20
 
 
-# ---- Personal Analyst ---------------------------------------------------------------------------
+# ---- Fibration Lab ---------------------------------------------------------------------------
 RUN = "20261104-1132-ab12"

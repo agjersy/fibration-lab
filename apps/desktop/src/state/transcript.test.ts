@@ -34,7 +34,7 @@ const events: TranscriptEvent[] = [
   { ts, type: "tool_result", id: "t1", ok: true, result: { functions: 2 } },
   { ts, type: "proposal", id: "p1", kind: "edit", summary: "edit models", diff: "-a\n+b\n" },
   { ts, type: "decision", proposal_id: "p1", decision: "accept", by: "user" },
-  { ts, type: "checkpoint", ref: "refs/analyst/1" },
+  { ts, type: "checkpoint", ref: "refs/fibration/1" },
   { ts, type: "tool_call", id: "t2", name: "run.script", arguments: { script: "scripts/fit.py" } },
   { ts, type: "run", run_id: "r1", script: "scripts/fit.py", args: [], target: "local" },
   { ts, type: "tool_result", id: "t2", ok: false, result: "exit 1", truncated: true },

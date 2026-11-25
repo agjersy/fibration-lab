@@ -1,15 +1,15 @@
-//! `analyst deck ...`: the decks of the repository (`decks/<slug>/`), headless. Every command
+//! `fibration deck ...`: the decks of the repository (`decks/<slug>/`), headless. Every command
 //! opens the deck through the same per-deck service the desktop app uses; its kernel runs
 //! without network. History is the repository's git checkpoints (code and decks together).
 
 use crate::App;
-use analyst_core::service::decks::{self, DeckOptions, DeckServices};
-use analyst_core::service::history;
-use analyst_core::target::Target;
-use analyst_deck::service::DeckService;
-use analyst_deck_protocol::deck::DeckMode;
 use anyhow::{anyhow, Context, Result};
 use clap::{Args, Subcommand};
+use fibration_core::service::decks::{self, DeckOptions, DeckServices};
+use fibration_core::service::history;
+use fibration_core::target::Target;
+use fibration_deck::service::DeckService;
+use fibration_deck_protocol::deck::DeckMode;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -86,9 +86,9 @@ enum DeckCmd {
         cmd: HistoryCmd,
     },
     /// Place a figure of one of the project's runs on a slide, with the run's citation (as
-    /// "Place on slide" in the app). See `analyst run` for run ids and artifact paths.
+    /// "Place on slide" in the app). See `fibration run` for run ids and artifact paths.
     PlaceFigure {
-        /// The run id (`analyst run` prints it).
+        /// The run id (`fibration run` prints it).
         #[arg(long)]
         run: String,
         /// The figure's path as the run reported it.
@@ -158,7 +158,7 @@ enum HistoryCmd {
     },
     /// Restore a checkpoint (the current state is checkpointed first).
     Restore { checkpoint: String },
-    /// Undo a turn (`<conversation>-<n>`, as `analyst chat` prints it).
+    /// Undo a turn (`<conversation>-<n>`, as `fibration chat` prints it).
     RevertTurn { turn: String },
 }
 
@@ -187,12 +187,12 @@ impl App {
     pub fn deck_options(&self, engine: &str) -> DeckOptions {
         DeckOptions {
             engine: engine.to_string(),
-            env_remove: analyst_core::service::terminal::key_env_names(&self.core.global),
+            env_remove: fibration_core::service::terminal::key_env_names(&self.core.global),
             ..DeckOptions::default()
         }
     }
 
-    fn deck_session(&self) -> Result<analyst_core::session::Session> {
+    fn deck_session(&self) -> Result<fibration_core::session::Session> {
         self.session(
             &Target::Local,
             self.core.global.defaults.model.as_deref().unwrap_or("-"),
@@ -212,7 +212,7 @@ async fn open(app: &App, args: &DeckArgs) -> Result<(Arc<DeckServices>, Arc<Deck
     // Bound numbers are checked against the named results the project's runs recorded, read
     // from the run records on disk, so the command line and the desktop agree.
     svc.ws.set_provenance(Arc::new(
-        analyst_core::service::provenance::RepoProvenance::for_project(&app.core.home, &app.repo),
+        fibration_core::service::provenance::RepoProvenance::for_project(&app.core.home, &app.repo),
     ));
     Ok((services, svc))
 }
@@ -236,14 +236,14 @@ pub async fn run(app: &App, args: DeckArgs) -> Result<i32> {
         } => {
             std::fs::create_dir_all(&app.repo)
                 .with_context(|| format!("creating {}", app.repo.display()))?;
-            if !analyst_core::config::project_config_path(&app.repo).is_file()
+            if !fibration_core::config::project_config_path(&app.repo).is_file()
                 || !app.repo.join(".git").exists()
             {
-                let opts = analyst_core::init::InitOptions {
+                let opts = fibration_core::init::InitOptions {
                     run_uv: false,
                     git: true,
                 };
-                analyst_core::init::init_repo(&app.repo, &opts)?;
+                fibration_core::init::init_repo(&app.repo, &opts)?;
             }
             let template = std::fs::canonicalize(template)
                 .with_context(|| format!("template {}", template.display()))?;
@@ -293,12 +293,14 @@ async fn template_inspect(
     let root = tmp.path().join("inspect");
     let file = std::fs::canonicalize(file).with_context(|| format!("{}", file.display()))?;
     let project =
-        analyst_deck::project::Project::create(&root, "inspect", &file, DeckMode::Structured)?;
-    let mut options =
-        analyst_deck::workspace::OpenOptions::new(&app.core.home, &tmp.path().join("index.sqlite"));
+        fibration_deck::project::Project::create(&root, "inspect", &file, DeckMode::Structured)?;
+    let mut options = fibration_deck::workspace::OpenOptions::new(
+        &app.core.home,
+        &tmp.path().join("index.sqlite"),
+    );
     options.engine = "none".into();
     options.env_remove = app.deck_options(&args.engine).env_remove;
-    let ws = analyst_deck::workspace::Workspace::open(&project.root, &options).await?;
+    let ws = fibration_deck::workspace::Workspace::open(&project.root, &options).await?;
     let rel = ws.deck().read_deck()?.template;
     let desc = ws
         .kernel
@@ -307,7 +309,7 @@ async fn template_inspect(
     ws.close().await;
     let desc = desc?;
     let shown = if catalog {
-        analyst_deck::tools::dispatch::layout_catalog(&desc)
+        fibration_deck::tools::dispatch::layout_catalog(&desc)
     } else {
         desc
     };
@@ -348,7 +350,7 @@ async fn history_cmd(app: &App, cmd: &HistoryCmd) -> Result<i32> {
 /// `deck place-figure` and `deck place-equation`: the core placement functions the app and
 /// the agent use, written at once as a user edit against the slide as it was read.
 async fn place(app: &App, svc: &Arc<DeckService>, cmd: &DeckCmd) -> Result<i32> {
-    use analyst_core::service::{artifacts, provenance, runs::RunService};
+    use fibration_core::service::{artifacts, provenance, runs::RunService};
     let placed = match cmd {
         DeckCmd::PlaceFigure {
             run,
@@ -395,7 +397,7 @@ async fn place(app: &App, svc: &Arc<DeckService>, cmd: &DeckCmd) -> Result<i32> 
         _ => unreachable!("only the placement commands"),
     }
     .map_err(|e| anyhow!("{}", e.message))?;
-    let slide: analyst_deck_protocol::deck::Slide =
+    let slide: fibration_deck_protocol::deck::Slide =
         serde_json::from_value(placed.slide).context("the placed slide")?;
     let id = slide.id.to_string();
     svc.slide_update(slide, Some(&placed.hash))

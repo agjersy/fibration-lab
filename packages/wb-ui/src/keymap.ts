@@ -1,4 +1,4 @@
-// Ported from Personal Analyst apps/desktop/src/keymap.ts at commit f229e4d. The binding table is passed
+// Ported from Fibration Lab apps/desktop/src/keymap.ts at commit f229e4d. The binding table is passed
 // in by the app (`createKeymap`) instead of being a module constant; parsing, matching and formatting
 // are unchanged.
 //

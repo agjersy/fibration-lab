@@ -11,7 +11,7 @@ from pathlib import Path
 
 from conftest import Notes, wait_until
 
-from analyst_kernel.kernel import Kernel
+from fibration_kernel.kernel import Kernel
 
 RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 
@@ -90,7 +90,7 @@ def write_script(repo: Path, name: str, body: str) -> str:
 
 ENV_DUMP = """
 import json, os, sys
-out = os.environ["ANALYST_OUT_DIR"]
+out = os.environ["FIBRATION_OUT_DIR"]
 with open(os.path.join(out, "env.json"), "w") as fh:
     json.dump(dict(os.environ), fh)
 print("cwd", os.getcwd())
@@ -106,15 +106,15 @@ def test_environment_table_and_cwd(kernel: Kernel, repo: Path, notes: Notes, tmp
     run_id = res["run_id"]
     notes.wait_for("run.done", run_id)
     env = json.loads((repo / res["out_dir"] / "env.json").read_text())
-    assert env["ANALYST_RUN_ID"] == run_id
-    assert env["ANALYST_OUT_DIR"] == str((repo / res["out_dir"]).resolve())
-    assert env["ANALYST_ROOT"] == str(repo.resolve())
-    assert env["MPLBACKEND"] == "module://analyst_mpl"
+    assert env["FIBRATION_RUN_ID"] == run_id
+    assert env["FIBRATION_OUT_DIR"] == str((repo / res["out_dir"]).resolve())
+    assert env["FIBRATION_ROOT"] == str(repo.resolve())
+    assert env["MPLBACKEND"] == "module://fibration_mpl"
     assert env["MPLCONFIGDIR"] == str(tmp_path / "runs" / "_mplconfig")  # shared, never per run
     assert not (tmp_path / "runs" / run_id / "mplconfig").exists()
-    assert env["ANALYST_FIGURE_FORMATS"] == "png"
+    assert env["FIBRATION_FIGURE_FORMATS"] == "png"
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(kernel.mpl_dir)
-    assert (Path(env["PYTHONPATH"].split(os.pathsep)[0]) / "analyst_mpl" / "__init__.py").exists()
+    assert (Path(env["PYTHONPATH"].split(os.pathsep)[0]) / "fibration_mpl" / "__init__.py").exists()
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["EXTRA"] == "1" and env["LANG"] == "C.UTF-8" and "HOME" in env and "PATH" in env
     assert "SECRET_TOKEN" not in env
@@ -175,7 +175,7 @@ def test_attach_running_run_from_fresh_kernel(kernel: Kernel, repo: Path, notes:
     script = write_script(
         repo, "slow.py",
         "import time, os\nprint('one', flush=True)\ntime.sleep(2)\n"
-        "open(os.path.join(os.environ['ANALYST_OUT_DIR'], 'late.txt'), 'w').write('x')\nprint('two', flush=True)\n",
+        "open(os.path.join(os.environ['FIBRATION_OUT_DIR'], 'late.txt'), 'w').write('x')\nprint('two', flush=True)\n",
     )
     run_id = kernel.call("run.start", {"script": script})["run_id"]
     notes.wait_for("run.stdout", run_id)
@@ -198,7 +198,7 @@ def test_attach_running_run_from_fresh_kernel(kernel: Kernel, repo: Path, notes:
 def test_size_stable_rule_waits_for_growing_files(kernel: Kernel, repo: Path, notes: Notes):
     script = write_script(
         repo, "grow.py",
-        "import os, time\np = os.path.join(os.environ['ANALYST_OUT_DIR'], 'big.txt')\n"
+        "import os, time\np = os.path.join(os.environ['FIBRATION_OUT_DIR'], 'big.txt')\n"
         "with open(p, 'w') as fh:\n    for i in range(40):\n        fh.write('x' * 100)\n        fh.flush()\n        time.sleep(0.03)\n",
     )
     run_id = kernel.call("run.start", {"script": script})["run_id"]
@@ -208,7 +208,7 @@ def test_size_stable_rule_waits_for_growing_files(kernel: Kernel, repo: Path, no
 
 
 def test_artifact_scanner_rules(tmp_path: Path):
-    from analyst_kernel.runs import _ArtifactScanner
+    from fibration_kernel.runs import _ArtifactScanner
 
     root = tmp_path / "root"
     run_dir = tmp_path / "run"

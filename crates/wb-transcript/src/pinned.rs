@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/agent/mod.rs` (the `pinned` list: `pin_fact`,
+// Ported from Fibration Lab `crates/core/src/agent/mod.rs` (the `pinned` list: `pin_fact`,
 // the `Declared scope:` and `Plan:` entries, the `PINNED FACTS` system prompt block) at
 // commit f229e4d.
 // Adapted: a type of its own, persisted as `pinned.json` next to the conversation so the

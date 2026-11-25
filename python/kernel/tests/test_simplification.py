@@ -20,11 +20,11 @@ from pathlib import Path
 import pytest
 from conftest import Notes, wait_until
 
-from analyst_kernel import envinfo
-from analyst_kernel.config import ProjectConfig, config_from_dict, load_config
-from analyst_kernel.kernel import Kernel
-from analyst_kernel.paths import parse_iso
-from analyst_kernel.sandbox import SandboxSpec, bwrap_argv, sandbox_exec_profile
+from fibration_kernel import envinfo
+from fibration_kernel.config import ProjectConfig, config_from_dict, load_config
+from fibration_kernel.kernel import Kernel
+from fibration_kernel.paths import parse_iso
+from fibration_kernel.sandbox import SandboxSpec, bwrap_argv, sandbox_exec_profile
 
 
 class TimedNotes(Notes):
@@ -257,13 +257,13 @@ def test_figure_formats_config():
 
 
 def test_figure_formats_reach_the_run_from_project_toml(repo: Path, tmp_path: Path, notes: Notes):
-    toml = repo / ".analyst" / "project.toml"
+    toml = repo / ".fibration" / "project.toml"
     toml.write_text(toml.read_text() + '\n[figures]\nformats = ["png", "svg"]\n')
     assert load_config(repo).figure_formats == ["png", "svg"]
     k = Kernel(sys.executable, repo, tmp_path / "runs", sandbox="limits", notify=notes, prewarm=False)
     try:
         # the kernel's value wins over one passed with the run
-        run_id = k.call("run.start", {"script": "scripts/fit_decay.py", "env": {"ANALYST_FIGURE_FORMATS": "pdf"}})["run_id"]
+        run_id = k.call("run.start", {"script": "scripts/fit_decay.py", "env": {"FIBRATION_FIGURE_FORMATS": "pdf"}})["run_id"]
         notes.wait_for("run.done", run_id)
         arts = {a["artifact"]["path"].rsplit("/", 1)[-1]: a["artifact"] for a in notes.of("run.artifact", run_id)}
         assert set(arts) == {"decay-fit.png", "decay-fit.svg", "fit.json"}

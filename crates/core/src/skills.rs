@@ -1,6 +1,6 @@
 //! Skills for the analysis agent, loaded with the shared `wb-skills` crate (ARCHITECTURE
 //! 5.16): Agent Skills folders (`<name>/SKILL.md` with `name` and `description`) under
-//! `~/.analyst/skills/` (user) and `<repo>/.analyst/skills/` (project; it wins on a name
+//! `~/.fibration/skills/` (user) and `<repo>/.fibration/skills/` (project; it wins on a name
 //! clash). The older front matter keys `triggers`, `paths` and `always` keep working: a
 //! skill that carries them is put into the prompt in full when it matches the turn; every
 //! other skill is listed by description and loaded on demand with the `skill.load` tool.
@@ -22,7 +22,7 @@ pub fn discover(home: &Path, repo: &Path) -> SkillSet {
     roots.push(SkillRoot::new(SkillSource::User, home.join("skills")));
     roots.push(SkillRoot::new(
         SkillSource::Project,
-        repo.join(".analyst").join("skills"),
+        repo.join(".fibration").join("skills"),
     ));
     let roots: Vec<SkillRoot> = roots
         .into_iter()
@@ -100,12 +100,12 @@ mod tests {
         );
         // The analysis legacy front matter: triggers, paths, always (no description).
         write(
-            &repo.path().join(".analyst/skills"),
+            &repo.path().join(".fibration/skills"),
             "curve-fitting",
             "---\nname: curve-fitting\ntriggers: [\"fit\", \"least squares\"]\npaths: [\"analysis/fitting*.py\"]\nalways: false\n---\nReport parameter uncertainties from the covariance.\n",
         );
         write(
-            &repo.path().join(".analyst/skills"),
+            &repo.path().join(".fibration/skills"),
             "house-style",
             "---\nname: house-style\nalways: true\n---\nSI units on every axis.\n",
         );

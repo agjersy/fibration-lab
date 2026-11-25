@@ -15,13 +15,13 @@ members = [
     "crates/cli",
     "crates/serve",
     "apps/desktop/src-tauri",
-    # Deck workbench: analyst-deck-protocol and analyst-deck (library crates used by the core)
+    # Deck workbench: fibration-deck-protocol and fibration-deck (library crates used by the core)
     "present/crates/protocol",
     "present/crates/core",
-    # Mathimator: math-protocol, math-core, and the mathimator CLI
-    "mathimator/crates/protocol",
-    "mathimator/crates/core",
-    "mathimator/crates/cli",
+    # Fibration Math: math-protocol, math-core, and the fibration-math CLI
+    "math/crates/protocol",
+    "math/crates/core",
+    "math/crates/cli",
 ]
 
 [workspace.package]

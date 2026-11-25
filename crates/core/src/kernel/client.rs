@@ -2,9 +2,9 @@
 //! for every method, and reconnect (`run.attach` after respawn).
 
 use super::transport::{KernelTransport, SpawnedKernel};
-use analyst_protocol::kernel::*;
-use analyst_protocol::rpc::{Incoming, Request, RequestId, RpcError};
-use analyst_protocol::PROTOCOL_VERSION;
+use fibration_protocol::kernel::*;
+use fibration_protocol::rpc::{Incoming, Request, RequestId, RpcError};
+use fibration_protocol::PROTOCOL_VERSION;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -149,7 +149,7 @@ impl KernelClient {
             for id in stale {
                 if let Some((_, tx)) = pending.remove(&id) {
                     let _ = tx.send(Err(RpcError {
-                        code: analyst_protocol::rpc::codes::INTERNAL_ERROR,
+                        code: fibration_protocol::rpc::codes::INTERNAL_ERROR,
                         message: "kernel exited".into(),
                         data: None,
                     }));
@@ -200,7 +200,7 @@ impl KernelClient {
         self.inner.stdin.lock().await.is_some()
     }
 
-    /// Send a raw JSON-RPC line (used by the `analyst kernel` passthrough).
+    /// Send a raw JSON-RPC line (used by the `fibration kernel` passthrough).
     pub async fn send_raw(&self, line: &str) -> Result<(), KernelError> {
         let mut guard = self.inner.stdin.lock().await;
         let stdin = guard.as_mut().ok_or(KernelError::Disconnected)?;
@@ -473,7 +473,7 @@ impl KernelClient {
         let pending: Vec<_> = self.inner.pending.lock().await.drain().collect();
         for (_, (_, tx)) in pending {
             let _ = tx.send(Err(RpcError {
-                code: analyst_protocol::rpc::codes::INTERNAL_ERROR,
+                code: fibration_protocol::rpc::codes::INTERNAL_ERROR,
                 message: "kernel reconnecting".into(),
                 data: None,
             }));

@@ -1,6 +1,6 @@
-//! analyst-core: sessions, agent loop, policy, providers, kernel client, targets, sync,
+//! fibration-core: sessions, agent loop, policy, providers, kernel client, targets, sync,
 //! checkpoints, tools, and the command table of the desktop IPC contract. The evaluation harness
-//! is the `analyst-evals` crate. See docs/PROTOCOL.md and docs/ARCHITECTURE.md.
+//! is the `fibration-evals` crate. See docs/PROTOCOL.md and docs/ARCHITECTURE.md.
 
 pub mod agent;
 pub mod app;
@@ -19,7 +19,7 @@ pub mod target;
 pub mod tools;
 pub mod util;
 
-pub use analyst_protocol as protocol;
+pub use fibration_protocol as protocol;
 
 /// Version string reported in `kernel.hello`.
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -3,8 +3,8 @@
 //! the host, a detached checkout as the mirror, and the pull of rendered artifacts).
 
 use crate::util::{sh_quote, sh_quote_path};
-use analyst_protocol::config::{TargetConfig, TargetKind};
 use anyhow::{anyhow, Context, Result};
+use fibration_protocol::config::{TargetConfig, TargetKind};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -76,7 +76,7 @@ impl Target {
                     remote_root: cfg
                         .remote_root
                         .clone()
-                        .unwrap_or_else(|| "~/analyst".to_string()),
+                        .unwrap_or_else(|| "~/fibration".to_string()),
                     python: cfg.python.clone().unwrap_or_else(|| "3.12".to_string()),
                     sandbox: cfg.sandbox.clone().unwrap_or_else(|| "auto".to_string()),
                     data_dirs: cfg.data_dirs.clone(),
@@ -317,12 +317,12 @@ pub mod sync {
     //!
     //! The mirror is kept by git. The working tree is written to a tree object with the
     //! checkpoint machinery ([`crate::checkpoint`]), wrapped in a parentless commit, and
-    //! pushed over SSH to `refs/analyst/sync` in a bare repository next to the mirror
+    //! pushed over SSH to `refs/fibration/sync` in a bare repository next to the mirror
     //! (`<mirror>.git`). The mirror directory is a detached checkout of that commit. The
     //! tree id is the sync identity: when the host has it checked out, nothing is sent.
 
     use super::*;
-    use analyst_protocol::kernel::Artifact;
+    use fibration_protocol::kernel::Artifact;
 
     /// One file of the synced tree. Kept for callers that still derive the tree identity
     /// from a file list ([`file_list`] then [`tree_hash`]); new code calls [`tree_id`].
@@ -341,7 +341,7 @@ pub mod sync {
     /// the pushed tree, so a checkout neither writes nor deletes anything in them: the
     /// project's output directory, the session environment, and the app's own state.
     pub fn host_owned_dirs(out_dir: &str) -> Vec<String> {
-        let mut dirs = vec![".venv".to_string(), ".analyst".to_string()];
+        let mut dirs = vec![".venv".to_string(), ".fibration".to_string()];
         if let Ok(out) = crate::util::normalize_rel_path(out_dir) {
             if !out.is_empty() && !dirs.contains(&out) {
                 dirs.insert(0, out);
@@ -420,12 +420,12 @@ pub mod sync {
         format!("{}.git", mirror.trim_end_matches('/'))
     }
 
-    const NO_GIT: &str = "analyst-no-git";
+    const NO_GIT: &str = "fibration-no-git";
 
     /// Remote command run before a push. It creates the mirror directory and, beside it, a
-    /// bare repository without hooks, then prints `analyst-repo <absolute path>` and
-    /// `analyst-tree <id>`: the tree the mirror is a checkout of, empty when there is none
-    /// (or when the mirror directory was missing). Prints `analyst-no-git` when the host has
+    /// bare repository without hooks, then prints `fibration-repo <absolute path>` and
+    /// `fibration-tree <id>`: the tree the mirror is a checkout of, empty when there is none
+    /// (or when the mirror directory was missing). Prints `fibration-no-git` when the host has
     /// no git.
     pub fn prepare_script(mirror: &str) -> String {
         let m = sh_quote_path(mirror);
@@ -435,9 +435,9 @@ pub mod sync {
             "set -e; command -v git >/dev/null 2>&1 || {{ echo {NO_GIT}; exit 0; }}; \
 had=; [ -d {m} ] && had=1; mkdir -p {m}; \
 [ -d {b}/objects ] || {env} git init -q --bare --template= {b}; \
-b=$(cd {b} && pwd); echo \"analyst-repo $b\"; t=; \
+b=$(cd {b} && pwd); echo \"fibration-repo $b\"; t=; \
 [ -z \"$had\" ] || t=$({env} git --git-dir=\"$b\" rev-parse -q --verify 'HEAD^{{tree}}' 2>/dev/null || true); \
-echo \"analyst-tree $t\""
+echo \"fibration-tree $t\""
         )
     }
 
@@ -462,7 +462,7 @@ echo \"analyst-tree $t\""
                 "`git` was not found on {host}. The repository mirror is kept with git: install git on {host} and try again"
             ));
         }
-        let repo = field("analyst-repo")
+        let repo = field("fibration-repo")
             .filter(|r| r.starts_with('/'))
             .ok_or_else(|| {
                 anyhow!(
@@ -472,13 +472,13 @@ echo \"analyst-tree $t\""
             })?;
         Ok(RemoteState {
             repo,
-            tree: field("analyst-tree").filter(|t| !t.is_empty()),
+            tree: field("fibration-tree").filter(|t| !t.is_empty()),
         })
     }
 
     /// Remote command run after a push: make the mirror a detached checkout of `commit`.
     /// Files that left the tree are deleted, changed files are rewritten, and everything
-    /// the tree never held (the output directory, `.venv/`, `.analyst/`, caches) is left
+    /// the tree never held (the output directory, `.venv/`, `.fibration/`, caches) is left
     /// alone. No hook, filter, or configuration of the host's user runs.
     pub fn checkout_script(mirror: &str, commit: &str) -> String {
         let m = sh_quote_path(mirror);
@@ -499,7 +499,7 @@ echo \"analyst-tree $t\""
         let objects = std::path::absolute(repo.join(objects.trim()))
             .with_context(|| format!("locating the object store of {}", repo.display()))?;
         let dir = tempfile::Builder::new()
-            .prefix("analyst-sync-")
+            .prefix("fibration-sync-")
             .tempdir()
             .context("creating a scratch repository for the push")?;
         crate::checkpoint::git(
@@ -556,7 +556,7 @@ echo \"analyst-tree $t\""
         let (snap, commit, files) = tokio::task::spawn_blocking(move || -> Result<_> {
             let snap = snapshot(&repo_owned, &out_dir)?;
             let commit =
-                crate::checkpoint::commit_tree_detached(&repo_owned, &snap.tree, "analyst sync")?;
+                crate::checkpoint::commit_tree_detached(&repo_owned, &snap.tree, "fibration sync")?;
             let files = tree_paths(&repo_owned, &snap.tree)?.len();
             Ok((snap, commit, files))
         })
@@ -636,7 +636,7 @@ echo \"analyst-tree $t\""
         };
         for a in artifacts.iter().filter(|a| a.rendered) {
             add(a.path.clone());
-            if a.kind == analyst_protocol::kernel::ArtifactKind::Figure {
+            if a.kind == fibration_protocol::kernel::ArtifactKind::Figure {
                 add(sidecar_path(&a.path));
             }
         }
@@ -716,7 +716,7 @@ echo \"analyst-tree $t\""
 
 pub mod bootstrap {
     //! Tooling bootstrap: the remote sequence (PROTOCOL 7) and the local tooling environment
-    //! under `$ANALYST_HOME/tooling`, both idempotent and version-checked.
+    //! under `$FIBRATION_HOME/tooling`, both idempotent and version-checked.
 
     use super::*;
 
@@ -727,25 +727,25 @@ pub mod bootstrap {
 
     /// Remote command that prints the installed tooling version (empty when absent).
     pub fn version_check_command() -> String {
-        "cat ~/.analyst/tooling/VERSION 2>/dev/null || true".to_string()
+        "cat ~/.fibration/tooling/VERSION 2>/dev/null || true".to_string()
     }
 
-    /// Remote command that makes `~/.analyst/bin/uv` point at a `uv` already on the host, if
+    /// Remote command that makes `~/.fibration/bin/uv` point at a `uv` already on the host, if
     /// there is one, and reports what it found. It prints two lines: `have` (already in
     /// place), `linked` (found elsewhere and linked), or `missing`; then `uname -sm`.
     pub fn uv_probe_command() -> String {
-        "mkdir -p ~/.analyst/bin ~/.analyst/tooling; \
-if [ -x ~/.analyst/bin/uv ]; then echo have; else \
+        "mkdir -p ~/.fibration/bin ~/.fibration/tooling; \
+if [ -x ~/.fibration/bin/uv ]; then echo have; else \
 found=; for c in \"$(command -v uv 2>/dev/null)\" ~/.local/bin/uv ~/.cargo/bin/uv /usr/local/bin/uv /opt/homebrew/bin/uv; do \
 if [ -n \"$c\" ] && [ -x \"$c\" ]; then found=$c; break; fi; done; \
-if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; else echo missing; fi; fi; uname -sm"
+if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.fibration/bin/uv && echo linked; else echo missing; fi; fi; uname -sm"
             .to_string()
     }
 
     /// What [`uv_probe_command`] reported.
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct UvProbe {
-        /// `uv` is available at `~/.analyst/bin/uv`.
+        /// `uv` is available at `~/.fibration/bin/uv`.
         pub present: bool,
         /// `uname -sm` of the host, e.g. `Linux x86_64`.
         pub platform: String,
@@ -826,18 +826,18 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         ))
     }
 
-    /// `scp -q <opts> -- <local uv> <host>:.analyst/bin/uv` (a relative remote path is
+    /// `scp -q <opts> -- <local uv> <host>:.fibration/bin/uv` (a relative remote path is
     /// resolved against the home directory).
     pub fn scp_uv_command(host: &str, uv: &Path, control_dir: Option<&Path>) -> Vec<String> {
         let mut v = vec!["scp".to_string(), "-q".to_string()];
         v.extend(crate::kernel::transport::ssh_options(control_dir));
         v.push("--".into());
         v.push(uv.display().to_string());
-        v.push(format!("{host}:.analyst/bin/uv"));
+        v.push(format!("{host}:.fibration/bin/uv"));
         v
     }
 
-    /// Make sure `~/.analyst/bin/uv` exists on the host: use a `uv` that is already there,
+    /// Make sure `~/.fibration/bin/uv` exists on the host: use a `uv` that is already there,
     /// else copy one over SSH. No installer is fetched.
     pub async fn ensure_remote_uv(target: &Target, control_dir: Option<&Path>) -> Result<()> {
         let Target::Ssh {
@@ -867,7 +867,7 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         run_ssh(
             host,
             control_dir,
-            "chmod +x ~/.analyst/bin/uv && ~/.analyst/bin/uv --version",
+            "chmod +x ~/.fibration/bin/uv && ~/.fibration/bin/uv --version",
         )
         .await
         .with_context(|| {
@@ -880,13 +880,13 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         Ok(())
     }
 
-    const PYTHON_FOUND: &str = "analyst-python-found";
+    const PYTHON_FOUND: &str = "fibration-python-found";
 
     /// Remote command that reports whether the host has the interpreter the tooling needs.
     /// `uv` looks at what is installed there and downloads nothing.
     pub fn python_probe_command(python_version: &str) -> String {
         format!(
-            "~/.analyst/bin/uv python find {} >/dev/null 2>&1 && echo {PYTHON_FOUND} || echo analyst-python-missing",
+            "~/.fibration/bin/uv python find {} >/dev/null 2>&1 && echo {PYTHON_FOUND} || echo fibration-python-missing",
             sh_quote(python_version)
         )
     }
@@ -920,17 +920,17 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         index_flag: &str,
     ) -> Vec<String> {
         vec![
-            "mkdir -p ~/.analyst/bin ~/.analyst/tooling".to_string(),
-            "test -x ~/.analyst/bin/uv".to_string(),
+            "mkdir -p ~/.fibration/bin ~/.fibration/tooling".to_string(),
+            "test -x ~/.fibration/bin/uv".to_string(),
             format!(
-                "test -x ~/.analyst/tooling/.venv/bin/python || ~/.analyst/bin/uv venv {index_flag} --python {} ~/.analyst/tooling/.venv",
+                "test -x ~/.fibration/tooling/.venv/bin/python || ~/.fibration/bin/uv venv {index_flag} --python {} ~/.fibration/tooling/.venv",
                 sh_quote(python_version)
             ),
             format!(
-                "~/.analyst/bin/uv pip install {index_flag} --python ~/.analyst/tooling/.venv/bin/python {}",
+                "~/.fibration/bin/uv pip install {index_flag} --python ~/.fibration/tooling/.venv/bin/python {}",
                 sh_quote_path(wheel_remote)
             ),
-            format!("printf '%s\\n' {} > ~/.analyst/tooling/VERSION", sh_quote(version)),
+            format!("printf '%s\\n' {} > ~/.fibration/tooling/VERSION", sh_quote(version)),
         ]
     }
 
@@ -958,17 +958,17 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
             "The app never downloads Python interpreters. Install the Python version named above on this host yourself (its package manager is the usual way), then try again.",
         );
         format!(
-            "cd {m} && {{ ~/.analyst/bin/uv python find >/dev/null || {{ echo {hint} >&2; exit 1; }}; }} && if [ -f pyproject.toml ]; then ~/.analyst/bin/uv sync {index_flag}; else ~/.analyst/bin/uv venv {index_flag} && (test -f requirements.txt && ~/.analyst/bin/uv pip install {index_flag} -r requirements.txt || true); fi"
+            "cd {m} && {{ ~/.fibration/bin/uv python find >/dev/null || {{ echo {hint} >&2; exit 1; }}; }} && if [ -f pyproject.toml ]; then ~/.fibration/bin/uv sync {index_flag}; else ~/.fibration/bin/uv venv {index_flag} && (test -f requirements.txt && ~/.fibration/bin/uv pip install {index_flag} -r requirements.txt || true); fi"
         )
     }
 
-    /// `scp -q <opts> -- <wheel> <host>:.analyst/tooling/<name>` (a relative remote path is
+    /// `scp -q <opts> -- <wheel> <host>:.fibration/tooling/<name>` (a relative remote path is
     /// resolved against the home directory, so no remote shell expansion is involved).
     pub fn scp_wheel_command(host: &str, wheel: &Path, control_dir: Option<&Path>) -> Vec<String> {
         let name: String = wheel
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "analyst_kernel.whl".into())
+            .unwrap_or_else(|| "fibration_kernel.whl".into())
             .chars()
             .map(|c| {
                 if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+') {
@@ -982,7 +982,7 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
         v.extend(crate::kernel::transport::ssh_options(control_dir));
         v.push("--".into());
         v.push(wheel.display().to_string());
-        v.push(format!("{host}:.analyst/tooling/{name}"));
+        v.push(format!("{host}:.fibration/tooling/{name}"));
         v
     }
 
@@ -1059,7 +1059,7 @@ if [ -n \"$found\" ]; then ln -sf \"$found\" ~/.analyst/bin/uv && echo linked; e
     /// Create or refresh the local tooling environment: `uv venv <home>/tooling/.venv` and
     /// `uv pip install <kernel_source_dir>` when the interpreter is missing or the `VERSION`
     /// file differs from the core version. `kernel_source_dir` is a directory or wheel that
-    /// provides `analyst_kernel` (bundled with the app, or `python/kernel` in a checkout).
+    /// provides `fibration_kernel` (bundled with the app, or `python/kernel` in a checkout).
     pub async fn ensure_local(home: &Path, kernel_source_dir: &Path) -> Result<Outcome> {
         let want = tooling_version();
         if local_is_current(home) {
@@ -1248,7 +1248,7 @@ mod tests {
         for (p, text) in [
             (".env", "ANTHROPIC_API_KEY=sk-secret\n"),
             ("results/kept-on-host.txt", "x"),
-            (".analyst/session.json", "{}"),
+            (".fibration/session.json", "{}"),
             (".venv/pyvenv.cfg", "venv"),
             ("sub/.env", "nested files are ordinary files\n"),
             ("decks/q3/deck/deck.json", "{}"),
@@ -1265,7 +1265,7 @@ mod tests {
                 "-f",
                 ".env",
                 "results",
-                ".analyst",
+                ".fibration",
                 ".venv",
                 "decks/q3/deck",
             ],
@@ -1313,8 +1313,8 @@ mod tests {
         let deleted = snapshot(root, "out").unwrap();
         assert!(!tree_files(root, &deleted.tree).contains(&"scripts/a.py".to_string()));
         // The sync commit has no parent and depends on the tree alone.
-        let c1 = crate::checkpoint::commit_tree_detached(root, &id, "analyst sync").unwrap();
-        let c2 = crate::checkpoint::commit_tree_detached(root, &id, "analyst sync").unwrap();
+        let c1 = crate::checkpoint::commit_tree_detached(root, &id, "fibration sync").unwrap();
+        let c2 = crate::checkpoint::commit_tree_detached(root, &id, "fibration sync").unwrap();
         assert_eq!(c1, c2);
         let parents = crate::checkpoint::git(root, &["rev-list", "--parents", "-1", &c1], None);
         assert_eq!(parents.unwrap().trim(), c1);
@@ -1353,20 +1353,19 @@ mod tests {
     #[test]
     fn command_lines() {
         assert_eq!(
-            bare_repo("~/analyst/repo-1a2b3c4d"),
-            "~/analyst/repo-1a2b3c4d.git"
+            bare_repo("~/fibration/repo-1a2b3c4d"),
+            "~/fibration/repo-1a2b3c4d.git"
         );
-        let prepare = prepare_script("~/analyst/my repo");
+        let prepare = prepare_script("~/fibration/my repo");
+        assert!(prepare
+            .starts_with("set -e; command -v git >/dev/null 2>&1 || { echo fibration-no-git;"));
         assert!(
-            prepare.starts_with("set -e; command -v git >/dev/null 2>&1 || { echo analyst-no-git;")
-        );
-        assert!(
-            prepare.contains("mkdir -p ~/'analyst/my repo';"),
+            prepare.contains("mkdir -p ~/'fibration/my repo';"),
             "{prepare}"
         );
         assert!(
             prepare.contains(
-                "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git init -q --bare --template= ~/'analyst/my repo.git'"
+                "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git init -q --bare --template= ~/'fibration/my repo.git'"
             ),
             "{prepare}"
         );
@@ -1381,13 +1380,17 @@ mod tests {
             "{checkout}"
         );
         // What the host answers.
-        let state =
-            parse_prepare("analyst-repo /home/u/analyst/r.git\nanalyst-tree \n", "lab").unwrap();
-        assert_eq!(state.repo, "/home/u/analyst/r.git");
+        let state = parse_prepare(
+            "fibration-repo /home/u/fibration/r.git\nfibration-tree \n",
+            "lab",
+        )
+        .unwrap();
+        assert_eq!(state.repo, "/home/u/fibration/r.git");
         assert_eq!(state.tree, None);
-        let state = parse_prepare("motd\nanalyst-repo /r.git\nanalyst-tree abc\n", "lab").unwrap();
+        let state =
+            parse_prepare("motd\nfibration-repo /r.git\nfibration-tree abc\n", "lab").unwrap();
         assert_eq!(state.tree.as_deref(), Some("abc"));
-        let err = parse_prepare("analyst-no-git\n", "lab-gpu")
+        let err = parse_prepare("fibration-no-git\n", "lab-gpu")
             .unwrap_err()
             .to_string();
         assert!(
@@ -1413,7 +1416,7 @@ mod tests {
         for (p, text) in [
             ("out/fit/r1/run.json", "{}"),
             (".venv/pyvenv.cfg", "venv"),
-            (".analyst/env.sh", "env"),
+            (".fibration/env.sh", "env"),
             ("scripts/__pycache__/a.cpython-312.pyc", "pyc"),
         ] {
             let f = mirror.join(p);
@@ -1428,7 +1431,7 @@ mod tests {
         let m = mirror.display().to_string();
         let snap = snapshot(repo, "out").unwrap();
         let commit =
-            crate::checkpoint::commit_tree_detached(repo, &snap.tree, "analyst sync").unwrap();
+            crate::checkpoint::commit_tree_detached(repo, &snap.tree, "fibration sync").unwrap();
         let out = run_command(&sh(prepare_script(&m)), None).await.unwrap();
         let state = parse_prepare(&String::from_utf8_lossy(&out.stdout), "here").unwrap();
         if state.tree.as_deref() == Some(snap.tree.as_str()) {
@@ -1496,7 +1499,7 @@ mod tests {
         .unwrap();
         let env_blob = crate::checkpoint::git(root, &["hash-object", ".env"], None).unwrap();
         assert!(!objects.contains(env_blob.trim()), "{objects}");
-        // Only refs/analyst/sync exists on the host.
+        // Only refs/fibration/sync exists on the host.
         let refs = crate::checkpoint::git(&bare, &["for-each-ref", "--format=%(refname)"], None);
         assert_eq!(refs.unwrap().trim(), crate::egress::SYNC_REF);
 
@@ -1522,7 +1525,10 @@ mod tests {
         );
         assert!(mirror.join("out/fit/r1/run.json").is_file(), "out_dir kept");
         assert!(mirror.join(".venv/pyvenv.cfg").is_file(), ".venv kept");
-        assert!(mirror.join(".analyst/env.sh").is_file(), ".analyst kept");
+        assert!(
+            mirror.join(".fibration/env.sh").is_file(),
+            ".fibration kept"
+        );
         assert!(mirror
             .join("scripts/__pycache__/a.cpython-312.pyc")
             .is_file());
@@ -1651,10 +1657,10 @@ mod tests {
             [
                 "--".to_string(),
                 local.display().to_string(),
-                "me@lab:.analyst/bin/uv".to_string()
+                "me@lab:.fibration/bin/uv".to_string()
             ]
         );
-        assert_eq!(ssh_target("~/analyst").launcher(), Launcher::Direct);
+        assert_eq!(ssh_target("~/fibration").launcher(), Launcher::Direct);
         assert_eq!(Target::Local.launcher(), Launcher::default());
     }
 
@@ -1663,26 +1669,29 @@ mod tests {
         let flag = "--default-index 'https://pypi.org/simple'";
         let cmds = bootstrap::commands(
             "3.12",
-            "~/.analyst/tooling/analyst_kernel-0.0.1-py3-none-any.whl",
+            "~/.fibration/tooling/fibration_kernel-0.0.1-py3-none-any.whl",
             "0.0.1",
             flag,
         );
-        assert_eq!(cmds[0], "mkdir -p ~/.analyst/bin ~/.analyst/tooling");
+        assert_eq!(cmds[0], "mkdir -p ~/.fibration/bin ~/.fibration/tooling");
         // uv is provided before the script runs; the script only checks it and never
         // downloads an installer.
-        assert_eq!(cmds[1], "test -x ~/.analyst/bin/uv");
+        assert_eq!(cmds[1], "test -x ~/.fibration/bin/uv");
         // The host's own Python is used; the sequence never installs one.
         assert!(
             cmds.iter().all(|c| !c.contains("python install")),
             "{cmds:?}"
         );
         assert!(cmds[2].contains(
-            "uv venv --default-index 'https://pypi.org/simple' --python 3.12 ~/.analyst/tooling/.venv"
+            "uv venv --default-index 'https://pypi.org/simple' --python 3.12 ~/.fibration/tooling/.venv"
         ));
         assert!(cmds[3].starts_with(
-            "~/.analyst/bin/uv pip install --default-index 'https://pypi.org/simple' --python ~/.analyst/tooling/.venv/bin/python ~/.analyst/tooling/analyst_kernel"
+            "~/.fibration/bin/uv pip install --default-index 'https://pypi.org/simple' --python ~/.fibration/tooling/.venv/bin/python ~/.fibration/tooling/fibration_kernel"
         ));
-        assert_eq!(cmds[4], "printf '%s\\n' 0.0.1 > ~/.analyst/tooling/VERSION");
+        assert_eq!(
+            cmds[4],
+            "printf '%s\\n' 0.0.1 > ~/.fibration/tooling/VERSION"
+        );
         let script = bootstrap::script("3.12", "w", "v", flag);
         assert!(script.starts_with("set -e; mkdir -p"));
         for text in [script.as_str(), &bootstrap::uv_probe_command()] {
@@ -1696,11 +1705,12 @@ mod tests {
         // version and where to install it.
         assert_eq!(
             bootstrap::python_probe_command("3.12"),
-            "~/.analyst/bin/uv python find 3.12 >/dev/null 2>&1 && echo analyst-python-found || echo analyst-python-missing"
+            "~/.fibration/bin/uv python find 3.12 >/dev/null 2>&1 && echo fibration-python-found || echo fibration-python-missing"
         );
-        bootstrap::check_python_probe("analyst-python-found\n", "3.12", "lab", "lab-gpu").unwrap();
+        bootstrap::check_python_probe("fibration-python-found\n", "3.12", "lab", "lab-gpu")
+            .unwrap();
         let err =
-            bootstrap::check_python_probe("analyst-python-missing\n", "3.12", "lab", "lab-gpu")
+            bootstrap::check_python_probe("fibration-python-missing\n", "3.12", "lab", "lab-gpu")
                 .unwrap_err()
                 .to_string();
         assert!(
@@ -1710,33 +1720,33 @@ mod tests {
                 && err.contains("python = \"3.12\""),
             "{err}"
         );
-        let env = bootstrap::session_env_command("~/analyst/repo", flag);
-        assert!(env.starts_with("cd ~/analyst/repo && "));
+        let env = bootstrap::session_env_command("~/fibration/repo", flag);
+        assert!(env.starts_with("cd ~/fibration/repo && "));
         assert!(
-            env.contains("~/.analyst/bin/uv python find >/dev/null || {"),
+            env.contains("~/.fibration/bin/uv python find >/dev/null || {"),
             "{env}"
         );
         assert!(env.contains(&format!("uv sync {flag};")), "{env}");
         assert!(env.contains(&format!("uv pip install {flag} -r")), "{env}");
-        assert!(bootstrap::session_env_command("~/analyst/my repo", flag)
-            .starts_with("cd ~/'analyst/my repo' && "));
+        assert!(bootstrap::session_env_command("~/fibration/my repo", flag)
+            .starts_with("cd ~/'fibration/my repo' && "));
         let scp = bootstrap::scp_wheel_command("lab", Path::new("/w/k.whl"), None);
         assert_eq!(scp[..2], ["scp", "-q"]);
         assert!(scp.contains(&"ConnectTimeout=10".to_string()));
         assert_eq!(
             scp[scp.len() - 3..],
-            ["--", "/w/k.whl", "lab:.analyst/tooling/k.whl"]
+            ["--", "/w/k.whl", "lab:.fibration/tooling/k.whl"]
         );
         assert_eq!(
             bootstrap::version_check_command(),
-            "cat ~/.analyst/tooling/VERSION 2>/dev/null || true"
+            "cat ~/.fibration/tooling/VERSION 2>/dev/null || true"
         );
     }
 
     /// G8: only the named rendered files come back, not the run directory.
     #[tokio::test]
     async fn pull_brings_back_only_the_listed_files() {
-        use analyst_protocol::kernel::{Artifact, ArtifactKind};
+        use fibration_protocol::kernel::{Artifact, ArtifactKind};
         let remote = tempfile::tempdir().unwrap();
         let mirror = remote.path().join("the mirror");
         let run = mirror.join("out/fit/r1");
@@ -1808,7 +1818,7 @@ mod tests {
             name: "lab".into(),
             kind: TargetKind::Ssh,
             host: Some("lab-gpu".into()),
-            remote_root: Some("~/analyst".into()),
+            remote_root: Some("~/fibration".into()),
             python: None,
             sandbox: None,
             data_dirs: vec!["/data".into()],
@@ -1818,14 +1828,14 @@ mod tests {
         assert!(matches!(&t, Target::Ssh { uv_binary: Some(p), .. } if p == "~/uv/linux-arm64/uv"));
         let a = t.mirror_dir(Path::new("/home/u/proj")).unwrap();
         let b = t.mirror_dir(Path::new("/home/u/other/proj")).unwrap();
-        assert!(a.starts_with("~/analyst/proj-"), "{a}");
-        assert_eq!(a.len(), "~/analyst/proj-".len() + 8);
+        assert!(a.starts_with("~/fibration/proj-"), "{a}");
+        assert_eq!(a.len(), "~/fibration/proj-".len() + 8);
         assert_ne!(a, b);
         assert_eq!(a, t.mirror_dir(Path::new("/home/u/proj")).unwrap());
-        let spaced = ssh_target("~/analyst")
+        let spaced = ssh_target("~/fibration")
             .mirror_dir(Path::new("/home/u/my repo"))
             .unwrap();
-        assert!(spaced.starts_with("~/analyst/my_repo-"), "{spaced}");
+        assert!(spaced.starts_with("~/fibration/my_repo-"), "{spaced}");
         assert_eq!(t.host(), Some("lab-gpu"));
         assert!(t.is_remote());
         assert_eq!(Target::Local.mirror_dir(Path::new("/x")), None);
@@ -1873,7 +1883,7 @@ mod tests {
             &[
                 py.to_string_lossy().to_string(),
                 "-c".into(),
-                "import analyst_kernel".into(),
+                "import fibration_kernel".into(),
             ],
             None,
         )

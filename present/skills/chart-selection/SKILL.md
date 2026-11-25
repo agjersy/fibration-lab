@@ -30,7 +30,7 @@ Charts take their data from a reference table or range (`refs_table` shows it) t
 - **Derive honestly.** `pct_change`, `share_of_total`, `cumulative`, `scale`, and `round` are available, as are `pivot` and `unpivot` for reshaping. Do not compute values yourself and type them in: a typed number cannot be traced or rechecked.
 - Limits that keep charts legible: about six series, about twelve categories. Past that, split the slide or use a table.
 
-For analysis beyond these steps (regressions, forecasts, joins across sources), the work belongs in Personal Analyst; import its figure or table as a reference.
+For analysis beyond these steps (regressions, forecasts, joins across sources), the work belongs in Fibration Lab; import its figure or table as a reference.
 
 ## Finishing
 

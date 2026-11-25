@@ -5,18 +5,18 @@
 //! the agent started during the task (never the grader's own `run_succeeds` runs), `no_edits`
 //! compares the working tree with the commit made just before the agent started, and scope
 //! is judged per edit against the scope in force when that edit was decided. Each task runs
-//! with its own temporary analyst home.
+//! with its own temporary fibration home.
 
-use analyst_core::agent::{Agent, AgentConfig, AutoApprover};
-use analyst_core::kernel::{wait_for_run, KernelArgs, KernelClient, LocalStdio};
-use analyst_core::session::Session;
-use analyst_core::tools::gate::Policy;
-use analyst_core::tools::ToolContext;
-use analyst_protocol::config::{EditPolicy, ProjectConfig, RunPolicy};
-use analyst_protocol::evals::*;
-use analyst_protocol::kernel::*;
-use analyst_protocol::transcript::{Event, ProposalKind};
 use anyhow::{anyhow, Context, Result};
+use fibration_core::agent::{Agent, AgentConfig, AutoApprover};
+use fibration_core::kernel::{wait_for_run, KernelArgs, KernelClient, LocalStdio};
+use fibration_core::session::Session;
+use fibration_core::tools::gate::Policy;
+use fibration_core::tools::ToolContext;
+use fibration_protocol::config::{EditPolicy, ProjectConfig, RunPolicy};
+use fibration_protocol::evals::*;
+use fibration_protocol::kernel::*;
+use fibration_protocol::transcript::{Event, ProposalKind};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -89,25 +89,25 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Copy the fixture into `dest`, `git init` + initial commit, and make sure
-/// `.analyst/project.toml` exists.
+/// `.fibration/project.toml` exists.
 pub fn prepare_fixture(task: &LoadedTask, dest: &Path) -> Result<()> {
     let src = task.dir.join(&task.file.fixture.dir);
     std::fs::create_dir_all(dest)?;
     if src.is_dir() {
         copy_tree(&src, dest)?;
     }
-    let pc = dest.join(".analyst/project.toml");
+    let pc = dest.join(".fibration/project.toml");
     if !pc.is_file() {
-        std::fs::create_dir_all(dest.join(".analyst"))?;
+        std::fs::create_dir_all(dest.join(".fibration"))?;
         std::fs::write(&pc, toml::to_string_pretty(&ProjectConfig::default())?)?;
     }
     let gi = dest.join(".gitignore");
     if !gi.is_file() {
-        std::fs::write(&gi, "out/\n.venv/\n__pycache__/\n.analyst/env.sh\n")?;
+        std::fs::write(&gi, "out/\n.venv/\n__pycache__/\n.fibration/env.sh\n")?;
     }
-    analyst_core::checkpoint::git(dest, &["init", "-q"], None)?;
-    analyst_core::checkpoint::git(dest, &["add", "-A"], None)?;
-    analyst_core::checkpoint::git(
+    fibration_core::checkpoint::git(dest, &["init", "-q"], None)?;
+    fibration_core::checkpoint::git(dest, &["add", "-A"], None)?;
+    fibration_core::checkpoint::git(
         dest,
         &["commit", "-q", "--allow-empty", "-m", "fixture"],
         None,
@@ -117,13 +117,13 @@ pub fn prepare_fixture(task: &LoadedTask, dest: &Path) -> Result<()> {
 
 /// How tasks are run.
 pub struct EvalEnv {
-    /// The caller's analyst home (configuration and capability cache were read from it).
+    /// The caller's fibration home (configuration and capability cache were read from it).
     /// Tasks never write here: each one gets a temporary home for its session and runs.
     pub home: PathBuf,
     pub model: Arc<dyn ModelClient>,
     pub model_name: String,
     pub caps: ModelCapabilities,
-    /// Kernel launcher (`[tooling_python, "-m", "analyst_kernel"]`); `None` runs without a
+    /// Kernel launcher (`[tooling_python, "-m", "fibration_kernel"]`); `None` runs without a
     /// kernel (kernel-backed checks then fail with a clear detail).
     pub kernel_launcher: Option<Vec<String>>,
     /// Session interpreter passed to the kernel (`--python`); default `python3`.
@@ -195,7 +195,7 @@ pub fn judged_edits(events: &[Event]) -> Vec<JudgedEdit> {
                 if is_declare_scope(name) {
                     declares.insert(id.clone(), arguments.clone());
                 } else if let Some(p) = arguments.get("path").and_then(|p| p.as_str()) {
-                    if let Ok(n) = analyst_core::util::normalize_rel_path(p) {
+                    if let Ok(n) = fibration_core::util::normalize_rel_path(p) {
                         call_paths.insert(id.clone(), n);
                     }
                 }
@@ -210,7 +210,7 @@ pub fn judged_edits(events: &[Event]) -> Vec<JudgedEdit> {
                         .map(|a| {
                             a.iter()
                                 .filter_map(|v| v.as_str())
-                                .filter_map(|s| analyst_core::util::normalize_rel_path(s).ok())
+                                .filter_map(|s| fibration_core::util::normalize_rel_path(s).ok())
                                 .collect::<BTreeSet<_>>()
                         })
                         .unwrap_or_default();
@@ -262,7 +262,7 @@ pub fn agent_runs(events: &[Event]) -> Vec<(String, String)> {
 /// Paths that differ from `HEAD` in the working tree (modified, deleted, or untracked and not
 /// ignored).
 pub fn tree_changes(repo: &Path) -> Result<Vec<String>> {
-    let out = analyst_core::checkpoint::git(
+    let out = fibration_core::checkpoint::git(
         repo,
         &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         None,
@@ -558,7 +558,7 @@ fn tail(s: &str, n: usize) -> String {
 pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
     let name = task.file.task.name.clone();
     let work = tempfile::Builder::new()
-        .prefix(&format!("analyst-eval-{name}-"))
+        .prefix(&format!("fibration-eval-{name}-"))
         .tempdir()?;
     let repo = work.path().join("repo");
     prepare_fixture(task, &repo)?;
@@ -573,13 +573,13 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
     std::fs::create_dir_all(&task_home)?;
     // Commit the prepared environment (for example a `uv.lock` written by `uv sync`), so the
     // tree diff after the turn shows only what happened during the task.
-    analyst_core::checkpoint::git(&repo, &["add", "-A"], None)?;
-    analyst_core::checkpoint::git(
+    fibration_core::checkpoint::git(&repo, &["add", "-A"], None)?;
+    fibration_core::checkpoint::git(
         &repo,
         &["commit", "-q", "--allow-empty", "-m", "pre-task baseline"],
         None,
     )?;
-    let mut project = analyst_core::config::load_project(&repo)?;
+    let mut project = fibration_core::config::load_project(&repo)?;
     if env.auto {
         project.policy.edits = EditPolicy::Auto;
         project.policy.runs = RunPolicy::Auto;
@@ -600,7 +600,7 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
             };
             match KernelClient::connect(
                 Box::new(LocalStdio::with_launcher(launcher.clone(), args)),
-                analyst_core::CORE_VERSION,
+                fibration_core::CORE_VERSION,
             )
             .await
             {
@@ -708,9 +708,9 @@ pub async fn run_task(env: &EvalEnv, task: &LoadedTask) -> Result<TaskResult> {
 /// Session interpreter for a fixture: `uv sync` when a `pyproject.toml` exists and `uv` is on
 /// PATH, then `.venv/bin/python`; else `python3`.
 async fn fixture_python(repo: &Path) -> String {
-    if repo.join("pyproject.toml").is_file() && analyst_core::util::find_tool("uv").is_some() {
-        match analyst_core::target::run_command(
-            &analyst_core::egress::uv_install("uv", &["sync"], &["-q"]),
+    if repo.join("pyproject.toml").is_file() && fibration_core::util::find_tool("uv").is_some() {
+        match fibration_core::target::run_command(
+            &fibration_core::egress::uv_install("uv", &["sync"], &["-q"]),
             Some(repo),
         )
         .await
@@ -723,7 +723,7 @@ async fn fixture_python(repo: &Path) -> String {
     if venv.is_file() {
         venv.to_string_lossy().to_string()
     } else {
-        analyst_core::util::tool("python3")
+        fibration_core::util::tool("python3")
     }
 }
 
@@ -821,7 +821,7 @@ pub fn write_scorecard(results_dir: &Path, sc: &Scorecard) -> Result<PathBuf> {
             }
         })
         .collect();
-    let path = results_dir.join(format!("{safe}-{}.json", analyst_core::util::now_stamp()));
+    let path = results_dir.join(format!("{safe}-{}.json", fibration_core::util::now_stamp()));
     std::fs::write(&path, serde_json::to_string_pretty(sc)?)?;
     Ok(path)
 }
@@ -845,7 +845,7 @@ mod tests {
         std::fs::write(fixture.join("analysis/fitting.py"), "def double_exp(t, A, tau1, B, tau2):\n    \"\"\"Math:\n        y = A*exp(-t/tau1) + B*exp(-t/tau2)\n    \"\"\"\n    return A\n").unwrap();
         std::fs::write(
             fixture.join("scripts/fit_decay.py"),
-            "import argparse, os, time\n\ndef main():\n    p = argparse.ArgumentParser(description='fit')\n    p.add_argument('--n', type=int, default=2, help='count')\n    a = p.parse_args()\n    out = os.environ.get('ANALYST_OUT_DIR', 'out')\n    os.makedirs(os.path.join(out, 'figures'), exist_ok=True)\n    for i in range(a.n):\n        with open(os.path.join(out, 'figures', f'fig-{i+1}.png'), 'wb') as f:\n            f.write(b'\\x89PNG fake')\n        print('line', i)\n\nif __name__ == '__main__':\n    main()\n",
+            "import argparse, os, time\n\ndef main():\n    p = argparse.ArgumentParser(description='fit')\n    p.add_argument('--n', type=int, default=2, help='count')\n    a = p.parse_args()\n    out = os.environ.get('FIBRATION_OUT_DIR', 'out')\n    os.makedirs(os.path.join(out, 'figures'), exist_ok=True)\n    for i in range(a.n):\n        with open(os.path.join(out, 'figures', f'fig-{i+1}.png'), 'wb') as f:\n            f.write(b'\\x89PNG fake')\n        print('line', i)\n\nif __name__ == '__main__':\n    main()\n",
         )
         .unwrap();
         std::fs::write(
@@ -977,7 +977,7 @@ count = 1
         assert!(!r.passed);
         assert_eq!(r.steps, 1);
         assert_eq!(r.unwanted_edits, 0);
-        // Nothing was written into the caller's analyst home.
+        // Nothing was written into the caller's fibration home.
         assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
         let sc = scorecard("scripted/model", vec![r]);
         assert_eq!(sc.summary.pass_rate, 0.0);
@@ -1030,12 +1030,12 @@ count = 1
     async fn no_edits_sees_changes_that_bypass_proposals() {
         let repo = tempfile::tempdir().unwrap();
         let r = repo.path();
-        analyst_core::checkpoint::git(r, &["init", "-q"], None).unwrap();
+        fibration_core::checkpoint::git(r, &["init", "-q"], None).unwrap();
         std::fs::write(r.join(".gitignore"), "out/\n").unwrap();
         std::fs::write(r.join("a.py"), "a = 1\n").unwrap();
         std::fs::write(r.join("b.py"), "b = 1\n").unwrap();
-        analyst_core::checkpoint::git(r, &["add", "-A"], None).unwrap();
-        analyst_core::checkpoint::git(r, &["commit", "-q", "-m", "base"], None).unwrap();
+        fibration_core::checkpoint::git(r, &["add", "-A"], None).unwrap();
+        fibration_core::checkpoint::git(r, &["commit", "-q", "-m", "base"], None).unwrap();
         assert!(tree_changes(r).unwrap().is_empty());
         // What a snippet would do: no proposal, no decision event.
         std::fs::write(r.join("a.py"), "a = 2\n").unwrap();
@@ -1062,7 +1062,7 @@ count = 1
 
     #[test]
     fn edits_are_judged_against_the_scope_in_force() {
-        use analyst_protocol::transcript::{DecidedBy, Decision};
+        use fibration_protocol::transcript::{DecidedBy, Decision};
         let user = || Event::User {
             ts: "t".into(),
             text: "go".into(),

@@ -1,12 +1,12 @@
 //! The shell's side of the command table: the two subscription commands (a Tauri channel per
-//! window) and the [`Host`] of `analyst_core::commands` (native dialogs, the asset protocol
-//! scope, the file manager). Every other command is a row of `analyst_core::commands`, which
+//! window) and the [`Host`] of `fibration_core::commands` (native dialogs, the asset protocol
+//! scope, the file manager). Every other command is a row of `fibration_core::commands`, which
 //! the invoke handler in `lib.rs` dispatches to.
 
 use crate::{AppState, Subscription};
-use analyst_core::commands::{DialogFilter, Host};
-use analyst_core::service::Workbench;
-use analyst_protocol::ui::*;
+use fibration_core::commands::{DialogFilter, Host};
+use fibration_core::service::Workbench;
+use fibration_protocol::ui::*;
 use std::collections::HashSet;
 use std::sync::Mutex;
 use tauri::ipc::Channel;
@@ -27,7 +27,7 @@ pub async fn session_subscribe(
     channel: Channel<SessionEvent>,
 ) -> R<String> {
     let rt = state.workbench.session(&session).map_err(IpcError::from)?;
-    let id = format!("sub-{}", analyst_core::util::stamped_id());
+    let id = format!("sub-{}", fibration_core::util::stamped_id());
     let mut rx = rt.subscribe();
     drop(rt);
     let sub_id = id.clone();
@@ -225,7 +225,7 @@ async fn dialog_pick_files(
 pub fn deck_asset_dirs(repo: &std::path::Path, slugs: &[String]) -> Vec<std::path::PathBuf> {
     slugs
         .iter()
-        .filter(|s| analyst_core::service::decks::valid_slug(s).is_ok())
+        .filter(|s| fibration_core::service::decks::valid_slug(s).is_ok())
         .flat_map(|slug| {
             let root = repo.join("decks").join(slug);
             [
@@ -306,7 +306,7 @@ pub(crate) fn allow_session_assets(app: &tauri::AppHandle, wb: &Workbench, sessi
 /// announced a deck created or removed (`decks_changed`, whoever created it), or this watcher
 /// fell behind (`resync`). Ends when the session's event hub does.
 pub(crate) fn watch_asset_events(
-    rt: &analyst_core::service::SessionRuntime,
+    rt: &fibration_core::service::SessionRuntime,
     widen: impl Fn() + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {
     let mut rx = rt.subscribe();
@@ -367,7 +367,7 @@ mod tests {
     /// the next `decks_list`.
     #[tokio::test]
     async fn a_deck_created_by_the_core_is_added_to_the_asset_scope() {
-        use analyst_core::service::{Workbench, WorkbenchOptions};
+        use fibration_core::service::{Workbench, WorkbenchOptions};
         use std::collections::HashSet;
         use std::sync::{Arc, Mutex};
 
@@ -375,7 +375,7 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let mut opts = WorkbenchOptions::new(home.path().to_path_buf());
         opts.autostart_kernel = false;
-        opts.init = analyst_core::init::InitOptions {
+        opts.init = fibration_core::init::InitOptions {
             run_uv: false,
             git: true,
         };
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn the_asset_scope_covers_the_output_directory_and_pulled_figures() {
         let repo = Path::new("/home/u/analysis");
-        let artifacts = Path::new("/home/u/.analyst/sessions/s1/artifacts");
+        let artifacts = Path::new("/home/u/.fibration/sessions/s1/artifacts");
         assert_eq!(
             figure_asset_dirs(repo, "out", artifacts),
             vec![repo.join("out"), artifacts.to_path_buf()]

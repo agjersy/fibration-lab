@@ -5,11 +5,11 @@
 //! project has decks), then the mode, the policy, and the project map.
 
 use crate::tools::ToolContext;
-use analyst_protocol::config::ProjectConfig;
-use analyst_protocol::evals::Mode;
+use fibration_protocol::config::ProjectConfig;
+use fibration_protocol::evals::Mode;
 use serde_json::{json, Value};
 
-pub const SYSTEM_ROLE: &str = "You are Personal Analyst, an agent that writes and runs reusable Python analysis tools inside a git repository under the user's supervision. You work in a plan / propose / run / verify cycle, keep changes small and reviewable, and never pretend a step succeeded.";
+pub const SYSTEM_ROLE: &str = "You are Fibration Lab, an agent that writes and runs reusable Python analysis tools inside a git repository under the user's supervision. You work in a plan / propose / run / verify cycle, keep changes small and reviewable, and never pretend a step succeeded.";
 
 /// Added to the role when the project has decks.
 pub const DECK_ROLE: &str = "The project also holds presentation decks. You build and change their slides from the user's brief, the references, and the results of this project's analysis runs, on each deck's template; slides cite what they claim.";
@@ -25,7 +25,7 @@ pub fn contract_rules(project: &ProjectConfig) -> String {
         "SCRIPT CONTRACT (checked automatically after every edit; fix violations before finishing):\n\
 1. Every script under {scripts} is a command-line tool: it builds an argparse.ArgumentParser with a description, gives help= text to every option, defines a top-level `def main(` and has an `if __name__ == \"__main__\":` guard. Every input (data path, parameter, output location, seed, plot options) is an option with a default; path defaults are repo-relative; no absolute paths or hard-coded literals flow from main into library calls.\n\
 2. Shared logic lives in the library package `{lib}/`, not in scripts. A script may define only {allowed} plus small private helpers (`_name`, at most {max_helper} lines, no use of {numerical}). No two functions anywhere may implement the same logic (duplicate and near-duplicate detection at similarity {thr}); consult lib.index and fs.search before writing a new function, and extend or call an existing library function when one covers the need.\n\
-3. Outputs go under `{out}/<script stem>/` (the run output directory is `$ANALYST_OUT_DIR`); figures get descriptive names; plt.show() and savefig() are captured automatically, so prefer plt.show() or save under $ANALYST_OUT_DIR. Random seeds are options with dest `seed`. Library functions have docstrings; functions in modules matching {math_req:?} carry a `Math:` docstring section with lines `<lhs> = <expr>` in SymPy syntax using the parameter names (last line is the result).\n\
+3. Outputs go under `{out}/<script stem>/` (the run output directory is `$FIBRATION_OUT_DIR`); figures get descriptive names; plt.show() and savefig() are captured automatically, so prefer plt.show() or save under $FIBRATION_OUT_DIR. Random seeds are options with dest `seed`. Library functions have docstrings; functions in modules matching {math_req:?} carry a `Math:` docstring section with lines `<lhs> = <expr>` in SymPy syntax using the parameter names (last line is the result).\n\
 4. Read before editing; edits with `edits` must match the current file text exactly once. After editing, lint and contract diagnostics are fed back to you; after runs, failures are fed back with stderr.",
         scripts = p.scripts.join(", "),
         lib = p.library,
@@ -46,7 +46,7 @@ pub fn mode_uses_analysis(mode: Mode) -> bool {
 pub fn mode_instructions(mode: Mode) -> &'static str {
     match mode {
         Mode::Plan => "MODE plan: read-only. Investigate and propose a plan; you cannot edit or run anything.",
-        Mode::Build => "MODE build: before your first edit in each turn, call declare_scope once with every file you intend to create or modify and a one-paragraph plan. The scope lasts for this turn only. Edits outside it require user approval, and so does a later declare_scope that adds files, so declare completely the first time. Files under .git/ and .analyst/ can never be edited. Verify your work by running the script and reading the result before you finish.",
+        Mode::Build => "MODE build: before your first edit in each turn, call declare_scope once with every file you intend to create or modify and a one-paragraph plan. The scope lasts for this turn only. Edits outside it require user approval, and so does a later declare_scope that adds files, so declare completely the first time. Files under .git/ and .fibration/ can never be edited. Verify your work by running the script and reading the result before you finish.",
         Mode::Run => "MODE run: you may run existing scripts and snippets and inspect outputs, but you cannot edit files or install packages. Do not propose code changes; report results.",
         Mode::Outline => "MODE outline: work on a deck's storyline only. Read the brief and the references, then call outline_propose with one row per slide: an action title, the message it proves, the layout you intend, and the citations that support it. You cannot create or change slides, edit code, or run scripts in this mode.",
         Mode::Slides => "MODE slides: create and change slides. Before your first change in each turn, call declare_scope with the slides you will change, how many you will add, and a one-paragraph plan. Follow the approved outline when there is one. After each slide, look at it with slide_render and fix what the checker reports. You cannot edit code or run scripts in this mode; switch to build mode for that.",

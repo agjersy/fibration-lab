@@ -4,11 +4,11 @@
 //! configuration under a temporary directory, and reaches it through an `ssh` wrapper that
 //! adds `-F <that configuration>`, so nothing in `~/.ssh` is read or written. It is skipped
 //! when `sshd`, `ssh`, `ssh-keygen`, or `git` is missing or the server cannot be started;
-//! set `ANALYST_REQUIRE_SSHD=1` to make that a failure instead.
+//! set `FIBRATION_REQUIRE_SSHD=1` to make that a failure instead.
 
 #![cfg(unix)]
 
-use analyst_core::target::{self, sync, Target};
+use fibration_core::target::{self, sync, Target};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -40,7 +40,7 @@ fn run(cmd: &mut Command) -> bool {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    analyst_core::checkpoint::git(dir, args, None).unwrap()
+    fibration_core::checkpoint::git(dir, args, None).unwrap()
 }
 
 fn write(path: PathBuf, text: &str) {
@@ -125,12 +125,12 @@ IdentitiesOnly yes\n  UserKnownHostsFile {d}/known_hosts\n  StrictHostKeyCheckin
 #[tokio::test]
 async fn sync_over_a_real_ssh_server() {
     let tmp = tempfile::tempdir().unwrap();
-    let host = "analyst-sync-test-host";
+    let host = "fibration-sync-test-host";
     let _server = match start_sshd(tmp.path(), host) {
         Ok(s) => s,
         Err(why) => {
-            if std::env::var_os("ANALYST_REQUIRE_SSHD").is_some() {
-                panic!("ANALYST_REQUIRE_SSHD is set, but {why}");
+            if std::env::var_os("FIBRATION_REQUIRE_SSHD").is_some() {
+                panic!("FIBRATION_REQUIRE_SSHD is set, but {why}");
             }
             eprintln!("skipping sync_over_a_real_ssh_server: {why}");
             return;
@@ -186,7 +186,7 @@ async fn sync_over_a_real_ssh_server() {
     let bare = PathBuf::from(sync::bare_repo(&mirror.display().to_string()));
     // A short directory of its own: a Unix socket path is limited to about 104 bytes, and
     // macOS's temporary directory alone is half of that. (The app keeps control sockets in
-    // `~/.analyst/ssh`, which is short.)
+    // `~/.fibration/ssh`, which is short.)
     let control_dir = tempfile::Builder::new()
         .prefix("actl-")
         .tempdir_in("/tmp")
@@ -202,14 +202,14 @@ async fn sync_over_a_real_ssh_server() {
         "nothing was created on the refused host"
     );
     wb_net::gate().allow_ssh_host(host).unwrap();
-    let other = ssh_target("analyst-sync-other-host");
+    let other = ssh_target("fibration-sync-other-host");
     let err = format!(
         "{:#}",
         sync::push(&repo, &other, None, None, false)
             .await
             .unwrap_err()
     );
-    assert!(err.contains("analyst-sync-other-host"), "{err}");
+    assert!(err.contains("fibration-sync-other-host"), "{err}");
 
     // First sync.
     let first = push(false).await.unwrap();
@@ -227,7 +227,7 @@ async fn sync_over_a_real_ssh_server() {
     assert!(!mirror.join(".git").exists());
     assert_eq!(
         git(&bare, &["for-each-ref", "--format=%(refname)"]).trim(),
-        "refs/analyst/sync"
+        "refs/fibration/sync"
     );
     assert_eq!(
         git(&bare, &["rev-parse", "HEAD^{tree}"]).trim(),
@@ -262,7 +262,7 @@ async fn sync_over_a_real_ssh_server() {
     write(mirror.join("out/fit/r1/run.json"), "{}");
     write(mirror.join("out/fit/r1/raw.npy"), "DATA");
     write(mirror.join(".venv/pyvenv.cfg"), "venv");
-    write(mirror.join(".analyst/env.sh"), "env");
+    write(mirror.join(".fibration/env.sh"), "env");
     for name in [
         "pre-receive",
         "update",
@@ -297,7 +297,7 @@ async fn sync_over_a_real_ssh_server() {
         "out/fit/r1/figures/fit.png",
         "out/fit/r1/raw.npy",
         ".venv/pyvenv.cfg",
-        ".analyst/env.sh",
+        ".fibration/env.sh",
     ] {
         assert!(mirror.join(kept).is_file(), "{kept} must survive a sync");
     }

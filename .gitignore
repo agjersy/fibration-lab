@@ -9,7 +9,7 @@
 .ruff_cache/
 /evals/results/
 /out/
-.analyst/env.sh
+.fibration/env.sh
 node_modules/
 *.tsbuildinfo
 /sample-deck/

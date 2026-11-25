@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/util.rs` at commit f229e4d.
+// Ported from Fibration Lab `crates/core/src/util.rs` at commit f229e4d.
 // Adapted: only the helpers the transcript code needs.
 //! Small helpers: timestamps, ids, token estimate, truncation.
 

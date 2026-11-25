@@ -1,5 +1,5 @@
-# The bwrap argv, sandbox-exec profile, and limits logic are ported from Personal Analyst
-# python/kernel/analyst_kernel/sandbox.py at commit f229e4d and adapted to deck builds.
+# The bwrap argv, sandbox-exec profile, and limits logic are ported from Fibration Lab
+# python/kernel/fibration_kernel/sandbox.py at commit f229e4d and adapted to deck builds.
 """Code sandbox (PROTOCOL.md section 9): one wrapper for builds, generated slides, and skill scripts.
 
 macOS uses ``sandbox-exec`` with a generated profile, Linux uses ``bwrap``, and Windows uses the

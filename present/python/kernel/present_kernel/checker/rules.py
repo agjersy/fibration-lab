@@ -567,7 +567,7 @@ def _check_bound_number(out: _Out, ctx: _SlideCtx, eid: str | None, run: dict[st
     recorded = results.get(f"{run_id}/{name}")
     if not isinstance(recorded, dict) or not isinstance(recorded.get("value"), (int, float)):
         out.add("num.bound", f"run {run_id} has no recorded result `{name}` on this machine", ctx, eid,
-                "run the script again (it must call analyst_results.record), or bind another result", pointer,
+                "run the script again (it must call fibration_results.record), or bind another result", pointer,
                 severity="warn")  # fmt: skip
         return
     value = float(recorded["value"])

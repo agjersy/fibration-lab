@@ -1,8 +1,8 @@
 //! The deck's own configuration, `<deck>/.present/project.toml` (contract, export presets,
 //! locked slides). Providers, models, and policy presets are the session's, not the deck's.
 
-use analyst_deck_protocol::config::ProjectConfig;
 use anyhow::Context;
+use fibration_deck_protocol::config::ProjectConfig;
 use std::path::Path;
 
 pub fn load(deck_root: &Path) -> anyhow::Result<ProjectConfig> {

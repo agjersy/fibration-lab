@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/core/src/providers/names.rs` at commit f229e4d.
+// Ported from Fibration Lab `crates/core/src/providers/names.rs` at commit f229e4d.
 //! Model-facing tool name mapping (Analyst PROTOCOL 4, Present PROTOCOL 6.1): `.` to `_`.
 
 /// Internal id to model-facing name.

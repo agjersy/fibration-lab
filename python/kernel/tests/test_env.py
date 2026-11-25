@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from analyst_kernel import envinfo
-from analyst_kernel.errors import TOOL_MISSING, RpcError
+from fibration_kernel import envinfo
+from fibration_kernel.errors import TOOL_MISSING, RpcError
 
 
 def test_env_info(kernel):

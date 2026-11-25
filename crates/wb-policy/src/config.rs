@@ -1,4 +1,4 @@
-// Ported from Personal Analyst `crates/protocol/src/config.rs` (`PolicyConfig` and its
+// Ported from Fibration Lab `crates/protocol/src/config.rs` (`PolicyConfig` and its
 // enums) at commit f229e4d.
 // Adapted: adds the deck-shaped `[policy]` table (Present PROTOCOL 4.2), the `preset` key
 // in both tables, and conversions of both shapes into the generic `Policy`.
@@ -263,7 +263,7 @@ pub enum AnalystRuns {
     Ask,
 }
 
-/// The `[policy]` table of the analysis `.analyst/project.toml` (Analyst PROTOCOL 2.2).
+/// The `[policy]` table of the analysis `.fibration/project.toml` (Analyst PROTOCOL 2.2).
 /// There is no network key: runs never have network access.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AnalystPolicyConfig {

@@ -63,7 +63,7 @@ let toastId = 0;
 
 function readTheme(): ThemePreference {
   try {
-    const v = localStorage.getItem("analyst.theme");
+    const v = localStorage.getItem("fibration.theme");
     if (v === "light" || v === "dark" || v === "system") return v;
   } catch {
     // storage unavailable
@@ -120,7 +120,7 @@ export const useUi = create<UiState>((set, get) => ({
     }),
   setTheme: (theme) => {
     try {
-      localStorage.setItem("analyst.theme", theme);
+      localStorage.setItem("fibration.theme", theme);
     } catch {
       // storage unavailable
     }

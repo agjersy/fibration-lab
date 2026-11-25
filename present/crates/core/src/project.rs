@@ -3,10 +3,10 @@
 
 use crate::deck_store::DeckStore;
 use crate::util::{now_iso, write_atomic};
-use analyst_deck_protocol::config::ProjectConfig;
-use analyst_deck_protocol::deck::{Deck, DeckMode, Section};
-use analyst_deck_protocol::SCHEMA_VERSION;
 use anyhow::{anyhow, Context};
+use fibration_deck_protocol::config::ProjectConfig;
+use fibration_deck_protocol::deck::{Deck, DeckMode, Section};
+use fibration_deck_protocol::SCHEMA_VERSION;
 use std::path::{Path, PathBuf};
 
 pub const DIRS: &[&str] = &[

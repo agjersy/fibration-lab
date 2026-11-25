@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from analyst_kernel.index_scripts import infer_dest
+from fibration_kernel.index_scripts import infer_dest
 
 
 def test_scripts_index(kernel):

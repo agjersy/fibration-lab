@@ -11,15 +11,15 @@ use crate::session::Session;
 use crate::target::{self, Target};
 use crate::tools::registry::DeckKinds;
 use crate::util::{normalize_rel_path, now_rfc3339, tail_bytes, truncate_bytes};
-use analyst_deck::service::DeckService;
-use analyst_deck::tools::dispatch::{
+use fibration_deck::service::DeckService;
+use fibration_deck::tools::dispatch::{
     self as deck_tools, Change, Prepared, ToolState as DeckToolState,
 };
-use analyst_protocol::config::ProjectConfig;
-use analyst_protocol::kernel::*;
-use analyst_protocol::transcript::Event;
-use analyst_protocol::ui::{OutputStream, SessionEvent};
-use analyst_protocol::TOOL_RESULT_CAP_BYTES;
+use fibration_protocol::config::ProjectConfig;
+use fibration_protocol::kernel::*;
+use fibration_protocol::transcript::Event;
+use fibration_protocol::ui::{OutputStream, SessionEvent};
+use fibration_protocol::TOOL_RESULT_CAP_BYTES;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -568,17 +568,17 @@ impl ToolContext {
                 let items: Vec<_> = crate::service::verification::list(&scope)
                     .into_iter()
                     .filter(|v| {
-                        !only || v.state == analyst_protocol::ui::VerificationState::Unverified
+                        !only || v.state == fibration_protocol::ui::VerificationState::Unverified
                     })
                     .take(200)
                     .collect();
                 Ok(json!({"items": items}))
             }
             "verify.record" => {
-                let item: analyst_protocol::ui::VerifyItem =
+                let item: fibration_protocol::ui::VerifyItem =
                     serde_json::from_value(args.get("item").cloned().unwrap_or(Value::Null))
                         .map_err(bad_args)?;
-                let state: analyst_protocol::ui::VerifyState =
+                let state: fibration_protocol::ui::VerifyState =
                     serde_json::from_value(args.get("state").cloned().unwrap_or(Value::Null))
                         .map_err(bad_args)?;
                 let scope = crate::service::verification::Scope {
@@ -590,14 +590,14 @@ impl ToolContext {
                     &scope,
                     &item,
                     state,
-                    analyst_protocol::ui::Verifier::Agent,
+                    fibration_protocol::ui::Verifier::Agent,
                     args.get("note").and_then(Value::as_str),
                 )?;
-                self.runs
-                    .events()
-                    .emit(analyst_protocol::ui::SessionEvent::VerificationChanged {
+                self.runs.events().emit(
+                    fibration_protocol::ui::SessionEvent::VerificationChanged {
                         key: view.key.clone(),
-                    });
+                    },
+                );
                 Ok(serde_json::to_value(view)?)
             }
             "eq.extract" => {
@@ -1364,7 +1364,7 @@ mod tests {
             ),
             (
                 "fs.propose_create",
-                json!({"path": ".analyst/project.toml", "content": "[policy]\nedits = \"auto\"\n"}),
+                json!({"path": ".fibration/project.toml", "content": "[policy]\nedits = \"auto\"\n"}),
             ),
         ] {
             let e = c.dispatch("1", tool, &args).await.unwrap_err();

@@ -1,7 +1,7 @@
 //! The one command table of the desktop IPC contract (docs/IPC.md sections 4, 7, 9 and 10).
 //!
 //! Every transport calls [`dispatch`] with a command name and its JSON arguments: the Tauri
-//! shell's invoke handler (`analyst-desktop`) and the development bridge (`analyst-serve`). Each
+//! shell's invoke handler (`fibration-desktop`) and the development bridge (`fibration-serve`). Each
 //! row deserializes its arguments with the exact snake_case names of the contract and returns the
 //! result as JSON; every error is an [`IpcError`]. What only a transport can do (native dialogs,
 //! the asset protocol scope, opening a file manager) goes through [`Host`]. The two
@@ -14,17 +14,17 @@
 //! committed file was stale.
 
 use crate::service::{agent_runner, SessionRuntime, Workbench};
-use analyst_deck_protocol::deck::{DeckMode, Slide};
-use analyst_deck_protocol::kernel::LayoutThumbnail;
-use analyst_deck_protocol::ui::IpcError as DeckIpcError;
-use analyst_deck_protocol::ui::{
+use fibration_deck_protocol::deck::{DeckMode, Slide};
+use fibration_deck_protocol::kernel::LayoutThumbnail;
+use fibration_deck_protocol::ui::IpcError as DeckIpcError;
+use fibration_deck_protocol::ui::{
     AssetView, DeckInfo, DeckView, ExportView, RefView, SlideView, SourcePassage,
 };
-use analyst_protocol::evals::Mode;
-use analyst_protocol::kernel::{
+use fibration_protocol::evals::Mode;
+use fibration_protocol::kernel::{
     ArtifactKind, Diagnostic, Equation, OutListResult, OutReadResult, PackageInfo,
 };
-use analyst_protocol::ui::*;
+use fibration_protocol::ui::*;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -147,18 +147,18 @@ pub mod ts {
     macro_rules! deck {
         ($($t:ty),* $(,)?) => { $( impl TsType for $t { fn ts() -> String { format!("Deck.{}", <$t as TS>::name(&cfg())) } } )* };
     }
-    use analyst_protocol::kernel as k;
-    use analyst_protocol::ui as u;
+    use fibration_protocol::kernel as k;
+    use fibration_protocol::ui as u;
     analysis! {
         u::AppInfo, u::SessionSummary, u::SessionInfo, u::PolicyView, u::PolicyPatch, u::FileEntry,
         u::FileContent, u::FigureData, u::WriteResult, u::SearchHit, u::IndexResult, k::Diagnostic,
         u::RunView, u::RunDetail, k::OutListResult, k::OutReadResult, u::FigureGroup, k::Equation,
-        k::EqCheckResult, k::PackageInfo, u::ConversationSummary, analyst_protocol::transcript::Event,
+        k::EqCheckResult, k::PackageInfo, u::ConversationSummary, fibration_protocol::transcript::Event,
         u::Attachment, u::ProposalDecision, u::ModelEntry, u::TargetInfo, u::TerminalOpened,
         u::ProviderKeyStatus, u::DeckSummary, u::CheckpointView, u::ArtifactEntry, k::ArtifactKind,
         u::VerificationView, u::VerifyItem, u::VerifyState, u::ProposalView,
     }
-    use analyst_deck_protocol as d;
+    use fibration_deck_protocol as d;
     deck! {
         d::ui::AssetView, d::ui::DeckInfo, d::ui::DeckView, d::ui::SlideView, d::ui::ExportView,
         d::ui::RefView, d::ui::SourcePassage, d::kernel::LayoutThumbnail, d::ui::FileContent,
@@ -167,11 +167,11 @@ pub mod ts {
     }
 }
 
-type DeckDiagnostic = analyst_deck_protocol::kernel::Diagnostic;
-type DeckFileContent = analyst_deck_protocol::ui::FileContent;
-type DeckWriteResult = analyst_deck_protocol::ui::WriteResult;
-type DeckSearchHit = analyst_deck_protocol::ui::SearchHit;
-use analyst_deck_protocol::kernel::ChartComputeResult;
+type DeckDiagnostic = fibration_deck_protocol::kernel::Diagnostic;
+type DeckFileContent = fibration_deck_protocol::ui::FileContent;
+type DeckWriteResult = fibration_deck_protocol::ui::WriteResult;
+type DeckSearchHit = fibration_deck_protocol::ui::SearchHit;
+use fibration_deck_protocol::kernel::ChartComputeResult;
 
 /// One row of the renderer's command table: name, arguments (name, TypeScript type, optional),
 /// and the result's TypeScript type.
@@ -260,7 +260,7 @@ pub fn commands_ts() -> String {
     }
     let mut out = String::new();
     out.push_str("// Generated from the command table in crates/core/src/commands.rs by\n");
-    out.push_str("// `cargo test -p analyst-core --lib commands` (do not edit; a test fails when it is stale).\n");
+    out.push_str("// `cargo test -p fibration-core --lib commands` (do not edit; a test fails when it is stale).\n");
     out.push_str(
         "// Argument names are exact (snake_case); see docs/IPC.md sections 4, 7, 9 and 10.\n",
     );
@@ -465,7 +465,7 @@ table! {
     }
     figure_data(session: String, path: String) -> FigureData { rt_of(wb, &session)?.figure_data(&path).await? }
     eq_extract(session: String, path: String) -> Vec<Equation> { rt_of(wb, &session)?.eq_extract(&path).await? }
-    eq_check(session: String, path: String, function: String) -> analyst_protocol::kernel::EqCheckResult {
+    eq_check(session: String, path: String, function: String) -> fibration_protocol::kernel::EqCheckResult {
         rt_of(wb, &session)?.eq_check(&path, &function).await?
     }
 
@@ -487,7 +487,7 @@ table! {
         rt.conversation_select(&conversation)?;
         rt.emit_session_changed().await;
     }
-    conversation_transcript(session: String, conversation: String) -> Vec<analyst_protocol::transcript::Event> {
+    conversation_transcript(session: String, conversation: String) -> Vec<fibration_protocol::transcript::Event> {
         rt_of(wb, &session)?.conversation_transcript(&conversation)?
     }
     chat_send(session: String, conversation: String, text: String, attachments: Option<Vec<Attachment>>) -> String {
@@ -519,7 +519,7 @@ table! {
     model_probe(model: String) -> ModelEntry { wb.model_probe(&model).await? }
     // One row per configured provider; key values never cross the boundary.
     provider_keys_status() -> Vec<ProviderKeyStatus> { wb.provider_keys_status() }
-    // Store (or, with an empty key, remove) a provider's key in `$ANALYST_HOME/.env`.
+    // Store (or, with an empty key, remove) a provider's key in `$FIBRATION_HOME/.env`.
     provider_key_set(provider: String, key: String) -> () { wb.provider_key_set(&provider, &key)? }
     targets_list() -> Vec<TargetInfo> {
         let _ = wb.reload_global();

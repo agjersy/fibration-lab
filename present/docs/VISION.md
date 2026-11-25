@@ -1,8 +1,8 @@
 # Personal Present — Product Vision
 
-> **Historical design note.** This document describes Personal Present before it was folded into Personal Analyst. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `analyst` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.analyst` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
+> **Historical design note.** This document describes Personal Present before it was folded into Fibration Lab. Where it conflicts with the documents in [`docs/`](../../docs/) (one core, one `fibration` CLI and desktop app, decks under `decks/<slug>/` in the project, git checkpoints instead of snapshots, the artifact index instead of the scan/import bridge, `~/.fibration` instead of `~/.present`), `docs/` wins. `PRESENT_HOME` and the `present` binary were removed.
 
-*Status: workshop decisions closed (2026-11-15). Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Sister product: Personal Analyst (`agjersy/personal-analyst`), whose architecture, conventions, and visual style this product follows.*
+*Status: workshop decisions closed (2026-11-15). Companion documents: [ARCHITECTURE.md](ARCHITECTURE.md), [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md). Sister product: Fibration Lab (`agjersy/fibration-lab`), whose architecture, conventions, and visual style this product follows.*
 
 ## 1. One line
 
@@ -37,19 +37,19 @@ Common pain points underneath:
 1. **Show, don't ask for trust.** Every agent change is shown as a slide-level before/after. Every factual statement and number on a slide carries a link to the passage in the reference material it came from. Where a check can be automated (does this number appear in the cited source? does this text fit its placeholder?), the app runs it and shows the result. *(Analyst: "show, don't ask for trust".)*
 2. **You own the deck.** Agent changes are proposals until accepted, at a strictness configured per project. Slides and elements can be locked. Every agent turn is checkpointed so any change is one click from undone. The agent declares which slides it will touch before touching them. *(Analyst: "you own the code".)*
 3. **Native, not pictures.** The product of a session is a `.pptx` that a PowerPoint user cannot tell from a hand-built one: real slide layouts and placeholders from the template, native charts with editable data, native tables, speaker notes, alt text, sections. Images are used only for what is genuinely an image. By default the deck is a structured document that is template-native by construction; for maximum expressiveness a project can switch to code generation, where the deck is a build script held to the same checker. *(Analyst: "tools, not transcripts".)*
-4. **The template is the contract.** The organization's template defines what layouts, fonts, colors, and sizes are allowed. The agent is held to it and a checker enforces it automatically, in the same way Personal Analyst enforces its script contract.
+4. **The template is the contract.** The organization's template defines what layouts, fonts, colors, and sizes are allowed. The agent is held to it and a checker enforces it automatically, in the same way Fibration Lab enforces its script contract.
 5. **Model agnostic, enterprise ready.** Claude through the Anthropic API or an internal gateway; open-weight models on internal servers through any OpenAI-compatible API; cloud platforms (Bedrock, Vertex, Foundry) later through the same interface. No model-specific code paths. No telemetry, no cloud dependency of the application itself, installable and usable offline. The app always tells you which provider your materials are sent to.
 6. **Materials stay local.** Reference files are copied into the project on your machine and indexed there. Only the excerpts the agent needs are sent to the model, and the app keeps a local record of what was sent where.
-7. **One family with Personal Analyst.** Same shell, same layout logic, same look, same agent controls, same skill format. Analysis results (figures with provenance, tables, equations) flow from Analyst into Present without losing their provenance.
+7. **One family with Fibration Lab.** Same shell, same layout logic, same look, same agent controls, same skill format. Analysis results (figures with provenance, tables, equations) flow from Analyst into Present without losing their provenance.
 
 ## 4. Who it is for
 
 - **Primary:** a professional who regularly turns material (reports, analyses, spreadsheets, earlier decks) into presentations on a mandated corporate template, and finishes them in PowerPoint. Comfortable with PowerPoint; not necessarily a programmer.
 - **Secondary (phase 3):** the same user's organization: IT deploys the app with a managed configuration (approved model endpoints, locked policies, shared skills and templates). The app is enterprise-ready from the start (offline install, audit log) so this needs no rework.
-- **Also:** you, as a Personal Analyst user turning analysis results into a talk or report-out.
+- **Also:** you, as a Fibration Lab user turning analysis results into a talk or report-out.
 - **Not for:** freeform graphic design, animation-heavy keynote production, or real-time multi-user co-editing.
 
-> This is a deliberate widening relative to Personal Analyst, whose user is a single programmer. It is the main source of new requirements (Windows, enterprise readiness, a non-technical UI); see OQ-P1 and OQ-P2 in the decision record.
+> This is a deliberate widening relative to Fibration Lab, whose user is a single programmer. It is the main source of new requirements (Windows, enterprise readiness, a non-technical UI); see OQ-P1 and OQ-P2 in the decision record.
 
 ## 5. What it is and is not
 
@@ -61,7 +61,7 @@ Common pain points underneath:
 
 These walkthroughs are the acceptance bar for the first usable version.
 
-**Start a project.** Create a project, choose a template (`.potx` or `.pptx`) from the organization library or a file, and add references: drop in PDFs, Word documents, spreadsheets, earlier decks, images, or a Personal Analyst repo. The app indexes them locally and shows each with its page count and extraction status. Choose a model from the configured providers; the header shows "Claude Opus 5.5 · corporate gateway (internal)".
+**Start a project.** Create a project, choose a template (`.potx` or `.pptx`) from the organization library or a file, and add references: drop in PDFs, Word documents, spreadsheets, earlier decks, images, or a Fibration Lab repo. The app indexes them locally and shows each with its page count and extraction status. Choose a model from the configured providers; the header shows "Claude Opus 5.5 · corporate gateway (internal)".
 
 **Brief and storyline.** "A 12-slide quarterly review for the leadership team from the Q3 report and the pipeline spreadsheet; lead with the margin recovery." In Outline mode the agent proposes a storyline: one row per slide with an action title (the sentence the slide proves), the key evidence, the intended layout, and the sources. You reorder two rows, cut one, and rewrite a title inline. Nothing has been rendered yet; the storyline is the cheapest place to steer.
 
@@ -82,14 +82,14 @@ These walkthroughs are the acceptance bar for the first usable version.
 | Agent loop for decks | Outline, build, polish cycle. Slide-level proposals with review gating. Scope declaration. Deck contract enforcement. Self-review on rendered slides (vision is part of the model baseline). No model-specific code paths. | Multi-model roles (writer, reviewer). Parallel slide generation. |
 | Template engine | Import `.potx`/`.pptx` templates; inspect layouts, placeholders, theme fonts and colors; layout catalog given to the agent. Organization template library. | Template authoring helpers. Multiple masters per deck. |
 | Deck model and rendering | Two project modes. Structured (default): a deck document rendered deterministically to native `.pptx` (placeholders, text, images, native charts and tables, native process, timeline, matrix, and hierarchy diagrams, notes, sections, alt text), with script-generated slides where the schema runs out. Code generation (switchable): the deck is a sandboxed build script for maximum expressiveness, held to the same checker. | Native equations (OMML), animations and transitions. |
-| References | Copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown and text, email (`.eml`, `.msg`), HTML, Personal Analyst figures and tables. Hybrid full-text and semantic search with a bundled offline embedding model, built for large sets. Citations stored per text element. | OCR for scanned PDFs. Web pages, SharePoint and Drive through MCP connectors. |
+| References | Copied into the project. PDF, DOCX, PPTX, XLSX/CSV, images, Markdown and text, email (`.eml`, `.msg`), HTML, Fibration Lab figures and tables. Hybrid full-text and semantic search with a bundled offline embedding model, built for large sets. Citations stored per text element. | OCR for scanned PDFs. Web pages, SharePoint and Drive through MCP connectors. |
 | Verification | Slide diffs. Source lens (click a claim, see the passage). Number check. Deck checker (overflow, fonts, colors, contrast, alt text, density). | Fidelity check against a real PowerPoint render. Reviewer-model pass. |
 | Editing | Content-level: reorder, duplicate, delete slides; edit text in place; change layout; lock slides and elements; edit chart, table, and diagram data; speaker notes. Final pixel polish in PowerPoint. | Re-import edits made in PowerPoint. |
 | Export | `.pptx` (primary), PDF, PNG per slide, Markdown outline, speaker notes as `.docx`. | `.odp`, self-contained HTML, `.potx` from a deck, handouts. |
 | Skills | Agent Skills (`SKILL.md`, resources, and scripts) loaded and executed by the app itself, scripts in an OS-native sandbox, so they work identically with every endpoint, including gateways and open-weight servers. Organization skill library (read-only, managed). | Skill authoring helpers. Skill evaluation. |
 | Models | Anthropic API, internal gateways (Anthropic Messages or OpenAI-compatible), open-weight models on internal servers. Keys and tokens from the environment or an untracked `.env` file. Per-conversation model choice. Capabilities probed. | Amazon Bedrock, Google Vertex AI, Microsoft Foundry. Cost and token budgets per project. |
 | Enterprise | Offline installers (MSI, PKG/DMG) with no runtime downloads. Network access only to configured model endpoints, through one gate in the Rust core; no proxy or custom CA support. Local audit log of what was sent to which provider. No telemetry. | Managed configuration with locked keys and organization template and skill libraries (phase 3). Sensitivity labels. Distribution over a file share. |
-| Analyst interop | Import figures, tables, and equations from a Personal Analyst repo with their run provenance. | Live links: re-run in Analyst, refresh in Present. |
+| Analyst interop | Import figures, tables, and equations from a Fibration Lab repo with their run provenance. | Live links: re-run in Analyst, refresh in Present. |
 
 ## 8. Success criteria
 

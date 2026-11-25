@@ -13,10 +13,10 @@ use crate::model_client;
 use crate::tools::gate::Policy;
 use crate::tools::ToolContext;
 use crate::util::{now_rfc3339, truncate_bytes};
-use analyst_protocol::evals::Mode;
-use analyst_protocol::transcript::{DecidedBy, Event, ProposalKind};
-use analyst_protocol::ui::*;
 use async_trait::async_trait;
+use fibration_protocol::evals::Mode;
+use fibration_protocol::transcript::{DecidedBy, Event, ProposalKind};
+use fibration_protocol::ui::*;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -340,11 +340,11 @@ impl Approver for UiApprover {
         };
         let (td, result) = match decision {
             ProposalDecision::Accept { content } => (
-                analyst_protocol::transcript::Decision::Accept,
+                fibration_protocol::transcript::Decision::Accept,
                 ApprovalDecision::Accept { content },
             ),
             ProposalDecision::Reject { reason } => (
-                analyst_protocol::transcript::Decision::Reject,
+                fibration_protocol::transcript::Decision::Reject,
                 ApprovalDecision::Reject { reason },
             ),
         };
@@ -362,7 +362,7 @@ impl Approver for UiApprover {
 pub async fn model_for(
     home: &std::path::Path,
     repo: Option<&std::path::Path>,
-    global: &analyst_protocol::config::GlobalConfig,
+    global: &fibration_protocol::config::GlobalConfig,
     spec: &str,
 ) -> ServiceResult<(Arc<dyn ModelClient>, ModelCapabilities, String)> {
     let spec = config::ModelSpec::parse(spec).map_err(|e| ServiceError::invalid(e.to_string()))?;
@@ -392,7 +392,7 @@ fn render_attachments(repo: &std::path::Path, text: &str, attachments: &[Attachm
             Attachment::File { path } => match super::fs::read(repo, path) {
                 Ok(file) => {
                     let body =
-                        truncate_bytes(&file.content, analyst_protocol::TOOL_RESULT_CAP_BYTES);
+                        truncate_bytes(&file.content, fibration_protocol::TOOL_RESULT_CAP_BYTES);
                     s.push_str(&format!("[Attached file {}]\n```\n{body}\n```", file.path));
                     if body.len() < file.content.len() {
                         s.push_str("\n(truncated; read the rest with fs.read)");
