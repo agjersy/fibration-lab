@@ -19,6 +19,7 @@
 //! of these tools in Analyst's loop (BUILD-SPEC phase 2); standalone, cells apply at once and
 //! are undone through the session, and events are written as JSON lines.
 
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +99,11 @@ pub struct Evidence {
     pub caveat: Option<String>,
     /// The engine's value (handles carry their text), or its error.
     pub result: Value,
+    /// Parameter values this result was taken at: a declared parameter replaced by a number
+    /// (`subs`, `evaluate`) in this call or in a call that made one of its inputs. Empty
+    /// when the result holds for every value of the scene's parameters.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub at: BTreeMap<String, f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +121,32 @@ pub struct Claim {
     pub status: ClaimStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The parameter values the claim's evidence was taken at; empty when the claim does not
+    /// depend on any value. A claim with values here is a claim about the scene only while
+    /// the parameters have them (ARCHITECTURE 5.6).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub at: BTreeMap<String, f64>,
+}
+
+/// A claim the agent keeps, with what is needed to check it again.
+#[derive(Clone, Debug)]
+struct KeptClaim {
+    claim: Claim,
+    /// The badge and note the evidence earned at the values it was taken at.
+    earned: (ClaimStatus, Option<String>),
+    /// The values the evidence was taken at.
+    taken_at: BTreeMap<String, f64>,
+    /// The values the claim was last checked at.
+    /// `None` when a parameter it depends on was not in the scene.
+    checked_at: Option<BTreeMap<String, f64>>,
+}
+
+/// What a re-check did to one claim.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClaimUpdate {
+    /// Position of the claim among the claims of this conversation.
+    pub index: usize,
+    pub claim: Claim,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -150,6 +182,8 @@ pub enum AgentEvent {
         checked: usize,
         consistent: bool,
     },
+    /// A claim taken at parameter values was checked again after they changed.
+    ClaimRechecked(ClaimUpdate),
     Stop {
         reason: String,
     },
@@ -191,6 +225,13 @@ pub struct Agent {
     pub config: AgentConfig,
     history: Vec<Message>,
     evidence: Vec<Evidence>,
+    /// Parameter values behind each handle the queries produced.
+    pins: HashMap<u64, BTreeMap<String, f64>>,
+    /// The evidence that produced each handle.
+    producer: HashMap<u64, String>,
+    /// For each piece of evidence, the evidence that produced the handles it used.
+    links: HashMap<String, Vec<String>>,
+    claims: Vec<KeptClaim>,
 }
 
 /// The method behind an engine value, and what it leaves open.
@@ -377,6 +418,135 @@ fn clip(mut text: String) -> String {
     text
 }
 
+/// One pure engine call with its handles rendered to text: whether it worked, how the
+/// result was reached, and the result (or the error).
+async fn ask(
+    session: &SceneSession,
+    function: &str,
+    args: Value,
+) -> (bool, (Method, Option<String>), Value) {
+    match session.query(function, args, "agent").await {
+        Err(e) => (
+            false,
+            (Method::Undecided, None),
+            json!({"error": e.to_string()}),
+        ),
+        Ok(reply) if reply["status"] == "ok" => {
+            let mut value = reply["value"].clone();
+            let mut ids = Vec::new();
+            handle_ids(&value, &mut ids);
+            let mut texts = Vec::new();
+            for h in ids.into_iter().take(MAX_RENDERED_HANDLES) {
+                if let Ok(t) = session
+                    .query("to_text", json!({"of": {"$h": h}}), "agent")
+                    .await
+                {
+                    if let Some(s) = t["value"].as_str() {
+                        texts.push((h, s.to_string()));
+                    }
+                }
+            }
+            attach_text(&mut value, &texts);
+            (true, method_of(function, &value), value)
+        }
+        Ok(reply) => (
+            false,
+            (Method::Undecided, None),
+            json!({"error": reply["error"]}),
+        ),
+    }
+}
+
+/// The argument in which an operation takes values for symbols by name, if it has one.
+fn pin_key(function: &str) -> Option<&'static str> {
+    match function {
+        "subs" => Some("values"),
+        "evaluate" => Some("at"),
+        _ => None,
+    }
+}
+
+/// The declared parameters a call replaces by numbers.
+fn own_pins(function: &str, args: &Value, state: &Value) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    let Some(map) = pin_key(function)
+        .and_then(|k| args.get(k))
+        .and_then(Value::as_object)
+    else {
+        return out;
+    };
+    for (name, value) in map {
+        if state["params"].get(name).is_none() {
+            continue;
+        }
+        let number = value
+            .as_f64()
+            .or_else(|| value.as_str().and_then(|t| t.trim().parse::<f64>().ok()));
+        if let Some(number) = number.filter(|n| n.is_finite()) {
+            out.insert(name.clone(), number);
+        }
+    }
+    out
+}
+
+fn param_values(state: &Value) -> BTreeMap<String, f64> {
+    state["params"]
+        .as_object()
+        .map(|params| {
+            params
+                .iter()
+                .filter_map(|(name, p)| Some((name.clone(), p["value"].as_f64()?)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn show_values(values: &BTreeMap<String, f64>) -> String {
+    values
+        .iter()
+        .map(|(name, value)| format!("{name} = {value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn join_notes(first: Option<&str>, second: &str) -> String {
+    match first {
+        Some(first) => format!("{first}; {second}"),
+        None => second.to_string(),
+    }
+}
+
+fn remap_handles(value: &mut Value, remap: &HashMap<u64, u64>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(new) = map
+                .get("$h")
+                .and_then(Value::as_u64)
+                .and_then(|h| remap.get(&h))
+            {
+                map.insert("$h".into(), json!(new));
+            }
+            map.values_mut().for_each(|v| remap_handles(v, remap));
+        }
+        Value::Array(items) => items.iter_mut().for_each(|v| remap_handles(v, remap)),
+        _ => {}
+    }
+}
+
+/// A result without its handle ids, which differ between runs; the text beside each stays.
+fn without_handles(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .filter(|(k, _)| k.as_str() != "$h")
+                .map(|(k, v)| (k.clone(), without_handles(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(without_handles).collect()),
+        other => other.clone(),
+    }
+}
+
 fn handle_ids(value: &Value, out: &mut Vec<u64>) {
     match value {
         Value::Object(map) => {
@@ -452,7 +622,131 @@ impl Agent {
             config,
             history: Vec::new(),
             evidence: Vec::new(),
+            pins: HashMap::new(),
+            producer: HashMap::new(),
+            links: HashMap::new(),
+            claims: Vec::new(),
         }
+    }
+
+    /// Every claim of this conversation, with its badge as of the last check.
+    pub fn claims(&self) -> Vec<Claim> {
+        self.claims.iter().map(|k| k.claim.clone()).collect()
+    }
+
+    /// Check again the claims whose evidence was taken at parameter values, where those
+    /// values have changed since the last check (ARCHITECTURE 5.6).
+    ///
+    /// The evidence is run again at the current values, with everything it was derived from.
+    /// A claim keeps its badge only if every result it cites comes out the same; otherwise
+    /// it becomes unverified, with a note saying where it was established. Moving the
+    /// parameters back restores it. Claims that hold for every value are never touched.
+    pub async fn recheck_claims(&mut self, session: &SceneSession) -> Vec<ClaimUpdate> {
+        let current = param_values(session.state());
+        let mut updates = Vec::new();
+        for index in 0..self.claims.len() {
+            let kept = self.claims[index].clone();
+            if kept.taken_at.is_empty() {
+                continue;
+            }
+            let now: Option<BTreeMap<String, f64>> = kept
+                .taken_at
+                .keys()
+                .map(|k| current.get(k).map(|v| (k.clone(), *v)))
+                .collect();
+            if now == kept.checked_at {
+                continue;
+            }
+            let (status, note) = match &now {
+                None => (
+                    ClaimStatus::Unverified,
+                    Some(format!(
+                        "established at {}; a parameter it depends on is no longer in the scene",
+                        show_values(&kept.taken_at)
+                    )),
+                ),
+                Some(now) if *now == kept.taken_at => kept.earned.clone(),
+                Some(now) => match self.rerun(session, &kept.claim.support, now).await {
+                    Ok(()) => (
+                        kept.earned.0,
+                        Some(join_notes(
+                            kept.earned.1.as_deref(),
+                            &format!(
+                                "established at {}, and the engine gives the same answers at {}",
+                                show_values(&kept.taken_at),
+                                show_values(now)
+                            ),
+                        )),
+                    ),
+                    Err(why) => (
+                        ClaimStatus::Unverified,
+                        Some(format!(
+                            "established at {}; at {} {why}",
+                            show_values(&kept.taken_at),
+                            show_values(now)
+                        )),
+                    ),
+                },
+            };
+            let entry = &mut self.claims[index];
+            entry.checked_at = now;
+            entry.claim.status = status;
+            entry.claim.note = note;
+            updates.push(ClaimUpdate {
+                index,
+                claim: entry.claim.clone(),
+            });
+        }
+        updates
+    }
+
+    /// Run the cited evidence again with the pinned parameters at `now`, together with the
+    /// results it was derived from, and compare each cited result with the original.
+    async fn rerun(
+        &self,
+        session: &SceneSession,
+        support: &[String],
+        now: &BTreeMap<String, f64>,
+    ) -> std::result::Result<(), String> {
+        let mut needed: Vec<String> = Vec::new();
+        let mut stack: Vec<String> = support.to_vec();
+        while let Some(id) = stack.pop() {
+            if needed.contains(&id) {
+                continue;
+            }
+            stack.extend(self.links.get(&id).into_iter().flatten().cloned());
+            needed.push(id);
+        }
+        let mut remap: HashMap<u64, u64> = HashMap::new();
+        for item in self.evidence.iter().filter(|e| needed.contains(&e.id)) {
+            let mut args = item.args.clone();
+            remap_handles(&mut args, &remap);
+            if let Some(key) = pin_key(&item.function) {
+                if let Some(map) = args.get_mut(key).and_then(Value::as_object_mut) {
+                    for (name, value) in now {
+                        if map.contains_key(name) {
+                            map.insert(name.clone(), json!(value));
+                        }
+                    }
+                }
+            }
+            let (ok, _, result) = ask(session, &item.function, args).await;
+            if !ok {
+                return Err(format!("the engine could not answer `{}` again", item.id));
+            }
+            let (mut old, mut new) = (Vec::new(), Vec::new());
+            handle_ids(&item.result, &mut old);
+            handle_ids(&result, &mut new);
+            if old.len() == new.len() {
+                remap.extend(old.into_iter().zip(new));
+            }
+            if support.contains(&item.id)
+                && without_handles(&item.result) != without_handles(&result)
+            {
+                return Err(format!("the engine's answer to `{}` is different", item.id));
+            }
+        }
+        Ok(())
     }
 
     /// Every engine result gathered in this conversation.
@@ -478,6 +772,11 @@ impl Agent {
         let mut events = vec![AgentEvent::User {
             text: user.to_string(),
         }];
+        // Parameters may have moved since the last turn: settle what the earlier claims are
+        // worth now before anything is said about them.
+        for update in self.recheck_claims(session).await {
+            events.push(AgentEvent::ClaimRechecked(update));
+        }
         // The scene as it is now, so the model reasons over state rather than history.
         self.history.push(Message::user_text(format!(
             "{}\n\n{user}",
@@ -699,15 +998,37 @@ impl Agent {
                     })
                     .unwrap_or_default();
                 let (status, note) = judge(&self.evidence, &support)?;
+                let mut at = BTreeMap::new();
+                for item in self.evidence.iter().filter(|e| support.contains(&e.id)) {
+                    at.extend(item.at.clone());
+                }
+                let earned = (status, note);
+                // If the values differ from the scene's, the next re-check settles what the
+                // claim is worth for the scene as it is.
                 let claim = Claim {
                     text,
                     support,
-                    status,
-                    note,
+                    status: earned.0,
+                    note: if at.is_empty() {
+                        earned.1.clone()
+                    } else {
+                        Some(join_notes(
+                            earned.1.as_deref(),
+                            &format!("holds at {}", show_values(&at)),
+                        ))
+                    },
+                    at: at.clone(),
                 };
+                let earned = (claim.status, claim.note.clone());
+                self.claims.push(KeptClaim {
+                    claim: claim.clone(),
+                    earned,
+                    taken_at: at.clone(),
+                    checked_at: Some(at),
+                });
                 events.push(AgentEvent::Claim(claim.clone()));
                 report.claims.push(claim.clone());
-                Ok(json!({"status": claim.status, "note": claim.note}))
+                Ok(json!({"status": claim.status, "note": claim.note, "at": claim.at}))
             }
             "scene_propose_cell" | "scene_delete_cell" if !explore => {
                 Err("the conversation is in plan mode, which cannot change the scene".into())
@@ -859,37 +1180,33 @@ impl Agent {
                 .to_string();
             let call_args = call.get("args").cloned().unwrap_or_else(|| json!({}));
             let id = format!("q{}", self.evidence.len() + 1);
-            let (ok, (method, caveat), result) =
-                match session.query(&function, call_args.clone(), "agent").await {
-                    Err(e) => (
-                        false,
-                        (Method::Undecided, None),
-                        json!({"error": e.to_string()}),
-                    ),
-                    Ok(reply) if reply["status"] == "ok" => {
-                        let mut value = reply["value"].clone();
-                        let mut ids = Vec::new();
-                        handle_ids(&value, &mut ids);
-                        let mut texts = Vec::new();
-                        for h in ids.into_iter().take(MAX_RENDERED_HANDLES) {
-                            if let Ok(t) = session
-                                .query("to_text", json!({"of": {"$h": h}}), "agent")
-                                .await
-                            {
-                                if let Some(s) = t["value"].as_str() {
-                                    texts.push((h, s.to_string()));
-                                }
-                            }
-                        }
-                        attach_text(&mut value, &texts);
-                        (true, method_of(&function, &value), value)
+            // Parameter values behind this call: those of the handles it uses, and those it
+            // pins itself.
+            let mut inputs = Vec::new();
+            handle_ids(&call_args, &mut inputs);
+            let mut at = BTreeMap::new();
+            let mut made_by: Vec<String> = Vec::new();
+            for h in &inputs {
+                if let Some(pins) = self.pins.get(h) {
+                    at.extend(pins.clone());
+                }
+                if let Some(p) = self.producer.get(h).filter(|p| !made_by.contains(p)) {
+                    made_by.push(p.clone());
+                }
+            }
+            at.extend(own_pins(&function, &call_args, session.state()));
+            let (ok, (method, caveat), result) = ask(session, &function, call_args.clone()).await;
+            if ok {
+                let mut outputs = Vec::new();
+                handle_ids(&result, &mut outputs);
+                for h in outputs {
+                    if !at.is_empty() {
+                        self.pins.entry(h).or_default().extend(at.clone());
                     }
-                    Ok(reply) => (
-                        false,
-                        (Method::Undecided, None),
-                        json!({"error": reply["error"]}),
-                    ),
-                };
+                    self.producer.insert(h, id.clone());
+                }
+            }
+            self.links.insert(id.clone(), made_by);
             let item = Evidence {
                 id: id.clone(),
                 function,
@@ -898,11 +1215,12 @@ impl Agent {
                 method,
                 caveat: caveat.clone(),
                 result: result.clone(),
+                at: at.clone(),
             };
             events.push(AgentEvent::Evidence(item.clone()));
             self.evidence.push(item);
             out.push(
-                json!({"id": id, "ok": ok, "method": method, "caveat": caveat, "result": result}),
+                json!({"id": id, "ok": ok, "method": method, "caveat": caveat, "result": result, "at": at}),
             );
         }
         Ok(json!({"results": out}))
@@ -922,6 +1240,7 @@ mod tests {
             method,
             caveat: None,
             result: json!({}),
+            at: BTreeMap::new(),
         }
     }
 

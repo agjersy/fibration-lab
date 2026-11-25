@@ -319,3 +319,148 @@ async fn proposals_stop_after_the_repair_limit_and_plan_mode_is_read_only() {
     );
     session.close().await.unwrap();
 }
+
+const FAMILY: &str = "from fibration_math import sym, plot, param\n\
+x = sym.symbols(\"x\")\n\
+a = param.declare(a=(1.0, -3, 3))\n\
+plot.explicit(sym.define(\"x**2 - a\"), x=(-3, 3), id=\"curve\")\n";
+
+#[tokio::test]
+async fn a_claim_taken_at_a_value_is_checked_again_when_the_value_moves() {
+    let dir = tempfile::tempdir().unwrap();
+    let Some(mut session) = open(dir.path()).await else {
+        return;
+    };
+    assert!(
+        session
+            .apply(math_core::CellEdit::Append {
+                code: FAMILY.into(),
+                caption: "Family".into()
+            })
+            .await
+            .unwrap()
+            .ok
+    );
+
+    // Handles are named by content, so a first agent can find the handle the second will get.
+    let subs = json!({"fn": "subs", "args": {"expr": "x**2 - a", "values": {"a": 1}}});
+    let scout = Arc::new(ScriptedModelClient::new(vec![
+        step(vec![call(
+            "s1",
+            "math_query",
+            json!({"calls": [subs.clone()]}),
+        )]),
+        say("ok"),
+    ]));
+    let found = Agent::new(scout, AgentConfig::default())
+        .turn(&mut session, "look")
+        .await
+        .unwrap();
+    let handle = found
+        .events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Evidence(ev) => ev.result["$h"].as_u64(),
+            _ => None,
+        })
+        .expect("the substituted expression's handle");
+
+    let client = Arc::new(ScriptedModelClient::new(vec![
+        step(vec![call(
+            "t1",
+            "math_query",
+            json!({"calls": [
+                subs,                                                                        // q1: at a = 1
+                {"fn": "roots_in", "args": {"expr": {"$h": handle}, "var": "x", "within": [-3, 3]}}, // q2: from q1
+                {"fn": "evaluate", "args": {"expr": "x - 0*a", "at": {"a": 1, "x": 2}}},     // q3: same at any a
+                {"fn": "diff", "args": {"expr": "x**2 - a", "var": "x"}},                     // q4: for every a
+            ]}),
+        )]),
+        step(vec![
+            call(
+                "t2",
+                "claim_make",
+                json!({"text": "the curve crosses zero at x = -1 and x = 1", "support": ["q2"]}),
+            ),
+            call(
+                "t3",
+                "claim_make",
+                json!({"text": "the value at x = 2 is 2", "support": ["q3"]}),
+            ),
+            call(
+                "t4",
+                "claim_make",
+                json!({"text": "the slope is 2x", "support": ["q4"]}),
+            ),
+        ]),
+        say("Done."),
+        say("Nothing new."),
+    ]));
+    let mut agent = Agent::new(client, AgentConfig::default());
+    let report = agent
+        .turn(&mut session, "where does it cross zero?")
+        .await
+        .unwrap();
+    let at_one = std::collections::BTreeMap::from([("a".to_string(), 1.0)]);
+    assert_eq!(report.claims[0].at, at_one);
+    assert_eq!(report.claims[0].status, ClaimStatus::Proven);
+    assert!(report.claims[0]
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("holds at a = 1"));
+    assert_eq!(report.claims[1].at, at_one);
+    assert!(report.claims[2].at.is_empty() && report.claims[2].note.is_none());
+    // Nothing moved: nothing to check again.
+    assert!(agent.recheck_claims(&session).await.is_empty());
+
+    // The slider moves. The roots are now at ±sqrt(2): the first claim is no longer earned.
+    assert!(session.commit_param("a", 2.0).await.unwrap().ok);
+    let updates = agent.recheck_claims(&session).await;
+    assert_eq!(updates.iter().map(|u| u.index).collect::<Vec<_>>(), [0, 1]);
+    assert_eq!(updates[0].claim.status, ClaimStatus::Unverified);
+    let note = updates[0].claim.note.as_deref().unwrap();
+    assert!(
+        note.contains("established at a = 1") && note.contains("at a = 2") && note.contains("q2"),
+        "{note}"
+    );
+    // The second claim's evidence comes out the same at a = 2, so it keeps its badge.
+    assert_eq!(updates[1].claim.status, ClaimStatus::Proven);
+    assert!(updates[1]
+        .claim
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("same answers at a = 2"));
+    // The claim that holds for every value was not touched.
+    assert_eq!(agent.claims()[2].status, ClaimStatus::Proven);
+    assert!(agent.recheck_claims(&session).await.is_empty());
+
+    // Moving back restores what was earned there.
+    assert!(session.commit_param("a", 1.0).await.unwrap().ok);
+    let updates = agent.recheck_claims(&session).await;
+    assert_eq!(updates[0].claim.status, ClaimStatus::Proven);
+    assert!(updates[0]
+        .claim
+        .note
+        .as_deref()
+        .unwrap()
+        .contains("holds at a = 1"));
+
+    // A turn settles the claims before the model speaks, and reports it.
+    assert!(session.commit_param("a", 2.5).await.unwrap().ok);
+    let report = agent.turn(&mut session, "and now?").await.unwrap();
+    let rechecked: Vec<_> = report
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ClaimRechecked(u) => Some((u.index, u.claim.status)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rechecked,
+        [(0, ClaimStatus::Unverified), (1, ClaimStatus::Proven)]
+    );
+    session.close().await.unwrap();
+}

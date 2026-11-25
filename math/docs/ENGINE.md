@@ -210,3 +210,12 @@ Generated from the registry (`describe_api` is authoritative; this table is rege
   - each call carries `{"kind": "cell", "cell": id}`;
   - the first error stops the run;
   - the core starts a fresh runner for every replay, so no Python state survives between replays.
+- **Kept runner:** with `--serve` the runner answers one request per line until stdin closes, keeping the namespace between requests. The core uses this mode: a replay is one request with every cell, and a cell appended afterwards is a request with that cell alone (section 4). Answers go to a private copy of stdout and descriptor 1 is pointed at stderr, so a cell cannot write into the protocol.
+
+## 10. Claims and parameter values
+
+The agent loop (`math-core::agent`) records, for each query result, the parameter values it was taken at: a declared parameter replaced by a number in `subs` (`values`) or `evaluate` (`at`), in that call or in a call that produced one of its input handles. A claim carries the union over the results it cites (`Claim.at`); a claim with none holds for every value.
+
+`Agent::recheck_claims` runs when a turn starts and may be called by a host after a parameter commit. For each claim whose values differ from the scene's, it runs the cited results again at the scene's values, together with the results they were derived from, and compares each cited result with the original (handle ids aside). All the same: the claim keeps its badge, with a note. Any different, or not answerable: the claim becomes `unverified`, with a note naming where it was established. Moving the parameter back restores the badge it earned there.
+
+What this cannot see: a value typed into an expression by hand. The agent's prompt says to pin values with `subs` instead.
